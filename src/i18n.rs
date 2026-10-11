@@ -165,6 +165,16 @@ pub mod chat {
         "Allow {}?\n{}\n\nReply \"yes\" to allow or \"no\" to decline (5 minutes).",
         "允许 {}？\n{}\n\n回复“是”允许，回复“否”拒绝（5 分钟内有效）。",
     );
+    pub const QQ_APPROVAL_CARD: Tr = tr(
+        "**Allow {}?**\n```\n{}\n```\nTap a button, or reply \"yes\" or \"no\" (5 minutes).",
+        "**允许 {}？**\n```\n{}\n```\n点下面的按钮，或回复“是”“否”（5 分钟内有效）。",
+    );
+    pub const QQ_ALLOW: Tr = tr("Allow", "批准");
+    pub const QQ_DECLINE: Tr = tr("Decline", "拒绝");
+    pub const QQ_BUTTONS_UNSUPPORTED: Tr = tr(
+        "This QQ version cannot show buttons; reply \"yes\" or \"no\".",
+        "当前 QQ 版本不支持按钮，请回复“是”或“否”。",
+    );
 
     #[cfg(test)]
     pub const ALL: &[Tr] = &[
@@ -190,6 +200,10 @@ pub mod chat {
         FOLLOW_UP_QUEUED,
         ACK_FAILED,
         QQ_APPROVAL,
+        QQ_APPROVAL_CARD,
+        QQ_ALLOW,
+        QQ_DECLINE,
+        QQ_BUTTONS_UNSUPPORTED,
     ];
 }
 

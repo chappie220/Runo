@@ -765,10 +765,13 @@ Each private chat and each group is its own session (`qq:c2c:<openid>`,
 `qq:group:<openid>`). The log prints every sender's openid, so you can fill in
 `allow`. `allow` only decides who may chat; what a sender may make the agent
 do is set under [Access](#access). When a QQ turn reaches an `ask` tool, an
-owner (`access.owners`) is asked in the same chat with the tool and its
-summary and replies `是`/`yes` to allow or `否`/`no` to decline; only that
-owner's answer counts, and an approval nobody answers within five minutes is
-declined. Anyone else's `ask` tools are declined at once, without asking. If
+owner (`access.owners`) is asked in the same chat with a card showing the tool
+and its summary, with **批准 / Allow** and **拒绝 / Decline** buttons; replying
+`是`/`yes` or `否`/`no` works too. A button only answers the request it came
+with, and only that owner's answer counts; an approval nobody answers within
+five minutes is declined. Buttons need the bot's markdown and message-button
+permissions on the QQ Open Platform; without them the question goes out as
+plain text and you reply `是` or `否`. Anyone else's `ask` tools are declined at once, without asking. If
 the access settings let every QQ user run shell
 commands or write files, the Gateway refuses to start QQ until `allow` is set.
 Replies go out as passive replies (up to 4 messages per

@@ -4,7 +4,7 @@
 //! `qq:c2c:<user_openid>` and `qq:group:<group_openid>`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,8 @@ const CHUNK_CHARS: usize = 1500;
 const C2C_REPLIES: usize = 4;
 const GROUP_REPLIES: usize = 5;
 const SEEN_CAPACITY: usize = 1000;
+/// Longest tool summary shown in an approval card.
+const SUMMARY_CHARS: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -74,10 +76,20 @@ pub struct QqBot {
     secret: String,
     token: tokio::sync::Mutex<Option<(String, Instant)>>,
     seen: Mutex<(HashSet<String>, VecDeque<String>)>,
-    /// Approvals waiting for a yes or no, by session: the sender who must
-    /// answer and where the answer goes. A session runs one turn at a time,
-    /// and a turn calls its tools one by one, so one per session is enough.
-    approvals: Mutex<HashMap<String, (String, oneshot::Sender<bool>)>>,
+    /// Approvals waiting for a yes or no, by session. A session runs one
+    /// turn at a time, and a turn calls its tools one by one, so one per
+    /// session is enough.
+    approvals: Mutex<HashMap<String, Pending>>,
+    next_approval: AtomicU64,
+}
+
+/// An approval request waiting for its answer.
+struct Pending {
+    /// Numbers the request's buttons, so a stale card cannot answer a newer one.
+    id: u64,
+    /// The only sender whose answer counts.
+    sender: String,
+    answer: oneshot::Sender<bool>,
 }
 
 /// An incoming message the agent should answer.
@@ -139,6 +151,7 @@ impl QqBot {
             token: tokio::sync::Mutex::new(None),
             seen: Mutex::new((HashSet::new(), VecDeque::new())),
             approvals: Mutex::new(HashMap::new()),
+            next_approval: AtomicU64::new(1),
         }))
     }
 
@@ -310,21 +323,57 @@ impl QqBot {
 
     /// Hands a yes or no to the approval waiting in this session, if the
     /// message answers it; anything else goes to the agent as usual.
+    /// A button's answer names its request; one for a request that is no
+    /// longer waiting is dropped rather than sent to the agent.
     fn answer_approval(&self, incoming: &Incoming) -> bool {
-        let Some(allow) = parse_answer(&incoming.text) else {
+        let Some((allow, id)) = parse_answer(&incoming.text) else {
             return false;
         };
         let mut approvals = self.approvals.lock().unwrap_or_else(|p| p.into_inner());
         let session = incoming.target.session();
-        if !approvals
-            .get(&session)
-            .is_some_and(|(sender, _)| *sender == incoming.sender)
-        {
-            return false;
+        let matches = approvals.get(&session).is_some_and(|pending| {
+            pending.sender == incoming.sender && id.is_none_or(|id| id == pending.id)
+        });
+        if !matches {
+            return id.is_some();
         }
-        let (_, answer) = approvals.remove(&session).expect("checked above");
-        let _ = answer.send(allow);
+        let pending = approvals.remove(&session).expect("checked above");
+        let _ = pending.answer.send(allow);
         true
+    }
+
+    /// Asks with Allow/Decline buttons; bots without markdown or keyboard
+    /// permission get the same question as plain text instead.
+    async fn ask_approval(
+        &self,
+        target: &Target,
+        id: u64,
+        tool: &str,
+        summary: &str,
+        reply_to: &str,
+        seq: &AtomicUsize,
+    ) -> Result<()> {
+        let card = approval_card(id, tool, summary);
+        let mut passive = card.clone();
+        passive["msg_id"] = json!(reply_to);
+        passive["msg_seq"] = json!(seq.fetch_add(1, Ordering::Relaxed));
+        let sent = match self
+            .api(reqwest::Method::POST, &target.path(), Some(passive))
+            .await
+        {
+            // An expired reply window rejects msg_id; try it as an active message.
+            Err(_) => {
+                self.api(reqwest::Method::POST, &target.path(), Some(card))
+                    .await
+            }
+            ok => ok,
+        };
+        if let Err(err) = sent {
+            eprintln!("qq: approval buttons refused ({err:#}); asking in text");
+            let prompt = crate::i18n::chat::QQ_APPROVAL.with(&[tool, summary]);
+            self.send_from(target, &prompt, Some(reply_to), seq).await?;
+        }
+        Ok(())
     }
 
     fn allowed(&self, incoming: &Incoming) -> bool {
@@ -335,21 +384,62 @@ impl QqBot {
     }
 }
 
-/// A reply to an approval request: `Some(true)` allows, `Some(false)` declines.
-fn parse_answer(text: &str) -> Option<bool> {
-    let text = text
+/// A reply to an approval request: whether it allows, and the request
+/// number a button adds (`批准 #3`); typed replies carry none.
+fn parse_answer(text: &str) -> Option<(bool, Option<u64>)> {
+    let text = text.trim();
+    let (word, id) = match text.rsplit_once('#') {
+        Some((word, id)) => (word, Some(id.trim().parse().ok()?)),
+        None => (text, None),
+    };
+    let word = word
         .trim()
         .trim_end_matches(['.', '!', '。', '！'])
         .to_lowercase();
-    match text.as_str() {
+    let allow = match word.as_str() {
         "y" | "yes" | "ok" | "allow" | "是" | "好" | "可以" | "同意" | "允许" | "批准" => {
-            Some(true)
+            true
         }
-        "n" | "no" | "deny" | "否" | "不" | "不行" | "不同意" | "拒绝" | "不允许" => {
-            Some(false)
+        "n" | "no" | "deny" | "decline" | "否" | "不" | "不行" | "不同意" | "拒绝" | "不允许" => {
+            false
         }
-        _ => None,
+        _ => return None,
+    };
+    Some((allow, id))
+}
+
+/// A markdown message with Allow/Decline buttons. Each button sends its
+/// label and the request number as the user's own message, which
+/// `answer_approval` takes like a typed reply.
+fn approval_card(id: u64, tool: &str, summary: &str) -> Value {
+    use crate::i18n::chat::{QQ_ALLOW, QQ_APPROVAL_CARD, QQ_BUTTONS_UNSUPPORTED, QQ_DECLINE};
+    let mut shown: String = summary.chars().take(SUMMARY_CHARS).collect();
+    if shown.len() < summary.len() {
+        shown.push('…');
     }
+    // Keeps the summary inside its code block.
+    let shown = shown.replace("```", "'''");
+    let button = |n: u8, label: &str, style: u8| {
+        json!({
+            "id": n.to_string(),
+            "render_data": { "label": label, "visited_label": label, "style": style },
+            "action": {
+                "type": 2,
+                "permission": { "type": 2 },
+                "data": format!("{label} #{id}"),
+                "enter": true,
+                "unsupport_tips": QQ_BUTTONS_UNSUPPORTED.now(),
+            }
+        })
+    };
+    json!({
+        "msg_type": 2,
+        "markdown": { "content": QQ_APPROVAL_CARD.with(&[tool, &shown]) },
+        "keyboard": { "content": { "rows": [{ "buttons": [
+            button(1, QQ_ALLOW.now(), 1),
+            button(2, QQ_DECLINE.now(), 0),
+        ] }] } }
+    })
 }
 
 /// Answers a QQ turn's approvals: the owner is asked in the conversation and
@@ -375,15 +465,22 @@ impl Approver for QqApprover {
             return false;
         }
         let (tx, rx) = oneshot::channel();
+        let id = self.bot.next_approval.fetch_add(1, Ordering::Relaxed);
         self.bot
             .approvals
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(session.clone(), (self.sender.clone(), tx));
-        let prompt = crate::i18n::chat::QQ_APPROVAL.with(&[tool, summary]);
+            .insert(
+                session.clone(),
+                Pending {
+                    id,
+                    sender: self.sender.clone(),
+                    answer: tx,
+                },
+            );
         let asked = self
             .bot
-            .send_from(&self.target, &prompt, Some(&self.reply_to), &self.seq)
+            .ask_approval(&self.target, id, tool, summary, &self.reply_to, &self.seq)
             .await;
         let allowed = match asked {
             Ok(()) => matches!(
@@ -870,6 +967,10 @@ mod tests {
                         if kind == "groups" && body.get("msg_id").is_some() {
                             return (StatusCode::BAD_REQUEST, axum::Json(json!({"message": "msg expired"})));
                         }
+                        // This user's bot has no markdown permission.
+                        if id == "NOMD" && body["msg_type"] == 2 {
+                            return (StatusCode::BAD_REQUEST, axum::Json(json!({"message": "no markdown permission"})));
+                        }
                         (StatusCode::OK, axum::Json(json!({"id": "out", "timestamp": "2026-10-09T10:00:00+08:00"})))
                     },
                 ),
@@ -936,19 +1037,45 @@ mod tests {
     #[test]
     fn parses_approval_answers() {
         for yes in ["是", "yes", " Y ", "同意。", "OK!"] {
-            assert_eq!(parse_answer(yes), Some(true), "{yes}");
+            assert_eq!(parse_answer(yes), Some((true, None)), "{yes}");
         }
-        for no in ["否", "no", "N", "拒绝！"] {
-            assert_eq!(parse_answer(no), Some(false), "{no}");
+        for no in ["否", "no", "N", "拒绝！", "Decline"] {
+            assert_eq!(parse_answer(no), Some((false, None)), "{no}");
         }
+        assert_eq!(parse_answer("批准 #3"), Some((true, Some(3))));
+        assert_eq!(parse_answer("Decline #12"), Some((false, Some(12))));
         assert_eq!(parse_answer("是什么？"), None);
+        assert_eq!(parse_answer("issue #3"), None);
+        assert_eq!(parse_answer("是 #x"), None);
         assert_eq!(parse_answer(""), None);
     }
 
-    #[tokio::test]
-    async fn only_the_owner_is_asked_and_only_their_answer_counts() {
-        let sent: Sent = Arc::default();
-        let base = fake_qq(sent.clone()).await;
+    #[test]
+    fn approval_cards_keep_the_summary_in_its_code_block() {
+        let card = approval_card(7, "shell", &format!("```{}", "x".repeat(2000)));
+        let text = card["markdown"]["content"].as_str().unwrap();
+        assert_eq!(text.matches("```").count(), 2, "{text}");
+        assert!(text.contains('…'));
+        let buttons = card["keyboard"]["content"]["rows"][0]["buttons"]
+            .as_array()
+            .unwrap();
+        let answers: Vec<_> = buttons
+            .iter()
+            .map(|b| parse_answer(b["action"]["data"].as_str().unwrap()))
+            .collect();
+        assert_eq!(answers, [Some((true, Some(7))), Some((false, Some(7)))]);
+    }
+
+    /// A bot on the fake QQ API, and an approver for `user`'s private chat.
+    async fn approval_bot(
+        sent: Sent,
+        user: &str,
+    ) -> (
+        Arc<QqBot>,
+        impl Fn(bool) -> QqApprover,
+        impl Fn(&str, &str) -> Incoming,
+    ) {
+        let base = fake_qq(sent).await;
         let bot = QqBot::new(QqConfig {
             app_id: "1".into(),
             app_secret: Some("s".into()),
@@ -957,16 +1084,17 @@ mod tests {
             ..QqConfig::default()
         })
         .unwrap();
-        let target = Target::User("U1".into());
-        let approver = |owner| QqApprover {
-            bot: bot.clone(),
-            target: target.clone(),
-            sender: "U1".into(),
+        let target = Target::User(user.into());
+        let (b, t, u) = (bot.clone(), target.clone(), user.to_owned());
+        let approver = move |owner| QqApprover {
+            bot: b.clone(),
+            target: t.clone(),
+            sender: u.clone(),
             owner,
             reply_to: "m1".into(),
             seq: Arc::new(AtomicUsize::new(1)),
         };
-        let message = |sender: &str, text: &str| Incoming {
+        let message = move |sender: &str, text: &str| Incoming {
             id: "m2".into(),
             target: target.clone(),
             sender: sender.into(),
@@ -974,18 +1102,54 @@ mod tests {
             files: Vec::new(),
             voice: Vec::new(),
         };
+        (bot, approver, message)
+    }
+
+    /// Starts an approval and waits until it is asked.
+    async fn ask(
+        bot: &QqBot,
+        approver: QqApprover,
+        summary: &'static str,
+    ) -> tokio::task::JoinHandle<bool> {
+        let before = bot.next_approval.load(Ordering::Relaxed);
+        let asked = tokio::spawn(async move { approver.approve("shell", summary).await });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while bot.next_approval.load(Ordering::Relaxed) == before && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        asked
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_is_asked_and_only_their_answer_counts() {
+        let sent: Sent = Arc::default();
+        let (bot, approver, message) = approval_bot(sent.clone(), "U1").await;
 
         // A guest is declined at once, without a message.
         assert!(!approver(false).approve("shell", "rm -rf x").await);
         assert!(sent.lock().unwrap().is_empty());
 
-        // The owner is asked, as a passive reply to their message.
-        let owner = approver(true);
-        let asked = tokio::spawn(async move { owner.approve("shell", "ls").await });
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while bot.approvals.lock().unwrap().is_empty() && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        // The owner gets a card with buttons, as a passive reply.
+        let asked = ask(&bot, approver(true), "ls").await;
+        let card = sent.lock().unwrap()[0].clone();
+        assert_eq!(card.0, "/v2/users/U1/messages");
+        assert_eq!(card.1["msg_type"], 2);
+        assert_eq!(card.1["msg_id"], "m1");
+        assert_eq!(card.1["msg_seq"], 1);
+        assert!(
+            card.1["markdown"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("ls")
+        );
+        let button = |n: usize| {
+            card.1["keyboard"]["content"]["rows"][0]["buttons"][n]["action"]["data"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let (allow, decline) = (button(0), button(1));
+
         assert!(
             !bot.answer_approval(&message("U1", "帮我看看")),
             "not an answer"
@@ -994,18 +1158,42 @@ mod tests {
             !bot.answer_approval(&message("OTHER", "是")),
             "not the owner"
         );
-        assert!(bot.answer_approval(&message("U1", "是")));
+        assert!(bot.answer_approval(&message("OTHER", &decline)), "dropped");
+        // Tapping Allow sends its text as the owner's message.
+        assert!(bot.answer_approval(&message("U1", &allow)));
         assert!(asked.await.unwrap());
         assert!(
             !bot.answer_approval(&message("U1", "是")),
             "nothing waiting"
         );
-        let sent = sent.lock().unwrap().clone();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].0, "/v2/users/U1/messages");
-        assert_eq!(sent[0].1["msg_id"], "m1");
-        assert_eq!(sent[0].1["msg_seq"], 1);
-        assert!(sent[0].1["content"].as_str().unwrap().contains("ls"));
+
+        // The old card's buttons cannot answer a newer request; typing can.
+        let asked = ask(&bot, approver(true), "pwd").await;
+        assert!(
+            bot.answer_approval(&message("U1", &allow)),
+            "stale, dropped"
+        );
+        assert!(!asked.is_finished());
+        assert!(bot.answer_approval(&message("U1", "否")));
+        assert!(!asked.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn asks_in_text_when_buttons_are_refused() {
+        let sent: Sent = Arc::default();
+        let (bot, approver, message) = approval_bot(sent.clone(), "NOMD").await;
+        let asked = ask(&bot, approver(true), "ls").await;
+        // Retried as an active message, then sent as text.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while sent.lock().unwrap().len() < 3 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let text = sent.lock().unwrap()[2].1.clone();
+        assert_eq!(text["msg_type"], 0);
+        assert_eq!(text["msg_seq"], 2);
+        assert!(text["content"].as_str().unwrap().contains("ls"));
+        assert!(bot.answer_approval(&message("NOMD", "是")));
+        assert!(asked.await.unwrap());
     }
 
     #[test]
