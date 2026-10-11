@@ -223,6 +223,51 @@ const SECTIONS: &[Section] = &[
                 kind: Kind::Int,
             },
             Field {
+                path: &["agent", "time_sense"],
+                label: tr("Time sense", "时间感"),
+                help: tr(
+                    "Each message tells the model the local time, and how long ago you last wrote when it has been a while.",
+                    "每条消息都告诉模型当前本地时间，隔了一段时间再聊时还会告诉它你上次说话是多久以前。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["heartbeat", "enabled"],
+                label: tr("Heartbeat", "心跳"),
+                help: tr(
+                    "Every so often the agent may message you on its own in your private QQ chat, when it has something worth saying; see README \"Heartbeat\".",
+                    "每隔一段时间，智能体可以在你的 QQ 私聊里主动找你，前提是它觉得有值得说的话；见 README 的 \"Heartbeat\"。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["heartbeat", "every_minutes"],
+                label: tr("Heartbeat interval (minutes)", "心跳间隔（分钟）"),
+                help: tr(
+                    "How often it considers reaching out.",
+                    "多久考虑一次要不要主动找你。",
+                ),
+                kind: Kind::Int,
+            },
+            Field {
+                path: &["heartbeat", "quiet_hours"],
+                label: tr("Quiet hours", "免打扰时段"),
+                help: tr(
+                    "Local time HH:MM-HH:MM with no heartbeat; may cross midnight. Empty: none.",
+                    "本地时间 HH:MM-HH:MM，期间不主动找你，可以跨午夜。留空表示没有。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["heartbeat", "max_per_day"],
+                label: tr("Heartbeat messages per day", "每天最多主动消息数"),
+                help: tr(
+                    "At most this many messages it starts in a day.",
+                    "一天里最多主动发几条。",
+                ),
+                kind: Kind::Int,
+            },
+            Field {
                 path: &["guide", "enabled"],
                 label: tr("Add messages to a running turn", "对话中插入补充消息"),
                 help: tr(
@@ -1843,8 +1888,9 @@ mod tests {
         .unwrap();
         // Model (section 2): new id, keep key, two fallbacks, keep retries, cache by number,
         // a bad then a good budget, reset summary model, keep image and audio
-        // models, recall, max steps and the three guide fields.
-        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\ns\n";
+        // models, recall, max steps, time sense, the four heartbeat fields
+        // and the three guide fields.
+        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");

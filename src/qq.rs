@@ -1000,7 +1000,10 @@ mod tests {
             voice: None,
             tools: NoTools,
             store: Store::open_in_memory().unwrap(),
-            config: AgentConfig::default(),
+            config: AgentConfig {
+                time_sense: false,
+                ..AgentConfig::default()
+            },
         });
         let gateway = Gateway::new(agent.clone(), None, Default::default());
         tokio::spawn(run(bot, gateway));

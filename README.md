@@ -626,16 +626,52 @@ guests do not unless granted. A skill that runs commands still needs `shell`.
 `serve` runs jobs on standard 5-field cron schedules in the host's local time.
 A job's prompt runs as a turn in its session; tools set to `ask` are declined
 because nobody is there to approve. A job missed while the Gateway was down
-runs once at startup, then follows its schedule. A heartbeat is a job:
+runs once at startup, then follows its schedule. For a fixed check-in, use a
+job; for an agent that decides on its own when to speak up, see
+[Heartbeat](#heartbeat).
 
 ```sh
-openclaw-rs cron add heartbeat "*/30 * * * *" -s main "Check my notes and reminders"
+openclaw-rs cron add check-in "0 9 * * *" -s main "Check my notes and reminders"
 openclaw-rs cron list
-openclaw-rs cron remove heartbeat
+openclaw-rs cron remove check-in
 ```
 
 The model can also create, list and remove jobs (`cron_add`, `cron_list`,
 `cron_remove`); a job it creates runs in the conversation that asked for it.
+
+## Time sense
+
+Each message reaches the model with the local time (the host's time zone; set
+`TZ` for the service if needed), and, when it has been 30 minutes or more,
+how long ago the person last wrote in that conversation. Like recalled
+memories, the note goes with that turn only and is never stored. Turn it off
+with `agent.time_sense = false`.
+
+## Heartbeat
+
+`serve` can give the agent a quiet turn every so often in your own chat to
+reach out on its own: a follow-up on something you mentioned, a reminder, a
+word after a long silence. It decides itself, and when it has nothing worth
+saying it answers `NO_REPLY`; that turn is then erased from the history, so
+silence leaves no trace and costs only the model call.
+
+```toml
+[heartbeat]
+enabled = true
+# session = "qq:c2c:<openid>"   # default: the private QQ chat of the first qq: owner
+every_minutes = 120
+quiet_hours = "23:00-08:00"    # local time; empty for none
+max_per_day = 3
+# prompt = "Ask how my running is going now and then."
+```
+
+It holds back during quiet hours, after `max_per_day` messages it started
+that day, while its last message is unanswered (for up to 12 hours), while
+you have written in the last 30 minutes, and while a turn is running there.
+The session's person must be in `access.owners`, since the turn uses their
+permissions; `ask` tools are declined, as in scheduled jobs. A message you
+send during a heartbeat turn waits for it. The log says what each heartbeat
+did (`heartbeat: skipped (quiet hours)`, `nothing to say`, `sent …`).
 
 ## Gateway service
 

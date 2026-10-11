@@ -574,6 +574,44 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         }
     }
 
+    /// Gives the agent a heartbeat turn in `session`: what it says is
+    /// delivered there, and a turn it lets pass is erased. Skipped while the
+    /// session is busy. The turn is not registered as running, so a message
+    /// the person sends meanwhile waits for it rather than joining a turn
+    /// that may be erased.
+    pub async fn heartbeat(
+        &self,
+        actor: Actor,
+        session: &str,
+        prompt: &str,
+    ) -> Result<Option<String>> {
+        let lock = self.session_lock(session);
+        let Ok(_turn) = lock.try_lock() else {
+            return Ok(None);
+        };
+        let store = &self.agent.store;
+        let session_id = store.session_id(session)?;
+        let before = store.last_message_id(session_id)?;
+        let result = self
+            .agent
+            .run_turn_until(actor, session, prompt, &[], &Cancel::default(), &mut |_| {})
+            .await;
+        // A turn refused before it started (a spending limit) saved nothing.
+        let said = store.last_message_id(session_id)? > before;
+        let text = match result {
+            Ok(text) if said && !crate::heartbeat::is_silent(&text) => text,
+            other => {
+                store.delete_messages_after(session_id, before)?;
+                return other.map(|_| None);
+            }
+        };
+        let _ = self.updates.send(ServerMsg::Updated {
+            session: session.to_owned(),
+        });
+        self.notify(session, &text).await;
+        Ok(Some(text))
+    }
+
     /// A job runs with the permissions its creator has now, so revoking a
     /// grant also stops their jobs from using it.
     fn job_actor(&self, job: &crate::cron::Job) -> Actor {
@@ -1097,7 +1135,10 @@ mod tests {
             voice: None,
             tools,
             store: store.clone(),
-            config: crate::config::AgentConfig::default(),
+            config: crate::config::AgentConfig {
+                time_sense: false,
+                ..crate::config::AgentConfig::default()
+            },
         });
         let access: AccessConfig = toml::from_str(r#"owners = ["qq:BOSS"]"#).unwrap();
         let gateway = Gateway::new(agent, None, access);
@@ -1166,7 +1207,10 @@ mod tests {
             voice: None,
             tools,
             store: store.clone(),
-            config: crate::config::AgentConfig::default(),
+            config: crate::config::AgentConfig {
+                time_sense: false,
+                ..crate::config::AgentConfig::default()
+            },
         });
         let access: AccessConfig = toml::from_str(r#"owners = ["mail:me@example.org"]"#).unwrap();
         let gateway = Gateway::new(agent, None, access);
@@ -1211,7 +1255,10 @@ mod tests {
             voice: None,
             tools,
             store: store.clone(),
-            config: crate::config::AgentConfig::default(),
+            config: crate::config::AgentConfig {
+                time_sense: false,
+                ..crate::config::AgentConfig::default()
+            },
         });
         let access: AccessConfig = toml::from_str(r#"owners = ["qq:BOSS"]"#).unwrap();
         let gateway = Gateway::new(agent, None, access);
@@ -1297,7 +1344,10 @@ mod tests {
             voice: None,
             tools,
             store: store.clone(),
-            config: crate::config::AgentConfig::default(),
+            config: crate::config::AgentConfig {
+                time_sense: false,
+                ..crate::config::AgentConfig::default()
+            },
         });
         let access: AccessConfig = toml::from_str(r#"owners = ["qq:BOSS"]"#).unwrap();
         let gateway = Gateway::new(agent, None, access);
@@ -1359,6 +1409,99 @@ mod tests {
         }
     }
 
+    struct NoTools;
+
+    #[async_trait]
+    impl Tools for NoTools {
+        fn specs(&self) -> Vec<crate::llm::ToolSpec> {
+            Vec::new()
+        }
+        async fn call(&self, _call: &crate::llm::ToolCall) -> String {
+            String::new()
+        }
+    }
+
+    /// Answers each call with the next of its replies.
+    struct Says(Mutex<Vec<&'static str>>);
+
+    #[async_trait]
+    impl Model for Says {
+        async fn complete(
+            &self,
+            _messages: &[crate::llm::ChatMessage],
+            _tools: &[crate::llm::ToolSpec],
+            _on_text: &mut (dyn for<'t> FnMut(&'t str) + Send),
+        ) -> Result<crate::llm::Completion> {
+            Ok(crate::llm::Completion {
+                text: self.0.lock().unwrap().remove(0).into(),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_heartbeat_speaks_up_or_leaves_no_trace() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let agent = Arc::new(Agent {
+            model: Says(Mutex::new(vec!["NO_REPLY", "面试怎么样？"])),
+            summarizer: None,
+            vision: None,
+            voice: None,
+            tools: NoTools,
+            store: store.clone(),
+            config: crate::config::AgentConfig::default(),
+        });
+        let access: AccessConfig = toml::from_str(r#"owners = ["qq:BOSS"]"#).unwrap();
+        let gateway = Gateway::new(agent, None, access);
+        let chat = Arc::new(Recording(Mutex::default()));
+        gateway.add_notifier(chat.clone());
+        let session = "qq:c2c:BOSS";
+        let boss = gateway.actor("qq:BOSS", session);
+        let id = store.session_id(session).unwrap();
+        store
+            .append(id, &crate::llm::ChatMessage::user("明天面试"))
+            .unwrap();
+
+        // Nothing to say: the turn is erased and nobody is messaged.
+        let said = gateway
+            .heartbeat(boss.clone(), session, "[heartbeat] check in")
+            .await
+            .unwrap();
+        assert_eq!(said, None);
+        assert_eq!(store.history(id, 10).unwrap().len(), 1);
+        assert!(chat.0.lock().unwrap().is_empty());
+
+        // While a turn runs, it waits for another time.
+        let lock = gateway.session_lock(session);
+        let held = lock.lock().await;
+        let busy = gateway.heartbeat(boss.clone(), session, "[heartbeat] check in");
+        assert_eq!(busy.await.unwrap(), None);
+        drop(held);
+
+        // Something to say: delivered, and kept so the next turn knows.
+        let said = gateway
+            .heartbeat(boss, session, "[heartbeat] check in")
+            .await
+            .unwrap();
+        assert_eq!(said.as_deref(), Some("面试怎么样？"));
+        assert_eq!(*chat.0.lock().unwrap(), ["面试怎么样？"]);
+        let history = store.history(id, 10).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[1].content.as_deref(), Some("[heartbeat] check in"));
+        // It is not the person writing.
+        let spoken = store
+            .last_spoken_at(id, crate::agent::AUTOMATIC_PROMPTS)
+            .unwrap();
+        assert!(spoken.is_some());
+        assert_eq!(
+            store
+                .prompts_since(id, crate::heartbeat::PROMPT_PREFIX, 0)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
     /// What the QQ chat receives besides the turn's reply, when a second
     /// message joins the turn.
     async fn acknowledgements(fail_ack: bool) -> Vec<String> {
@@ -1378,7 +1521,10 @@ mod tests {
             voice: None,
             tools,
             store,
-            config: crate::config::AgentConfig::default(),
+            config: crate::config::AgentConfig {
+                time_sense: false,
+                ..crate::config::AgentConfig::default()
+            },
         });
         let gateway = Gateway::new(agent, None, AccessConfig::default());
         let mut guide = Guide::new(None, "off".into(), 0.5, 3);

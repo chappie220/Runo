@@ -33,6 +33,7 @@ pub struct Config {
     pub update: crate::update::UpdateConfig,
     pub guide: GuideConfig,
     pub access: crate::access::AccessConfig,
+    pub heartbeat: crate::heartbeat::HeartbeatConfig,
 }
 
 /// Guided conversation: messages sent while a turn runs join that turn.
@@ -465,6 +466,9 @@ pub struct AgentConfig {
     pub recall_limit: usize,
     /// Token cap on the recalled memories of one turn.
     pub recall_tokens: usize,
+    /// Tells the model the local time with each message, and how long ago
+    /// the person last wrote when it has been a while.
+    pub time_sense: bool,
     /// Where files sent with messages are saved (under `inbox/`); set at
     /// startup from `tools.workspace`, never read from the file.
     #[serde(skip)]
@@ -708,6 +712,7 @@ impl Default for AgentConfig {
             audio_model: None,
             recall_limit: 5,
             recall_tokens: 800,
+            time_sense: true,
             workspace: PathBuf::new(),
             limits: crate::limits::LimitsConfig::default(),
             auto_context: None,

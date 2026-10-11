@@ -15,6 +15,7 @@ mod elevate;
 mod fetch;
 mod gateway;
 mod guide;
+mod heartbeat;
 mod i18n;
 mod identity;
 mod limits;
@@ -550,6 +551,11 @@ async fn run(cli: Cli) -> Result<()> {
                 tokio::spawn(mail::run(bot, gateway.clone()));
             }
             tokio::spawn(gateway.clone().run_scheduler());
+            if let Some(beat) =
+                heartbeat::Heartbeat::from_config(&config.heartbeat, &config.access)?
+            {
+                tokio::spawn(heartbeat::run(beat, gateway.clone()));
+            }
             let idle = gateway.clone();
             tokio::spawn(update::watch(config.update.clone(), move || idle.idle()));
             gateway::serve(gateway, &bind, web.unwrap_or(config.gateway.web)).await
