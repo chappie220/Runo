@@ -31,26 +31,27 @@ On a Raspberry Pi (64-bit OS) or any x86_64/aarch64 Linux, from GitHub
 Releases:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/install.sh | doas sh
-openclaw-rs init
+curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/install.sh | sh
 ```
 
 The script picks the binary for this machine, checks it against the
 release's `SHA256SUMS` and that it runs, and installs it to
-`/usr/local/bin` (`~/.local/bin` without root). It needs `curl` or `wget`
-(on Alpine: `doas apk add curl`). Options, after `sh -s --`:
+`/usr/local/bin`. Run as an ordinary user, it writes there through `sudo` or
+`doas`, which ask for your password; with neither (or no terminal) it uses
+`~/.local/bin`. A first install then runs `openclaw-rs init` right away. It
+needs `curl` or `wget` (on Alpine: `apk add curl`). Options, after `sh -s --`:
 
 ```sh
 curl -fsSL .../install.sh | sh -s -- --dir ~/bin        # somewhere else
-curl -fsSL .../install.sh | doas sh -s -- --version 0.2.0
-curl -fsSL .../install.sh | doas sh -s -- --service pi  # also the Gateway service
-curl -fsSL .../install.sh | sh -s -- --service "$USER"  # as yourself, no root
+curl -fsSL .../install.sh | sh -s -- --version 0.2.0
+curl -fsSL .../install.sh | sh -s -- --service pi       # also the Gateway service
 ```
 
 `--service pi` installs the service right away when `pi` already has a
-config, and otherwise prints the two commands to run (`init` as `pi`, then
-`gateway install`). Without root it can only name your own account, and the
-Gateway runs as you (see [Gateway service](#gateway-service)). In a checkout, run `sh scripts/install.sh --help`.
+config (asking for root through sudo/doas when needed); for yourself without
+a config it runs `init`, which ends by starting the Gateway; for another
+account it prints the two commands to run (`init` as `pi`, then
+`gateway install`). See [Gateway service](#gateway-service). In a checkout, run `sh scripts/install.sh --help`.
 
 ## Build for Raspberry Pi (Alpine, aarch64)
 
@@ -84,16 +85,20 @@ piped input still takes typed numbers:
    OpenRouter before it is kept; `OPENROUTER_API_KEY`, when set, is used
    and checked instead;
 3. the main model: search OpenRouter's live model list by name or maker
-   and pick one. Each line shows the context size, the price per
+   and pick one with ↑/↓. Each line shows the context size, the price per
    million tokens and 🖼 for models that see images. Only models that can
    call tools are listed, since the agent needs them; any other id can be
    typed in full;
 4. if that model cannot see images, whether to pick an image model for
    pictures people send and browser screenshots (`agent.vision_model`);
-5. whether to start the Gateway (Web UI, QQ, email) in the background now,
-   as with `openclaw-rs gateway install` (see [Gateway service](#gateway-service)).
+5. whether to start the Gateway (Web UI, QQ, email) now, as with
+   `openclaw-rs gateway install`: at boot where the system allows, asking
+   for your password through sudo/doas for the system service (see
+   [Gateway service](#gateway-service)).
 
-It also says whether a browser was found. There is no default model and
+It also says whether a browser was found, and when none is, offers to
+install Chromium with the system's package manager (apk, apt-get, dnf,
+pacman or zypper, through sudo/doas). There is no default model and
 nothing is picked for you. Running `chat`, `ask` or `serve` in a terminal
 before setting up starts `init` on its own and then carries on; without a
 terminal (a service, a pipe) they stop with a message pointing to `init`.
@@ -145,7 +150,11 @@ section (model and context, tools, gateway, QQ, email, web search, browser, acce
 Sections and fields are picked with ↑/↓ and Enter, Esc goes back; each field
 shows the value in effect and its help. Choices and yes/no fields are menus
 (with "Default" to reset); for typed fields Enter keeps the value and `-`
-resets it. Without a terminal (piped input) it walks every field of a
+resets it. Model fields (main, summary, image, audio and search model)
+search OpenRouter's model list like `init` does, showing only models that
+fit (tools, image or audio input). The decision model choices for guided
+conversation and command review show the model each one runs, e.g.
+`openrouter/typesafe/jev-1.13`; the field below sets another model id. Without a terminal (piped input) it walks every field of a
 section instead: Enter keeps, `-` resets, `?` explains. Secrets are typed without echo and the prompt says
 when an environment variable overrides them; `+` generates a Gateway token.
 Comments and keys the editor does not know are kept, every change is checked
@@ -621,13 +630,18 @@ How it runs depends on who asks and what the host has:
 | not root otherwise, or no OpenRC | you: a background process, pid in `~/.openclaw-rs/gateway.pid` | `~/.openclaw-rs/gateway.log` | no |
 
 ```sh
-export OPENROUTER_API_KEY=sk-or-... OPENCLAW_RS_TOKEN=...
-doas openclaw-rs gateway install --user pi   # system service for pi (or sudo -E)
+openclaw-rs gateway install --user pi   # system service for pi
 ```
 
+Run as an ordinary user on OpenRC without user services, `gateway install`
+asks for root through sudo or doas (they ask for your password) and installs
+the system service running as you, so it starts at boot; if that is refused
+it falls back to a background process. Likewise `start`, `stop`, `restart`
+and `uninstall` of a system service go through sudo/doas, as does
+`update` when the binary sits where only root can write.
+
 The system service runs under `supervise-daemon` with automatic restart and
-state in the account's `~/.openclaw-rs`; only root can start or stop it, but
-anyone can ask for its `status`. `OPENROUTER_API_KEY`, `OPENCLAW_RS_TOKEN`,
+state in the account's `~/.openclaw-rs`; anyone can ask for its `status`. `OPENROUTER_API_KEY`, `OPENCLAW_RS_TOKEN`,
 `QQ_APP_SECRET`, `MAIL_PASSWORD` and `TYPESAFE_API_KEY` from the installing
 shell are copied into the service's `conf.d` file (mode 0600). User services
 need `XDG_RUNTIME_DIR` set (elogind or pam_env). A background process started
@@ -639,16 +653,16 @@ port) with the end of its log.
 
 ```sh
 openclaw-rs update --check     # is there a newer release?
-doas openclaw-rs update        # install it, and restart the service if it runs
-doas openclaw-rs update --rollback   # back to the binary the last update replaced
+openclaw-rs update             # install it (asking for root when needed), restart the service
+openclaw-rs update --rollback  # back to the binary the last update replaced
 ```
 
 Or with the script, which also works when the installed binary is too old
 to have `update`, or broken (same options as the install script):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/update.sh | doas sh
-curl -fsSL .../update.sh | doas sh -s -- --version 0.1.0   # a given release, also to go back
+curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/update.sh | sh
+curl -fsSL .../update.sh | sh -s -- --version 0.1.0   # a given release, also to go back
 ```
 
 `update` takes the latest release of `update.repo` on GitHub, downloads the

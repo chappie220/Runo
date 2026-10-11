@@ -20,7 +20,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Padding, Paragraph};
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthChar;
 
@@ -841,8 +841,10 @@ impl App {
         } else {
             Color::Cyan
         };
+        // One column of padding on each side, as input_width and the cursor assume.
         let block = Block::bordered()
             .border_style(Style::new().fg(border))
+            .padding(Padding::horizontal(1))
             .title(format!(" {} ", self.session));
         frame.render_widget(Paragraph::new(text).block(block), input);
         if self.approval.is_none() {
@@ -1295,6 +1297,20 @@ mod tests {
 
     fn app() -> App {
         App::new(Lang::En, "Claw".into(), "x/y".into(), "main".into())
+    }
+
+    #[test]
+    fn typed_text_starts_where_the_cursor_does() {
+        let mut app = App::new(Lang::En, "agent".into(), "m".into(), "main".into());
+        app.input.insert('/');
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        // The input box is the last three rows; its text row is the second-to-last.
+        assert_eq!(buffer[(2, 8)].symbol(), "/");
+        assert_eq!(buffer[(1, 8)].symbol(), " ");
+        terminal.backend_mut().assert_cursor_position((3, 8));
     }
 
     #[test]

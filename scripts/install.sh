@@ -4,12 +4,17 @@
 # that it runs, then puts it in place. The binary it replaces is kept as
 # openclaw-rs.old.
 #
+# What needs root (writing /usr/local/bin, the system service) goes through
+# sudo or doas, which ask for your password. A first install then runs
+# `openclaw-rs init` to set it up.
+#
 #   curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/install.sh | sh
-#   curl -fsSL .../install.sh | doas sh -s -- --service pi
+#   curl -fsSL .../install.sh | sh -s -- --service pi
 #
 # Options:
-#   --dir DIR          install into DIR (default: /usr/local/bin as root,
-#                      ~/.local/bin otherwise; on --update, where it is now)
+#   --dir DIR          install into DIR (default: /usr/local/bin, or
+#                      ~/.local/bin without root, sudo or doas; on --update,
+#                      where it is now)
 #   --version X.Y.Z    this release instead of the latest
 #   --service USER     also install the Gateway service running as USER
 #                      (another account needs root; without root, only yourself)
@@ -48,7 +53,7 @@ die() {
 }
 
 usage() {
-	sed -n '2,20p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+	sed -n '2,24p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
 }
 
 while [ $# -gt 0 ]; do
@@ -77,6 +82,26 @@ done
 
 is_root() {
 	[ "$(id -u)" = 0 ]
+}
+
+# as_root CMD...: runs CMD as root, through sudo or doas (which ask for the password).
+as_root() {
+	if is_root; then
+		"$@"
+	elif command -v sudo >/dev/null 2>&1; then
+		sudo "$@"
+	elif command -v doas >/dev/null 2>&1; then
+		doas "$@"
+	else
+		return 127
+	fi
+}
+
+# Whether as_root can work: root already, or sudo/doas and a terminal to ask on.
+can_ask() {
+	is_root && return 0
+	{ command -v sudo || command -v doas; } >/dev/null 2>&1 || return 1
+	(: </dev/tty) 2>/dev/null
 }
 
 # The release target of this machine.
@@ -137,16 +162,16 @@ restart_service() {
 	if "$BINARY" service restart >/dev/null 2>&1; then
 		say "Restarted the Gateway." "已重启 Gateway。"
 	else
-		say "Restart the Gateway to use it: doas $NAME service restart" \
-			"重启 Gateway 后生效：doas $NAME service restart"
+		say "Restart the Gateway to use it: $NAME gateway restart" \
+			"重启 Gateway 后生效：$NAME gateway restart"
 	fi
 }
 
 # Checked before anything is downloaded.
 if [ -n "$SERVICE_USER" ]; then
-	if ! is_root && [ "$SERVICE_USER" != "$(id -un)" ]; then
-		die "--service for another account needs root: run it with doas or sudo, or name yourself ($(id -un))" \
-			"为其他账号安装 --service 需要 root：请用 doas 或 sudo 运行，或者填你自己（$(id -un)）"
+	if [ "$SERVICE_USER" != "$(id -un)" ] && ! can_ask; then
+		die "--service for another account needs root, and cannot ask for it here (no sudo or doas, or no terminal): run it as root, or name yourself ($(id -un))" \
+			"为其他账号安装 --service 需要 root，这里无法请求（没有 sudo/doas 或没有终端）：请用 root 运行，或者填你自己（$(id -un)）"
 	fi
 	home=$(awk -F: -v u="$SERVICE_USER" '$1 == u { print $6 }' /etc/passwd)
 	[ -n "$home" ] || die "no account named $SERVICE_USER" "没有叫 $SERVICE_USER 的账号"
@@ -163,7 +188,7 @@ if [ -z "$DIR" ]; then
 			die "$NAME is not installed (not on PATH); install it first, or pass --dir" \
 				"没有安装 $NAME（PATH 里找不到）；请先安装，或用 --dir 指定位置"
 		DIR=$(dirname "$current")
-	elif is_root; then
+	elif is_root || [ -w /usr/local/bin ] || can_ask; then
 		DIR=/usr/local/bin
 	else
 		DIR="$HOME/.local/bin"
@@ -198,17 +223,24 @@ else
 	"$TMP/$NAME" --version 2>/dev/null | grep -q "$VERSION" ||
 		die "the downloaded binary does not run on this machine" "下载的程序无法在这台机器上运行"
 
+	SUDO=""
 	mkdir -p "$DIR" 2>/dev/null || true
 	if [ ! -w "$DIR" ]; then
-		die "cannot write $DIR: run it with doas or sudo, or pass --dir" \
-			"无法写入 $DIR：请用 doas 或 sudo 运行，或用 --dir 指定位置"
+		can_ask ||
+			die "cannot write $DIR, and cannot ask for root here (no sudo or doas, or no terminal): run it as root, or pass --dir" \
+				"无法写入 $DIR，这里也无法请求 root（没有 sudo/doas 或没有终端）：请用 root 运行，或用 --dir 指定位置"
+		say "Writing to $DIR needs root; sudo or doas may ask for your password." \
+			"写入 $DIR 需要 root；sudo 或 doas 可能会要求输入你的密码。"
+		SUDO=as_root
+		$SUDO mkdir -p "$DIR"
 	fi
 	# Copied into the same directory first, so the switch is one rename.
-	cp "$TMP/$NAME" "$DIR/.$NAME.new.$$"
+	$SUDO cp "$TMP/$NAME" "$DIR/.$NAME.new.$$"
+	$SUDO chmod 755 "$DIR/.$NAME.new.$$"
 	if [ -f "$BINARY" ]; then
-		cp -p "$BINARY" "$BINARY.old"
+		$SUDO cp -p "$BINARY" "$BINARY.old"
 	fi
-	mv -f "$DIR/.$NAME.new.$$" "$BINARY"
+	$SUDO mv -f "$DIR/.$NAME.new.$$" "$BINARY"
 	if [ -n "$have" ]; then
 		say "Updated to $VERSION; the previous binary is kept as $BINARY.old." \
 			"已更新到 $VERSION；旧版本保存在 $BINARY.old。"
@@ -218,32 +250,51 @@ else
 	fi
 fi
 
-if [ -n "$SERVICE_USER" ]; then
-	if ! is_root; then
-		if [ -f "${OPENCLAW_RS_HOME:-$home/.openclaw-rs}/config.toml" ]; then
-			"$BINARY" gateway install
-		else
-			say "Set up your agent first, then start the Gateway:" "请先完成设置，然后启动 Gateway："
-			echo "  $BINARY init"
-			echo "  $BINARY gateway install"
-		fi
-	elif [ -f "$home/.openclaw-rs/config.toml" ]; then
-		"$BINARY" gateway install --user "$SERVICE_USER"
-	else
-		say "Set up $SERVICE_USER's agent first, then install the service:" \
-			"请先为 $SERVICE_USER 完成设置，然后安装服务："
-		echo "  doas -u $SERVICE_USER $BINARY init"
-		echo "  doas $BINARY gateway install --user $SERVICE_USER"
-	fi
-	exit 0
-fi
-
 if [ "$MODE" = install ] && [ -z "$have" ]; then
 	case ":$PATH:" in
 	*":$DIR:"*) ;;
 	*) say "$DIR is not on your PATH; add it: export PATH=\"$DIR:\$PATH\"" \
 		"$DIR 不在 PATH 里；请添加：export PATH=\"$DIR:\$PATH\"" ;;
 	esac
-	say "Next: $NAME init   (then $NAME doctor to check the setup)" \
-		"下一步：$NAME init   （然后用 $NAME doctor 检查设置）"
+fi
+
+has_tty() {
+	(: </dev/tty) 2>/dev/null
+}
+
+if [ -n "$SERVICE_USER" ]; then
+	if [ "$SERVICE_USER" = "$(id -un)" ]; then
+		config="${OPENCLAW_RS_HOME:-$home/.openclaw-rs}/config.toml"
+	else
+		config="$home/.openclaw-rs/config.toml"
+	fi
+	if [ -f "$config" ]; then
+		# Asks for root itself when the service needs it.
+		"$BINARY" gateway install --user "$SERVICE_USER"
+	elif [ "$SERVICE_USER" = "$(id -un)" ] && has_tty; then
+		# Setup ends by offering to start the Gateway.
+		echo
+		"$BINARY" init </dev/tty
+	elif [ "$SERVICE_USER" = "$(id -un)" ]; then
+		say "Set up your agent first, then start the Gateway:" "请先完成设置，然后启动 Gateway："
+		echo "  $BINARY init"
+		echo "  $BINARY gateway install"
+	else
+		say "Set up $SERVICE_USER's agent first, then install the service:" \
+			"请先为 $SERVICE_USER 完成设置，然后安装服务："
+		echo "  sudo -u $SERVICE_USER $BINARY init"
+		echo "  $BINARY gateway install --user $SERVICE_USER"
+	fi
+	exit 0
+fi
+
+# A first install goes straight on to setup, which can also start the Gateway.
+if [ "$MODE" = install ] && [ ! -f "${OPENCLAW_RS_HOME:-$HOME/.openclaw-rs}/config.toml" ]; then
+	if has_tty; then
+		echo
+		"$BINARY" init </dev/tty
+	else
+		say "Next: $NAME init   (then $NAME doctor to check the setup)" \
+			"下一步：$NAME init   （然后用 $NAME doctor 检查设置）"
+	fi
 fi

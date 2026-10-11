@@ -185,8 +185,8 @@ const GATEWAY_HOW: Tr = tr(
     "Gateway 在 http://{} 提供 Web UI，并连接 QQ 和邮件。在后台运行时，关掉终端也会继续运行。",
 );
 const GATEWAY_ASK: Tr = tr(
-    "Start the Gateway in the background now? [Y/n]: ",
-    "现在在后台启动 Gateway？[Y/n]：",
+    "Start the Gateway now, and at boot where this system allows (may ask for your password)? [Y/n]: ",
+    "现在启动 Gateway，并尽量设为开机自启（可能要求输入你的密码）？[Y/n]：",
 );
 const GATEWAY_LATER: Tr = tr(
     "Start it later with `openclaw-rs gateway start`, or `openclaw-rs serve` in the foreground.",
@@ -232,8 +232,16 @@ const NO_CATALOG: Tr = tr(
 );
 const KEEP_MODEL: Tr = tr("Keep the model {}? [Y/n]: ", "保留模型 {}？[Y/n]：");
 const MODEL_HOW: Tr = tr(
-    "Search by name or maker (claude, gpt, gemini, qwen, deepseek...); Enter lists the newest. Only models that can use tools are shown. 🖼 = can see images.",
-    "按名称或厂商搜索（claude、gpt、gemini、qwen、deepseek……）；直接回车列出最新的。只显示能调用工具的模型。🖼 = 能看图片。",
+    "Search by name or maker (claude, gpt, gemini, qwen, deepseek...); Enter lists the newest. 🖼 = can see images.",
+    "按名称或厂商搜索（claude、gpt、gemini、qwen、deepseek……）；直接回车列出最新的。🖼 = 能看图片。",
+);
+const ONLY_TOOLS: Tr = tr(
+    "Only models that can use tools are shown.",
+    "只显示能调用工具的模型。",
+);
+const ONLY_AUDIO: Tr = tr(
+    "Only models that take audio are shown.",
+    "只显示能输入音频的模型。",
 );
 const SEARCH_PROMPT: Tr = tr("Search: ", "搜索：");
 const NO_MATCH: Tr = tr(
@@ -282,6 +290,14 @@ const BROWSER_MISSING: Tr = tr(
     "· No browser found, so the agent has no browser tool. Install Chromium to add one (apk add chromium / apt install chromium) and restart.",
     "· 没有找到浏览器，所以智能体没有浏览器工具。安装 Chromium 即可启用（apk add chromium / apt install chromium），然后重启。",
 );
+const BROWSER_INSTALL: Tr = tr(
+    "No browser found; the agent needs one to open real web pages. Install Chromium now (may ask for your password)? [Y/n]: ",
+    "没有找到浏览器；智能体打开真实网页需要它。现在安装 Chromium 吗（可能要求输入你的密码）？[Y/n]：",
+);
+const BROWSER_INSTALL_FAILED: Tr = tr(
+    "! Could not install Chromium: {}",
+    "! 无法安装 Chromium：{}",
+);
 const ABORTED: Tr = tr(
     "Setup ended; nothing was saved.",
     "设置已结束，没有保存任何内容。",
@@ -323,6 +339,8 @@ pub const ALL: &[Tr] = &[
     NO_CATALOG,
     KEEP_MODEL,
     MODEL_HOW,
+    ONLY_TOOLS,
+    ONLY_AUDIO,
     SEARCH_PROMPT,
     NO_MATCH,
     PICK_PROMPT,
@@ -337,6 +355,8 @@ pub const ALL: &[Tr] = &[
     CONTEXT_AUTO,
     BROWSER_FOUND,
     BROWSER_MISSING,
+    BROWSER_INSTALL,
+    BROWSER_INSTALL_FAILED,
     ABORTED,
     DONE,
 ];
@@ -436,27 +456,46 @@ pub fn interactive() -> bool {
 pub async fn run(path: &Path, lang: Lang, offer_gateway: bool) -> Result<Option<Lang>> {
     let config = Config::load(path).unwrap_or_default();
     let catalog = OpenRouter::new(&config.model.base_url)?;
-    let browser = crate::browser::find_installed().filter(|_| config.browser.enabled);
     let mut term = setup::terminal(lang);
     let mut start = || crate::service::install(None, Some(path));
-    let gateway: Option<&mut dyn FnMut() -> Result<()>> = if offer_gateway {
-        Some(&mut start)
-    } else {
-        None
+    let mut install = || {
+        crate::elevate::install_packages(&["chromium"])?;
+        Ok(crate::browser::find_installed())
+    };
+    let host = Host {
+        browser: crate::browser::find_installed().filter(|_| config.browser.enabled),
+        install_browser: (config.browser.enabled && crate::elevate::can_ask())
+            .then_some(&mut install as &mut dyn FnMut() -> Result<Option<PathBuf>>),
+        gateway: offer_gateway.then_some(&mut start as &mut dyn FnMut() -> Result<()>),
     };
     // Typed answers come from a blocking terminal; that is all this process does now.
-    wizard(path, &mut term, &catalog, browser, gateway).await
+    wizard(path, &mut term, &catalog, host).await
 }
 
-/// The setup itself, on any terminal and catalog. `gateway` starts the
-/// Gateway in the background once the config is saved.
+/// What setup can do on this machine besides writing config.toml.
+#[derive(Default)]
+pub struct Host<'a> {
+    /// The browser found, if any.
+    pub browser: Option<PathBuf>,
+    /// Installs a browser with the package manager (asking for root) and
+    /// says where it is now.
+    pub install_browser: Option<&'a mut dyn FnMut() -> Result<Option<PathBuf>>>,
+    /// Starts the Gateway in the background once the config is saved.
+    pub gateway: Option<&'a mut dyn FnMut() -> Result<()>>,
+}
+
+/// The setup itself, on any terminal and catalog.
 pub async fn wizard<R: BufRead, W: Write>(
     path: &Path,
     term: &mut Term<R, W>,
     catalog: &dyn Catalog,
-    browser: Option<PathBuf>,
-    gateway: Option<&mut dyn FnMut() -> Result<()>>,
+    host: Host<'_>,
 ) -> Result<Option<Lang>> {
+    let Host {
+        mut browser,
+        install_browser,
+        gateway,
+    } = host;
     let mut doc = setup::load(path)?;
     let config = setup::parse(&doc).unwrap_or_default();
     term.tell(WELCOME, &[])?;
@@ -573,7 +612,7 @@ pub async fn wizard<R: BufRead, W: Write>(
     }
     let model = match model {
         Some(model) => model,
-        None => match pick(term, &models, false).await? {
+        None => match pick(term, &models, Need::Tools)? {
             Some(model) => model,
             None => return aborted(term),
         },
@@ -590,7 +629,7 @@ pub async fn wizard<R: BufRead, W: Write>(
                 return aborted(term);
             };
             if wanted {
-                let Some(vision) = pick(term, &models, true).await? else {
+                let Some(vision) = pick(term, &models, Need::Images)? else {
                     return aborted(term);
                 };
                 setup::set(
@@ -616,6 +655,20 @@ pub async fn wizard<R: BufRead, W: Write>(
                 &crate::config::short_tokens(budget_for(window, info.max_output)),
             ],
         )?;
+    }
+    if browser.is_none()
+        && let Some(install) = install_browser
+    {
+        let Some(yes) = term.confirm(BROWSER_INSTALL.get(term.lang), true)? else {
+            return aborted(term);
+        };
+        if yes {
+            term.out.flush()?;
+            match install() {
+                Ok(found) => browser = found,
+                Err(err) => term.tell(BROWSER_INSTALL_FAILED, &[&format!("{err:#}")])?,
+            }
+        }
     }
     match &browser {
         Some(path) => term.tell(BROWSER_FOUND, &[&path.display().to_string()])?,
@@ -672,12 +725,36 @@ fn save(path: &Path, doc: &DocumentMut) -> Result<()> {
     setup::write_private(path, &text)
 }
 
-/// Lets the person search the catalog and pick a model; `images` only offers
-/// models that can see images. `None` when input ended.
-async fn pick<R: BufRead, W: Write>(
+/// What a model is picked for, which decides what it must be able to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    /// Runs the agent: must call tools.
+    Tools,
+    /// Runs the agent on messages with images: tools and image input.
+    Images,
+    /// Transcribes voice messages: audio input.
+    Audio,
+    /// Writes text, such as summaries: anything goes.
+    Text,
+}
+
+impl Need {
+    fn fits(self, m: &ModelInfo) -> bool {
+        match self {
+            Self::Tools => m.tools,
+            Self::Images => m.tools && m.images,
+            Self::Audio => m.audio,
+            Self::Text => true,
+        }
+    }
+}
+
+/// Lets the person search the catalog and pick a model for `need`. `None`
+/// when input ended.
+pub(crate) fn pick<R: BufRead, W: Write>(
     term: &mut Term<R, W>,
     models: &[ModelInfo],
-    images: bool,
+    need: Need,
 ) -> Result<Option<String>> {
     if models.is_empty() {
         loop {
@@ -690,11 +767,16 @@ async fn pick<R: BufRead, W: Write>(
         }
     }
     term.tell(MODEL_HOW, &[])?;
+    match need {
+        Need::Tools | Need::Images => term.tell(ONLY_TOOLS, &[])?,
+        Need::Audio => term.tell(ONLY_AUDIO, &[])?,
+        Need::Text => {}
+    }
     loop {
         let Some(query) = term.ask(SEARCH_PROMPT.get(term.lang))? else {
             return Ok(None);
         };
-        let found = search(models, &query, images);
+        let found = search(models, &query, need);
         if found.is_empty() {
             term.tell(NO_MATCH, &[])?;
             continue;
@@ -746,7 +828,7 @@ async fn pick<R: BufRead, W: Write>(
                 }
             },
         };
-        if !chosen.tools {
+        if matches!(need, Need::Tools | Need::Images) && !chosen.tools {
             let Some(yes) = term.confirm(&NO_TOOLS.fill(term.lang, &[&chosen.id]), false)? else {
                 return Ok(None);
             };
@@ -759,13 +841,13 @@ async fn pick<R: BufRead, W: Write>(
 }
 
 /// Models matching every word of `query` in their id or name, newest first
-/// as the catalog lists them. Models without tools, and `:batch` variants
+/// as the catalog lists them. Models unfit for `need`, and `:batch` variants
 /// (asynchronous batch jobs, not chat), are only taken when typed by id.
-fn search<'a>(models: &'a [ModelInfo], query: &str, images: bool) -> Vec<&'a ModelInfo> {
+fn search<'a>(models: &'a [ModelInfo], query: &str, need: Need) -> Vec<&'a ModelInfo> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     models
         .iter()
-        .filter(|m| m.tools && (!images || m.images) && !m.id.ends_with(":batch"))
+        .filter(|m| need.fits(m) && !m.id.ends_with(":batch"))
         .filter(|m| {
             let text = format!("{} {}", m.id, m.name).to_lowercase();
             words.iter().all(|w| text.contains(w.as_str()))
@@ -878,7 +960,9 @@ mod tests {
             raw: false,
             lang: Lang::En,
         };
-        let done = wizard(path, &mut term, catalog, None, None).await.unwrap();
+        let done = wizard(path, &mut term, catalog, Host::default())
+            .await
+            .unwrap();
         (done, String::from_utf8(term.out).unwrap())
     }
 
@@ -956,8 +1040,8 @@ mod tests {
         let path = dir.path().join("config.toml");
         let catalog = fake();
         // English (already highlighted); key; search "sees", pick the first;
-        // yes (highlighted) to the Gateway.
-        let script = "\rsk-good\nsees\n\r\r";
+        // yes (highlighted) to installing a browser and to the Gateway.
+        let script = "\rsk-good\nsees\n\r\r\r";
         let mut term = Term {
             input: script.as_bytes(),
             out: Vec::new(),
@@ -971,12 +1055,18 @@ mod tests {
             started += 1;
             Ok(())
         };
-        let done = wizard(&path, &mut term, &catalog, None, Some(&mut start))
-            .await
-            .unwrap();
+        let mut install = || Ok(Some(PathBuf::from("/usr/bin/chromium")));
+        let host = Host {
+            browser: None,
+            install_browser: Some(&mut install),
+            gateway: Some(&mut start),
+        };
+        let done = wizard(&path, &mut term, &catalog, host).await.unwrap();
         let out = String::from_utf8(term.out).unwrap();
         assert_eq!(done, Some(Lang::En), "{out}");
         assert_eq!(started, 1);
+        assert!(out.contains("Install Chromium"), "{out}");
+        assert!(out.contains("Browser: /usr/bin/chromium"), "{out}");
         assert!(out.contains("[5/5] Gateway"), "{out}");
         assert!(out.contains("http://127.0.0.1:18789"), "{out}");
         assert!(out.contains("Pick a model › other/sees"), "{out}");
@@ -993,15 +1083,23 @@ mod tests {
             lang: Lang::En,
         };
         let mut fail = || anyhow::bail!("port busy");
-        wizard(&path, &mut term, &catalog, None, Some(&mut fail))
-            .await
-            .unwrap();
+        let mut install = || anyhow::bail!("apk failed");
+        let host = Host {
+            browser: None,
+            install_browser: Some(&mut install),
+            gateway: Some(&mut fail),
+        };
+        wizard(&path, &mut term, &catalog, host).await.unwrap();
         let out = String::from_utf8(term.out).unwrap();
         assert!(
             out.contains("Could not start the Gateway: port busy"),
             "{out}"
         );
         assert!(out.contains("openclaw-rs gateway start"), "{out}");
+        assert!(
+            out.contains("Could not install Chromium: apk failed"),
+            "{out}"
+        );
         assert!(path.exists());
     }
 
@@ -1049,6 +1147,6 @@ mod tests {
         let key = serde_json::json!({"data": {"limit_remaining": null, "usage": 1.25}});
         assert_eq!(credit(&key).as_deref(), Some("$1.25 used, no limit"));
         assert_eq!(money(2.5), "2.5");
-        assert_eq!(search(&models, "", false).len(), 1);
+        assert_eq!(search(&models, "", Need::Tools).len(), 1);
     }
 }

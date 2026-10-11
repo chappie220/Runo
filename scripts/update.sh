@@ -3,7 +3,7 @@
 # (checksum checked, the previous binary kept as openclaw-rs.old, a running
 # Gateway restarted when this account may).
 #
-#   curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/update.sh | doas sh
+#   curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/update.sh | sh
 #   sh update.sh --version 0.2.0      # a given release, also to go back
 #
 # Takes the same options as install.sh (--dir, --version, --force).
