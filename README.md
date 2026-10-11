@@ -999,7 +999,7 @@ prompt_cache = "auto"                # auto | on | off: cache_control breakpoint
 [agent]
 system_prompt = "You are a helpful personal assistant running on OpenClaw."
 max_steps = 25       # model calls per turn before giving up
-context_tokens = 64000  # token budget per model call; keep below the model's window
+context_tokens = "auto"  # budget per model call: auto, or e.g. "128k", "1m"
 # summary_model = "..."  # model that writes the context summary; default: model.model
 # vision_model = "..."   # model for calls with images; default: model.model
 
@@ -1018,6 +1018,15 @@ assistant's replies. When a conversation outgrows `context_tokens`, it is cut
 back to half the budget: the oldest turns, tool output included, are folded
 by the model into a running summary sent at the start of the window.
 The full history stays in `chats.sqlite`.
+
+`context_tokens = "auto"` (the default) reads the window of `model.model`
+(and `agent.vision_model`, whichever is smaller) from the model list on
+OpenRouter, cached in `<state dir>/model-windows.json` for a week, and keeps
+room for the answer: what the provider lists as the longest answer, else an
+eighth of the window, at least 4k and at most a quarter. A 200k model with
+64k answers gets 150k. When the window cannot be found it uses 64k;
+`openclaw-rs doctor` says what it came to. A fixed budget is written with k
+(1,000) or m (1,000,000): `"128k"`, `"1.5m"`; a plain number still works.
 The budget is corrected per session by how far the token estimate has been
 from the provider's own counts. If the summary call fails, nothing
 is moved and the next call tries again. The owner can send `/compact` in any
