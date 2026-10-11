@@ -764,8 +764,15 @@ allow = []                # user/group openids allowed to talk to the bot
 Each private chat and each group is its own session (`qq:c2c:<openid>`,
 `qq:group:<openid>`). The log prints every sender's openid, so you can fill in
 `allow`. `allow` only decides who may chat; what a sender may make the agent
-do is set under [Access](#access). QQ users cannot approve tools, so `ask`
-tools are declined there; if the access settings let every QQ user run shell
+do is set under [Access](#access). When a QQ turn reaches an `ask` tool, an
+owner (`access.owners`) is asked in the same chat with a card showing the tool
+and its summary, with **批准 / Allow** and **拒绝 / Decline** buttons; replying
+`是`/`yes` or `否`/`no` works too. A button only answers the request it came
+with, and only that owner's answer counts; an approval nobody answers within
+five minutes is declined. Buttons need the bot's markdown and message-button
+permissions on the QQ Open Platform; without them the question goes out as
+plain text and you reply `是` or `否`. Anyone else's `ask` tools are declined at once, without asking. If
+the access settings let every QQ user run shell
 commands or write files, the Gateway refuses to start QQ until `allow` is set.
 Replies go out as passive replies (up to 4 messages per
 private message, 5 per group message, about 1500 characters each) and fall
@@ -825,8 +832,8 @@ Outlook/Hotmail personal accounts only allow OAuth sign-in and are not supported
   "Sends" covers replies, scheduled-job results and the `send_mail` tool,
   which lets the model write to someone first. `send_mail` needs the `mail`
   [capability](#access) (owners only, unless granted) and follows
-  `tools.mail` (`ask` by default, so it is declined from QQ and email, where
-  nobody can approve).
+  `tools.mail` (`ask` by default, so a QQ owner is asked in the chat, and it
+  is declined for QQ guests and from email, where nobody can approve).
 
   `allow` (the default) requires `allow`, because anyone could otherwise
   spend your model credits by email. In `receive` the model still reads mail
@@ -941,9 +948,10 @@ Approval is enforced by the program, not by the model's instructions. The
 Awaiting approval → Active`), for the first identity and for every later
 change alike:
 
-- In the terminal and the Web UI, the exact stored draft is put to you at
-  once as an approval prompt; yes saves it, no rejects it.
-- On QQ and email, the reply ends with the exact draft as stored, its number
+- In the terminal, the Web UI and an owner's QQ chat, the exact stored draft
+  is put to you at once as an approval prompt; yes saves it, no rejects it
+  (on QQ, a guest's draft is rejected at once).
+- On email, the reply ends with the exact draft as stored, its number
   and a short code, appended by the Gateway rather than written by the model.
   Reply `/identity approve <n> <code>` to save it or `/identity reject <n>`.
   These commands are handled before any model sees the message, and are only
@@ -1159,8 +1167,8 @@ asked. It rates the probability that the command is dangerous (deleting data,
 changing the system, running downloaded code, touching secrets, `sudo`, remote
 shells, obfuscated `eval`, and so on):
 
-- below `allow_below`: the command runs without asking, also on QQ, email and
-  scheduled jobs, where nobody can approve;
+- below `allow_below`: the command runs without asking, also for QQ guests,
+  email and scheduled jobs, where nobody can approve;
 - at or above `deny_at`: it is declined without asking, and the model is told
   not to work around it;
 - in between, or when the reviewer fails or times out: you are asked as usual
