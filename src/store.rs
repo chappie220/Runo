@@ -81,6 +81,17 @@ CREATE TABLE identity_drafts (
   decided_at INTEGER
 );
 "#,
+        r#"
+-- What a memory is about: person, ongoing, shared or dislike; NULL for a plain note.
+ALTER TABLE memories ADD COLUMN kind TEXT;
+-- The agent's own diary, one entry per local day, written when it reflects.
+CREATE TABLE diary (
+  day TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  mood TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+"#,
     ],
     legacy: &[
         ("memories", "id, content, created_at"),
@@ -214,6 +225,13 @@ CREATE INDEX usage_by_time ON usage(created_at);
 -- The sender each call was for (`cli`, `qq:<openid>`, ...), for spending limits.
 ALTER TABLE usage ADD COLUMN actor TEXT;
 CREATE INDEX usage_by_actor ON usage(actor, created_at);
+"#,
+        r#"
+-- The local day each daily ritual (reflection, morning, evening) last ran.
+CREATE TABLE rituals (
+  name TEXT PRIMARY KEY,
+  day TEXT NOT NULL
+);
 "#,
     ],
     legacy: &[
@@ -753,6 +771,85 @@ impl Store {
             params![session_id, ts],
         )?;
         Ok(())
+    }
+
+    /// When the person last wrote in the session: the newest user message
+    /// that does not start with one of the `automatic` prefixes, which mark
+    /// prompts the program sent on its own.
+    pub fn last_spoken_at(&self, session_id: i64, automatic: &[&str]) -> Result<Option<i64>> {
+        let conn = self.chats();
+        let mut stmt = conn.prepare(
+            "SELECT content, created_at FROM messages
+             WHERE session_id = ?1 AND role = 'user' ORDER BY id DESC",
+        )?;
+        let mut rows = stmt.query([session_id])?;
+        while let Some(row) = rows.next()? {
+            let content: Option<String> = row.get(0)?;
+            let content = content.unwrap_or_default();
+            if !automatic.iter().any(|p| content.starts_with(p)) {
+                return Ok(Some(row.get(1)?));
+            }
+        }
+        Ok(None)
+    }
+
+    /// When the person wrote in the session since `since`, oldest first:
+    /// user messages not starting with one of the `automatic` prefixes.
+    pub fn spoken_since(
+        &self,
+        session_id: i64,
+        automatic: &[&str],
+        since: i64,
+    ) -> Result<Vec<i64>> {
+        let conn = self.chats();
+        let mut stmt = conn.prepare(
+            "SELECT content, created_at FROM messages
+             WHERE session_id = ?1 AND role = 'user' AND created_at >= ?2 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id, since], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut times = Vec::new();
+        for row in rows {
+            let (content, at) = row?;
+            let content = content.unwrap_or_default();
+            if !automatic.iter().any(|p| content.starts_with(p)) {
+                times.push(at);
+            }
+        }
+        Ok(times)
+    }
+
+    /// When the user messages starting with `prefix` were sent, since `since`.
+    pub fn prompts_since(&self, session_id: i64, prefix: &str, since: i64) -> Result<Vec<i64>> {
+        let conn = self.chats();
+        let mut stmt = conn.prepare(
+            "SELECT created_at FROM messages
+             WHERE session_id = ?1 AND role = 'user' AND created_at >= ?2
+               AND substr(content, 1, length(?3)) = ?3
+             ORDER BY id ASC",
+        )?;
+        let times = stmt
+            .query_map(params![session_id, since, prefix], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(times)
+    }
+
+    /// The session's newest message id; 0 when it has none.
+    pub fn last_message_id(&self, session_id: i64) -> Result<i64> {
+        Ok(self.chats().query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM messages WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Deletes the session's messages after `id`, undoing a turn.
+    pub fn delete_messages_after(&self, session_id: i64, id: i64) -> Result<usize> {
+        Ok(self.chats().execute(
+            "DELETE FROM messages WHERE session_id = ?1 AND id > ?2",
+            params![session_id, id],
+        )?)
     }
 
     /// The newest `limit` messages in chronological order.

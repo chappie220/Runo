@@ -15,9 +15,12 @@ mod elevate;
 mod fetch;
 mod gateway;
 mod guide;
+mod heartbeat;
 mod i18n;
 mod identity;
+mod life;
 mod limits;
+mod live;
 mod llm;
 mod mail;
 mod mcp;
@@ -172,6 +175,12 @@ enum Command {
         /// How many days back to count.
         #[arg(long, default_value_t = 30)]
         days: u32,
+    },
+    /// Read the agent's diary, written when it reflects each night ([life]).
+    Diary {
+        /// How many entries to show.
+        #[arg(long, default_value_t = 7)]
+        days: usize,
     },
     /// List or delete sessions.
     Sessions {
@@ -397,7 +406,7 @@ async fn run(cli: Cli) -> Result<()> {
     let config_path = cli.config.unwrap_or_else(|| state.join("config.toml"));
     // Before loading, so a file that does not load can still be repaired.
     if let Command::Config = cli.command {
-        return setup::run(&config_path, i18n::current());
+        return setup::run(&config_path, i18n::current()).map(|_| ());
     }
     if let Command::Doctor { offline } = cli.command {
         if !doctor::run(&config_path, &state, offline).await? {
@@ -513,7 +522,7 @@ async fn run(cli: Cli) -> Result<()> {
             if store.identity()?.is_none() {
                 eprintln!("{}", text::FIRST_START.now());
             }
-            let agent = Arc::new(build_agent(&config, &state, store).await?);
+            let agent = Arc::new(build_agent(&config, &config_path, &state, store).await?);
             let bind = bind.unwrap_or_else(|| config.gateway.bind.clone());
             let gateway =
                 gateway::Gateway::new(agent, config.gateway.token(), config.access.clone());
@@ -550,11 +559,35 @@ async fn run(cli: Cli) -> Result<()> {
                 tokio::spawn(mail::run(bot, gateway.clone()));
             }
             tokio::spawn(gateway.clone().run_scheduler());
+            // Checked now so a mistake stops the start; both run even when
+            // off, since they can be turned on in chat.
+            heartbeat::Heartbeat::from_config(&config.heartbeat, &config.access)?;
+            life::Life::from_config(&config.life, &config.access)?;
+            tokio::spawn(heartbeat::run(
+                config.heartbeat.clone(),
+                config.access.clone(),
+                gateway.clone(),
+            ));
+            tokio::spawn(life::run(
+                config.life.clone(),
+                config.access.clone(),
+                gateway.clone(),
+            ));
             let idle = gateway.clone();
             tokio::spawn(update::watch(config.update.clone(), move || idle.idle()));
             gateway::serve(gateway, &bind, web.unwrap_or(config.gateway.web)).await
         }
         Command::Sessions { action } => sessions(&store, action.unwrap_or(SessionsAction::List)),
+        Command::Diary { days } => {
+            let entries = store.diary(days)?;
+            if entries.is_empty() {
+                println!("{}", text::NO_DIARY.now());
+            }
+            for entry in entries.iter().rev() {
+                println!("{} · {}\n{}\n", entry.day, entry.mood, entry.text);
+            }
+            Ok(())
+        }
         Command::Usage { days } => {
             let since = store::now() - i64::from(days) * 86_400;
             print!(
@@ -577,23 +610,31 @@ async fn run(cli: Cli) -> Result<()> {
                 .iter()
                 .map(|path| read_upload(path))
                 .collect::<Result<Vec<_>>>()?;
-            let agent = build_agent(&config, &state, store).await?;
+            let agent = build_agent(&config, &config_path, &state, store).await?;
             turn(&agent, &session, &message, &uploads).await
         }
         Command::Tui { session } => {
             if !onboard::interactive() {
                 bail!(text::TUI_NEEDS_TERMINAL.now());
             }
-            let agent = build_agent(&config, &state, store).await?;
+            let agent = build_agent(&config, &config_path, &state, store).await?;
             let skills = config
                 .skills
                 .enabled
                 .then(|| skills::Skills::new(&agent.config.workspace, &config.skills));
-            tui::run(&agent, session, config.model.model.clone(), &state, skills).await
+            tui::run(
+                &agent,
+                session,
+                config.model.model.clone(),
+                &state,
+                &config_path,
+                skills,
+            )
+            .await
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);
-            let agent = build_agent(&config, &state, store).await?;
+            let agent = build_agent(&config, &config_path, &state, store).await?;
             eprintln!(
                 "{}",
                 text::CHAT_BANNER.with(&[
@@ -670,7 +711,14 @@ fn completions_command(
 
 type CliAgent = Agent<llm::Client, BuiltinTools>;
 
-async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliAgent> {
+async fn build_agent(
+    config: &Config,
+    config_path: &Path,
+    state: &Path,
+    store: Store,
+) -> Result<CliAgent> {
+    // What the `settings` tool changes takes effect from here, live.
+    live::init(config_path, config);
     let workspace = config
         .tools
         .workspace
@@ -733,12 +781,14 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
                     .then(|| skills::Skills::new(&workspace, &config.skills)),
             )
             .with_review(review)
-            .with_mail(mail),
+            .with_mail(mail)
+            .with_settings(Some(config_path.to_owned())),
         store,
         config: config::AgentConfig {
             workspace,
             limits: config.limits.clone(),
             auto_context,
+            life: life::Inner::from_config(&config.life)?,
             ..config.agent.clone()
         },
     })

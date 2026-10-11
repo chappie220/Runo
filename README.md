@@ -91,7 +91,9 @@ piped input still takes typed numbers:
    typed in full;
 4. if that model cannot see images, whether to pick an image model for
    pictures people send and browser screenshots (`agent.vision_model`);
-5. whether to start the Gateway (Web UI, QQ, email) now, as with
+5. whether to turn on the companion ([heartbeat](#heartbeat) and
+   [inner life](#inner-life)), and if so your city, birthday and quiet hours;
+6. whether to start the Gateway (Web UI, QQ, email) now, as with
    `openclaw-rs gateway install`: at boot where the system allows, asking
    for your password through sudo/doas for the system service (see
    [Gateway service](#gateway-service)).
@@ -152,6 +154,10 @@ one running with `gateway.web = "off"`.
   when idle or `/quit` leaves.
 - ↑/↓ bring back earlier messages; the mouse wheel, PgUp/PgDn and
   Shift+↑/↓ scroll. The window takes the mouse, so hold Shift to select text.
+- Every changed row is redrawn whole, with the cursor placed after each
+  wide character, so Chinese text stays clean on terminals that draw it
+  differently (SSH apps on phones and tablets often do). If the screen still
+  looks off, Ctrl+L repaints it.
 - The bottom right shows how full the context is: an estimate of the next
   model call (system prompt, tools, summary, history), corrected by the
   provider's token counts, against `agent.context_tokens`. `/compact` folds
@@ -161,7 +167,9 @@ one running with `gateway.web = "off"`.
   with its state.
 - Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
   `/skills`, `/compact`, `/clear`, `/identity …`, `/sidebar`, `/expand`,
-  `/help`.
+  `/config`, `/help`.
+- `/config` opens the settings editor (below) in the window and comes back
+  to the chat when you leave it.
 
 It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over
@@ -171,8 +179,13 @@ the screen.
 
 `openclaw-rs init` sets up what a first run needs (see [Usage](#usage)).
 
-`openclaw-rs config` edits `<state dir>/config.toml` interactively, section by
-section (model and context, tools, gateway, QQ, email, web search, browser, access).
+`openclaw-rs config` (or `/config` in the terminal UI) edits
+`<state dir>/config.toml` interactively, section by section (model and
+context, tools, gateway, QQ, email, web search, browser, limits, updates,
+skills, access, and the companion: time sense, heartbeat, inner life). Every
+setting below can be changed there; nothing needs editing by hand. Saving
+restarts a running Gateway so the change applies at once (when this user
+may restart it; otherwise it says how).
 Sections and fields are picked with ↑/↓ and Enter, Esc goes back; each field
 shows the value in effect and its help. Choices and yes/no fields are menus
 (with "Default" to reset); for typed fields Enter keeps the value and `-`
@@ -622,16 +635,117 @@ guests do not unless granted. A skill that runs commands still needs `shell`.
 `serve` runs jobs on standard 5-field cron schedules in the host's local time.
 A job's prompt runs as a turn in its session; tools set to `ask` are declined
 because nobody is there to approve. A job missed while the Gateway was down
-runs once at startup, then follows its schedule. A heartbeat is a job:
+runs once at startup, then follows its schedule. For a fixed check-in, use a
+job; for an agent that decides on its own when to speak up, see
+[Heartbeat](#heartbeat).
 
 ```sh
-openclaw-rs cron add heartbeat "*/30 * * * *" -s main "Check my notes and reminders"
+openclaw-rs cron add check-in "0 9 * * *" -s main "Check my notes and reminders"
 openclaw-rs cron list
-openclaw-rs cron remove heartbeat
+openclaw-rs cron remove check-in
 ```
 
 The model can also create, list and remove jobs (`cron_add`, `cron_list`,
 `cron_remove`); a job it creates runs in the conversation that asked for it.
+
+## Time sense
+
+Each message reaches the model with the local time (the host's time zone; set
+`TZ` for the service if needed), and, when it has been 30 minutes or more,
+how long ago the person last wrote in that conversation. Like recalled
+memories, the note goes with that turn only and is never stored. Turn it off
+with `agent.time_sense = false`.
+
+## Heartbeat
+
+Turn it on in `openclaw-rs config` → Companion (or `/config` in the terminal
+UI), or just tell the agent ([Settings in chat](#settings-in-chat)); `init`
+offers it too. The settings, for reference:
+
+`serve` can give the agent a quiet turn every so often in your own chat to
+reach out on its own: a follow-up on something you mentioned, a reminder, a
+word after a long silence. It decides itself, and when it has nothing worth
+saying it answers `NO_REPLY`; that turn is then erased from the history, so
+silence leaves no trace and costs only the model call.
+
+```toml
+[heartbeat]
+enabled = true
+# session = "qq:c2c:<openid>"   # default: the private QQ chat of the first qq: owner
+every_minutes = 120
+quiet_hours = "23:00-08:00"    # local time; empty for none
+max_per_day = 3
+# prompt = "Ask how my running is going now and then."
+```
+
+It holds back during quiet hours, after `max_per_day` messages it started
+that day, while you have written in the last 30 minutes, and while a turn is
+running there. It also adapts to how you answer: after a heartbeat you did not
+answer it waits 12 hours, after two in a row 24, after three or more 48; when
+you answered the last one within 15 minutes, it may send one more that day.
+The session's person must be in `access.owners`, since the turn uses their
+permissions; `ask` tools are declined, as in scheduled jobs. A message you
+send during a heartbeat turn waits for it. The log says what each heartbeat
+did (`heartbeat: skipped (quiet hours)`, `nothing to say`, `sent …`).
+
+On QQ, a message the bot starts (not a reply to yours) is an active message,
+which QQ limits per user; check your bot's quota on the QQ Open Platform if
+heartbeats or the morning and evening messages stop arriving.
+
+## Inner life
+
+Turn it on in `openclaw-rs config` → Companion (or `/config`), where the
+times, your city and the days that matter (`03-14 my birthday, 05-20 …`)
+are set too, or tell the agent in chat; `init` offers it. With `[life]` on, the agent keeps a life of
+its own around you:
+
+- **Every night** (`reflect_at`) it reads the last day of your conversations
+  (local sessions and your own QQ chat and mailbox; never groups or other
+  people's chats) and writes a short diary entry in its own voice, notes its
+  mood, keeps what it learned about you as memories of a kind (`person`,
+  `ongoing`, `shared`, `dislike`), and closes `ongoing` notes that are over.
+  One call to the summary model; read the diary with `openclaw-rs diary`.
+- **In your conversations** (owners only) the system prompt carries its mood
+  and latest diary entry, what is going on in your life, what you do not
+  want, and the day if it matters: one of your `dates`, an anniversary of
+  your first conversation, or day 7, 30, 100, 200… It is also asked to say
+  when it is unsure, apologize simply when wrong, and, on QQ, to write like
+  texting.
+- **Morning and evening** it may send a short good-morning (with the weather
+  in `city`, looked up with its web tools, what is on today and what is left
+  from yesterday) and a good-night. Like a heartbeat, it can stay silent, and
+  each runs once a day, up to two hours late if the Gateway was down.
+
+```toml
+[life]
+enabled = true
+# session = "qq:c2c:<openid>"   # default: as for the heartbeat
+reflect_at = "03:30"
+morning = "08:30"                # empty for none
+evening = "22:30"
+city = "上海"
+dates = [
+  { date = "03-14", name = "my birthday" },
+]
+```
+
+Times are in the host's time zone.
+
+## Settings in chat
+
+Owners can change the companion settings by asking, in QQ or anywhere else:
+"say good morning at 9", "don't message me first any more", "no messages
+after 22:00", "my birthday is March 14", "send each reply as one message".
+The model uses the `settings` tool, which can show and change only these:
+time sense, the heartbeat and inner-life settings, `qq.split_replies` and
+`language`. Keys, permissions, `access` and everything else stay with
+`openclaw-rs config`. Each change is checked like one made in the editor
+(a bad time or a session that is not an owner's is refused), written to
+config.toml with its comments kept, and applied at once without a restart:
+the heartbeat and the morning and evening messages follow the file within a
+minute, and the next message sees the new time sense and inner life. The
+tool is the `settings` [capability](#access), which only owners have unless
+granted.
 
 ## Gateway service
 
@@ -643,7 +757,7 @@ openclaw-rs gateway install     # set it up and start it
 openclaw-rs gateway status      # how it runs, whether it runs (exit 3 when stopped)
 openclaw-rs gateway stop
 openclaw-rs gateway start
-openclaw-rs gateway restart     # e.g. after `openclaw-rs config`
+openclaw-rs gateway restart     # `openclaw-rs config` does this when it saves
 openclaw-rs gateway uninstall   # keeps state and logs
 ```
 
@@ -779,6 +893,10 @@ private message, 5 per group message, about 1500 characters each) and fall
 back to active messages once QQ's reply window has passed. Scheduled jobs whose
 session is a QQ session send their result to that chat.
 
+A short chatty reply of several paragraphs (no code or tables, up to 600
+characters) goes out as up to three messages, a moment apart, the way people
+text; `split_replies = false` sends every reply as one.
+
 ## Email
 
 The bot is a mail client of a third-party provider: it reads over IMAP (993)
@@ -898,7 +1016,7 @@ guest = ["web_search", "web_fetch"] # what any other sender may use
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
-`mail` (`send_mail`). `shell`, `files_write`, `identity` and `mail` still follow
+`mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)). `shell`, `files_write`, `identity` and `mail` still follow
 `tools.shell`, `tools.write`, `tools.identity` and `tools.mail`, and
 `ask` is still declined where nobody can approve.
 
@@ -1000,7 +1118,10 @@ max_results = 5
 Long-term memory is a SQLite FTS5 index with the trigram tokenizer, so Chinese
 text matches by substring without word segmentation. Space-separated terms
 match any; terms shorter than three characters fall back to `LIKE`. The model
-gets `memory_save`, `memory_search` and `memory_delete` tools.
+gets `memory_save`, `memory_search` and `memory_delete` tools. A memory can
+have a kind: `person` (who you are), `ongoing` (something in your life to
+follow up on), `shared` (a moment you shared) or `dislike` (something you do
+not want); [Inner life](#inner-life) uses them.
 
 Memories are also recalled without the model asking: each message is broken
 into words and three-character CJK runs (skipping stopwords and runs with

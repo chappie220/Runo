@@ -91,6 +91,17 @@ pub struct BuiltinTools {
     skills: Option<Skills>,
     review: Option<Reviewer>,
     mail: Option<Arc<MailBot>>,
+    /// config.toml, for the `settings` tool; `None` offers no such tool.
+    settings: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct SettingsArgs {
+    action: String,
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +141,8 @@ struct EditArgs {
 #[derive(Deserialize)]
 struct MemorySaveArgs {
     content: String,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -203,7 +216,42 @@ impl BuiltinTools {
             skills: None,
             review: None,
             mail: None,
+            settings: None,
         })
+    }
+
+    /// Offers `settings` on this config.toml.
+    pub fn with_settings(mut self, path: Option<PathBuf>) -> Self {
+        self.settings = path;
+        self
+    }
+
+    /// Shows or changes a chat-settable setting, then applies it at once.
+    fn settings(&self, args: SettingsArgs) -> Result<String, String> {
+        let path = self.settings.as_ref().ok_or("error: settings are off")?;
+        let lang = crate::i18n::current();
+        match args.action.as_str() {
+            "show" => crate::setup::chat_settings(path, lang).map_err(|e| format!("error: {e:#}")),
+            "set" => {
+                let key = args.key.ok_or("error: set needs a key")?;
+                let value = args.value.ok_or("error: set needs a value (- resets it)")?;
+                let (before, after) = crate::setup::change_setting(path, &key, &value, lang)
+                    .map_err(|e| format!("error: {e:#}"))?;
+                if let Err(err) = crate::live::reload() {
+                    return Err(format!(
+                        "error: saved {key} = {after}, but it could not be applied: {err:#}"
+                    ));
+                }
+                if key.trim() == "language" {
+                    let chosen = crate::live::read(|c| c.language).flatten();
+                    crate::i18n::set(chosen.unwrap_or_else(crate::i18n::Lang::detect));
+                }
+                Ok(format!(
+                    "{key}: {before} → {after}; saved, and it applies now"
+                ))
+            }
+            other => Err(format!("error: unknown action {other:?}; use show or set")),
+        }
     }
 
     /// Offers `send_mail` through this account; `None` when email is off.
@@ -420,7 +468,7 @@ impl BuiltinTools {
         // The owner's memories stay unattributed, like those saved from the terminal.
         let id = self
             .store
-            .memory_save_by(&args.content, actor.scope())
+            .memory_save_kind(&args.content, args.kind.as_deref(), actor.scope())
             .map_err(|e| format!("error: {e:#}"))?;
         Ok(format!("saved memory #{id}"))
     }
@@ -872,8 +920,11 @@ impl BuiltinTools {
         ];
         specs.push(ToolSpec::function(
             "memory_save",
-            "Save a durable fact for future conversations (preferences, names, decisions). One fact per call, under 2000 characters.",
-            json!({"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}),
+            "Save a durable fact for future conversations (preferences, names, decisions). One fact per call, under 2000 characters. Give a kind when it fits: person (who they are: habits, people in their life, dates such as birthdays), ongoing (something in progress or coming up in their life worth following up, e.g. an interview on Friday; delete it once it is over), shared (a moment between you worth recalling), dislike (a topic or style they do not want).",
+            json!({"type": "object", "properties": {
+                "content": {"type": "string"},
+                "kind": {"type": "string", "enum": crate::memory::KINDS}
+            }, "required": ["content"]}),
         ));
         specs.push(ToolSpec::function(
             "memory_search",
@@ -979,6 +1030,17 @@ impl BuiltinTools {
                     .filter(|spec| mcp.permission(&spec.function.name) != Some(Permission::Deny)),
             );
         }
+        if self.settings.is_some() {
+            specs.push(ToolSpec::function(
+                "settings",
+                "Show or change your own settings when the person asks in conversation, e.g. \"say good morning at 9\", \"don't message me first\", \"no messages after 22:00\", \"my birthday is 3/14\". show lists every key with its value and meaning; set changes one key, typed as in the settings editor (yes/no, HH:MM, HH:MM-HH:MM, numbers, \"03-14 my birthday, 05-20 ...\" for dates; - resets to the default). It applies at once. Change only what they asked for, and tell them what changed.",
+                json!({"type": "object", "properties": {
+                    "action": {"type": "string", "enum": ["show", "set"]},
+                    "key": {"type": "string", "description": "e.g. life.morning, heartbeat.enabled, heartbeat.quiet_hours, life.dates"},
+                    "value": {"type": "string"}
+                }, "required": ["action"]}),
+            ));
+        }
         if self.mail.is_some() && self.config.mail != Permission::Deny {
             specs.push(ToolSpec::function(
                 "send_mail",
@@ -1066,6 +1128,7 @@ impl BuiltinTools {
                 Ok(args) => self.send_mail(args).await,
                 Err(e) => Err(e),
             },
+            "settings" => parse(call).and_then(|args| self.settings(args)),
             "cron_add" => parse(call).and_then(|args| self.cron_add(actor, args)),
             "cron_list" => self.cron_list(actor),
             "cron_remove" => parse(call).and_then(|args| self.cron_remove(actor, args)),
@@ -1080,6 +1143,7 @@ impl BuiltinTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::llm::FunctionCall;
 
     struct Answer(bool);
@@ -1264,6 +1328,48 @@ mod tests {
             .call(&call("shell", json!({"command": "sleep 30 & sleep 30"})))
             .await;
         assert!(out.contains("timed out"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn only_owners_change_settings_in_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let tools = BuiltinTools::new(
+            dir.path().join("ws"),
+            ToolsConfig::default(),
+            Store::open_in_memory().unwrap(),
+        )
+        .unwrap()
+        .with_settings(Some(path.clone()));
+        let set = call(
+            "settings",
+            json!({"action": "set", "key": "life.morning", "value": "09:15"}),
+        );
+        let out = owner(tools.call(&set)).await;
+        assert!(out.contains("08:30 → 09:15"), "{out}");
+        let shown = owner(tools.call(&call("settings", json!({"action": "show"})))).await;
+        assert!(shown.contains("life.morning = 09:15"), "{shown}");
+        let refused = owner(tools.call(&call(
+            "settings",
+            json!({"action": "set", "key": "access.owners", "value": "qq:EVE"}),
+        )))
+        .await;
+        assert!(refused.contains("cannot be changed here"), "{refused}");
+
+        let guest = Actor {
+            id: "qq:G".into(),
+            owner: false,
+            capabilities: Default::default(),
+        };
+        let offered = access::with_actor(guest.clone(), async { tools.specs() }).await;
+        assert!(offered.iter().all(|s| s.function.name != "settings"));
+        let out = access::with_actor(guest, tools.call(&set)).await;
+        assert!(out.starts_with("error:"), "{out}");
+        assert_eq!(
+            Config::load(&path).unwrap().life.morning,
+            "09:15",
+            "the guest changed nothing"
+        );
     }
 
     #[tokio::test]

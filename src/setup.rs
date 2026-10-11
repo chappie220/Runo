@@ -26,6 +26,8 @@ enum Kind {
     Choice(&'static [&'static str]),
     /// Comma-separated strings.
     List,
+    /// Comma-separated `MM-DD name` pairs, kept as `{ date, name }` tables.
+    Dates,
     /// `auto`, or a token count written like 128k or 1m.
     Tokens,
     /// A model id, picked from OpenRouter's list when it can be loaded.
@@ -62,6 +64,10 @@ const RESTART: Tr = tr(
     "Restart a running Gateway (openclaw-rs service restart) to apply it.",
     "如果 Gateway 正在运行，重启后生效（openclaw-rs service restart）。",
 );
+const RESTARTED: Tr = tr(
+    "Restarted the Gateway so the change applies now.",
+    "已重启 Gateway，修改立即生效。",
+);
 const RESULT_INVALID: Tr = tr(
     "not saved: the result does not load: {}",
     "未保存：修改后的配置无法加载：{}",
@@ -83,6 +89,10 @@ const NO_MODEL_LIST: Tr = tr(
 /// Quick picks for a token count in the arrow menu.
 const TOKEN_PICKS: &[&str] = &["auto", "32k", "64k", "128k", "200k", "1m"];
 const YES_NO: Tr = tr("answer y or n", "请回答 y 或 n");
+const NOT_A_DATE: Tr = tr(
+    "{} is not MM-DD and a name, e.g. 03-14 my birthday",
+    "{} 不是“月-日 名字”的格式，例如 03-14 我的生日",
+);
 const PICK_ONE: Tr = tr("pick one of: {}", "请从这些中选一个：{}");
 const DEFAULT: Tr = tr("default", "默认");
 const EMPTY: Tr = tr("empty", "空");
@@ -402,6 +412,15 @@ const SECTIONS: &[Section] = &[
                 ),
                 kind: Kind::List,
             },
+            Field {
+                path: &["qq", "split_replies"],
+                label: tr("Split chatty replies", "闲聊回复分条发送"),
+                help: tr(
+                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                ),
+                kind: Kind::Bool,
+            },
         ],
     },
     Section {
@@ -703,6 +722,137 @@ const SECTIONS: &[Section] = &[
             ),
             kind: Kind::List,
         }],
+    },
+    Section {
+        title: tr(
+            "Companion: time, heartbeat, inner life",
+            "陪伴：时间感、心跳、内心生活",
+        ),
+        fields: &[
+            Field {
+                path: &["agent", "time_sense"],
+                label: tr("Time sense", "时间感"),
+                help: tr(
+                    "Each message tells the model the local time, and how long ago you last wrote when it has been a while.",
+                    "每条消息都告诉模型当前本地时间，隔了一段时间再聊时还会告诉它你上次说话是多久以前。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["heartbeat", "enabled"],
+                label: tr("Heartbeat: reach out on its own", "心跳：主动找你"),
+                help: tr(
+                    "Every so often it may message you on its own when it has something worth saying. Needs the Gateway (service) running.",
+                    "每隔一段时间，如果它觉得有值得说的话，会主动给你发消息。需要 Gateway（后台服务）在运行。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["heartbeat", "every_minutes"],
+                label: tr("Heartbeat interval (minutes)", "心跳间隔（分钟）"),
+                help: tr(
+                    "How often it considers reaching out.",
+                    "多久考虑一次要不要主动找你。",
+                ),
+                kind: Kind::Int,
+            },
+            Field {
+                path: &["heartbeat", "quiet_hours"],
+                label: tr("Quiet hours", "免打扰时段"),
+                help: tr(
+                    "Local time HH:MM-HH:MM with no heartbeat; may cross midnight. Empty: none.",
+                    "本地时间 HH:MM-HH:MM，期间不主动找你，可以跨午夜。留空表示没有。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["heartbeat", "max_per_day"],
+                label: tr("Messages it starts per day", "每天最多主动消息数"),
+                help: tr(
+                    "At most this many a day; one more when you answered the last one quickly.",
+                    "一天里最多主动发几条；你很快回复了上一条时，当天可以多一条。",
+                ),
+                kind: Kind::Int,
+            },
+            Field {
+                path: &["heartbeat", "prompt"],
+                label: tr("What to keep an eye on", "让它多留意什么"),
+                help: tr(
+                    "Optional words added to each heartbeat, e.g. \"Ask how my running is going now and then.\"",
+                    "可选，每次心跳都会带上的话，例如“偶尔问问我跑步的情况”。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "enabled"],
+                label: tr("Inner life", "内心生活"),
+                help: tr(
+                    "A nightly diary, mood and notes about you, carried into your conversations, plus good-morning and good-night messages. Needs the Gateway running.",
+                    "每晚写日记、记下心情和关于你的事，并带进你们的对话；还有早安和晚安消息。需要 Gateway 在运行。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["life", "reflect_at"],
+                label: tr("Nightly reflection at", "每晚反思时间"),
+                help: tr("Local time HH:MM.", "本地时间 HH:MM。"),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "morning"],
+                label: tr("Good-morning at", "早安时间"),
+                help: tr(
+                    "Local time HH:MM; empty for none.",
+                    "本地时间 HH:MM；留空表示不发。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "evening"],
+                label: tr("Good-night at", "晚安时间"),
+                help: tr(
+                    "Local time HH:MM; empty for none.",
+                    "本地时间 HH:MM；留空表示不发。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "city"],
+                label: tr("City for the weather", "天气所在城市"),
+                help: tr(
+                    "Named in the good-morning message; it looks the weather up with its web tools.",
+                    "早安消息里会提到这里的天气，由它用网页工具去查。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "dates"],
+                label: tr("Days that matter", "重要的日子"),
+                help: tr(
+                    "Comma-separated MM-DD and a name, e.g. \"03-14 my birthday, 05-20 our anniversary\".",
+                    "用逗号分隔，每项是 月-日 加名字，例如“03-14 我的生日, 05-20 纪念日”。",
+                ),
+                kind: Kind::Dates,
+            },
+            Field {
+                path: &["heartbeat", "session"],
+                label: tr("Where it reaches out", "主动消息发到哪里"),
+                help: tr(
+                    "A session such as qq:c2c:<openid>. Empty: your private QQ chat (the first qq: owner under Access), else the local main session.",
+                    "会话名，例如 qq:c2c:<openid>。留空：你的 QQ 私聊（权限里第一个 qq: owner），没有则发到本地 main 会话。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "session"],
+                label: tr("Where morning and evening go", "早安晚安发到哪里"),
+                help: tr(
+                    "As above; empty for the same default.",
+                    "同上；留空使用同样的默认值。",
+                ),
+                kind: Kind::Text,
+            },
+        ],
     },
 ];
 
@@ -1126,8 +1276,22 @@ pub fn terminal(lang: Lang) -> Term<std::io::StdinLock<'static>, std::io::Stdout
 }
 
 /// Runs the editor on `path` with the process's terminal; model fields
-/// offer OpenRouter's list, fetched the first time one is edited.
-pub fn run(path: &Path, lang: Lang) -> Result<()> {
+/// offer OpenRouter's list, fetched the first time one is edited. A saved
+/// change restarts a running Gateway so it applies at once. `None` when
+/// nothing was saved, else whether the Gateway was restarted.
+pub fn run(path: &Path, lang: Lang) -> Result<Option<bool>> {
+    let mut term = terminal(lang);
+    if !run_on(path, &mut term)? {
+        return Ok(None);
+    }
+    term.out.flush()?;
+    let restarted = crate::service::restart_if_running();
+    term.tell(if restarted { RESTARTED } else { RESTART }, &[])?;
+    Ok(Some(restarted))
+}
+
+/// The editor itself on `term`; `true` when it saved.
+fn run_on<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<bool> {
     let base_url = Config::load(path).unwrap_or_default().model.base_url;
     let mut models = Models::new(move || {
         let catalog = crate::onboard::OpenRouter::new(&base_url)?;
@@ -1136,7 +1300,7 @@ pub fn run(path: &Path, lang: Lang) -> Result<()> {
             tokio::runtime::Handle::current().block_on(crate::onboard::Catalog::models(&catalog))
         })
     });
-    edit_with(path, &mut terminal(lang), &mut models)
+    edit_with(path, term, &mut models)
 }
 
 /// OpenRouter's model list for the model fields, loaded once, when first needed.
@@ -1190,16 +1354,16 @@ pub(crate) fn parse(doc: &DocumentMut) -> Result<Config> {
 
 /// The menu loop: edits `path` and saves it when asked. Model ids are typed.
 #[cfg(test)]
-pub fn edit<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<()> {
+pub fn edit<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<bool> {
     edit_with(path, term, &mut Models::default())
 }
 
-/// The menu loop, with `models` for the model fields.
+/// The menu loop, with `models` for the model fields; `true` when it saved.
 pub fn edit_with<R: BufRead, W: Write>(
     path: &Path,
     term: &mut Term<R, W>,
     models: &mut Models<'_>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut doc = load(path)?;
     if let Err(err) = parse(&doc) {
         term.tell(BROKEN, &[&format!("{err:#}")])?;
@@ -1246,7 +1410,7 @@ fn edit_with_arrows<R: BufRead, W: Write>(
     original: &str,
     term: &mut Term<R, W>,
     models: &mut Models<'_>,
-) -> Result<()> {
+) -> Result<bool> {
     let title = EDITING.fill(term.lang, &[&path.display().to_string()]);
     let mut cur = 0;
     loop {
@@ -1518,7 +1682,7 @@ fn finish<R: BufRead, W: Write>(
     original: &str,
     term: &mut Term<R, W>,
     save: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let text = doc.to_string();
     if !save || text == original {
         term.tell(
@@ -1529,15 +1693,14 @@ fn finish<R: BufRead, W: Write>(
             },
             &[],
         )?;
-        return Ok(());
+        return Ok(false);
     }
     if let Err(err) = toml::from_str::<Config>(&text) {
         bail!(RESULT_INVALID.fill(term.lang, &[&format!("{err:#}")]));
     }
     write_private(path, &text)?;
     term.tell(SAVED, &[&path.display().to_string()])?;
-    term.tell(RESTART, &[])?;
-    Ok(())
+    Ok(true)
 }
 
 /// Writes atomically with mode 0600, since the file may hold secrets.
@@ -1635,6 +1798,65 @@ fn edit_section<R: BufRead, W: Write>(
     Ok(true)
 }
 
+/// The settings a person may change by asking in chat (the `settings`
+/// tool): the companion section, QQ reply splitting and the language.
+/// Keys, permissions and access stay with the editor.
+fn chat_settable() -> impl Iterator<Item = &'static Field> {
+    let companion = SECTIONS.last().map_or(&[][..], |s| s.fields);
+    let elsewhere = SECTIONS
+        .iter()
+        .flat_map(|s| s.fields)
+        .filter(|f| matches!(f.path, ["qq", "split_replies"] | ["language"]));
+    companion.iter().chain(elsewhere)
+}
+
+fn key_of(field: &Field) -> String {
+    field.path.join(".")
+}
+
+/// The chat-settable settings in `path`, one per line: key, value, what it is.
+pub fn chat_settings(path: &Path, lang: Lang) -> Result<String> {
+    let doc = load(path)?;
+    Ok(chat_settable()
+        .map(|f| {
+            format!(
+                "{} = {} ({}: {})",
+                key_of(f),
+                describe(&doc, f, lang),
+                f.label.get(lang),
+                f.help.get(lang)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Changes one chat-settable setting in `path` to `text`, as typed in the
+/// editor (`-` resets it), after checking that the result still loads and
+/// that the heartbeat and inner life accept it. The value before and after.
+pub fn change_setting(path: &Path, key: &str, text: &str, lang: Lang) -> Result<(String, String)> {
+    let field = chat_settable()
+        .find(|f| key_of(f) == key.trim())
+        .with_context(|| {
+            let keys: Vec<String> = chat_settable().map(key_of).collect();
+            format!(
+                "{key:?} cannot be changed here; use one of {}",
+                keys.join(", ")
+            )
+        })?;
+    let mut doc = load(path)?;
+    let before = describe(&doc, field, lang);
+    match text.trim() {
+        "-" => remove(&mut doc, field.path),
+        text => set(&mut doc, field.path, value_for(field.kind, text, lang)?),
+    }
+    let config = parse(&doc).context("the result does not load")?;
+    crate::heartbeat::Heartbeat::from_config(&config.heartbeat, &config.access)?;
+    crate::life::Life::from_config(&config.life, &config.access)?;
+    write_private(path, &doc.to_string())?;
+    Ok((before, describe(&doc, field, lang)))
+}
+
 fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
     Ok(match kind {
         Kind::Text | Kind::Model(_) => Value::from(text),
@@ -1678,6 +1900,25 @@ fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
             }
             None => bail!(NOT_TOKENS.fill(lang, &[&format!("{text:?}")])),
         },
+        Kind::Dates => {
+            let mut array = Array::new();
+            for item in text
+                .split([',', '，'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let (date, name) = item
+                    .split_once(char::is_whitespace)
+                    .map(|(d, n)| (d.trim(), n.trim()))
+                    .filter(|(_, n)| !n.is_empty())
+                    .with_context(|| NOT_A_DATE.fill(lang, &[&format!("{item:?}")]))?;
+                let mut table = toml_edit::InlineTable::new();
+                table.insert("date", date.into());
+                table.insert("name", name.into());
+                array.push(table);
+            }
+            Value::Array(array)
+        }
         Kind::List => {
             let mut array = Array::new();
             for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -1804,7 +2045,12 @@ fn describe(doc: &DocumentMut, field: &Field, lang: Lang) -> String {
         Some(toml::Value::Array(items)) if items.is_empty() => NONE.get(lang).into(),
         Some(toml::Value::Array(items)) => items
             .iter()
-            .map(|i| i.as_str().map_or_else(|| i.to_string(), str::to_owned))
+            .map(|i| match (i.get("date"), i.get("name")) {
+                (Some(toml::Value::String(date)), Some(toml::Value::String(name))) => {
+                    format!("{date} {name}")
+                }
+                _ => i.as_str().map_or_else(|| i.to_string(), str::to_owned),
+            })
             .collect::<Vec<_>>()
             .join(", "),
         Some(other) => other.to_string(),
@@ -1864,6 +2110,92 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn sets_up_the_companion_without_touching_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let section = SECTIONS.len().to_string();
+        // Time sense kept; heartbeat on, every 90 min, keep quiet hours and
+        // the daily limit, a prompt; inner life on, keep the times, a city,
+        // a bad then a good list of dates; keep both sessions.
+        let script = format!(
+            "{section}\n\ny\n90\n\n\n偶尔问问我跑步\ny\n\n\n\n上海\n生日\n03-14 我的生日，05-20 纪念日\n\n\ns\n"
+        );
+        let out = drive_in(Lang::Zh, &path, &script);
+        assert!(out.contains("不是“月-日 名字”的格式"), "{out}");
+        assert!(out.contains("已保存"), "{out}");
+        let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(config.heartbeat.enabled && config.life.enabled);
+        assert_eq!(config.heartbeat.every_minutes, 90);
+        assert_eq!(config.heartbeat.prompt.as_deref(), Some("偶尔问问我跑步"));
+        assert_eq!(config.life.city.as_deref(), Some("上海"));
+        assert_eq!(
+            config
+                .life
+                .dates
+                .iter()
+                .map(|d| (d.date.as_str(), d.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("03-14", "我的生日"), ("05-20", "纪念日")]
+        );
+        crate::life::Life::from_config(&config.life, &config.access)
+            .unwrap()
+            .unwrap();
+        // Shown back as typed.
+        // Through the section's fields, past the dates, to the menu.
+        let enter = "\n".repeat(14);
+        let again = drive_in(Lang::Zh, &path, &format!("{section}\n{enter}q\n"));
+        assert!(again.contains("03-14 我的生日, 05-20 纪念日"), "{again}");
+    }
+
+    #[test]
+    fn chat_changes_only_what_it_may_and_only_to_what_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# mine\n[access]\nowners = [\"qq:ME\"]\n").unwrap();
+        let lang = Lang::En;
+        let shown = chat_settings(&path, lang).unwrap();
+        assert!(
+            shown.contains("life.morning = 08:30 (Good-morning at"),
+            "{shown}"
+        );
+        assert!(shown.contains("qq.split_replies = true"), "{shown}");
+        assert!(!shown.contains("access.owners") && !shown.contains("api_key"));
+
+        assert_eq!(
+            change_setting(&path, "life.morning", "09:00", lang).unwrap(),
+            ("08:30".to_owned(), "09:00".to_owned())
+        );
+        change_setting(&path, "heartbeat.enabled", "是", lang).unwrap();
+        change_setting(&path, "life.dates", "03-14 my birthday", lang).unwrap();
+        for (key, value) in [
+            ("access.owners", "qq:EVE"),
+            ("model.api_key", "sk-x"),
+            ("tools.shell", "allow"),
+            ("heartbeat.enabled", "maybe"),
+            ("heartbeat.quiet_hours", "late"),
+            ("life.morning", "9"),
+            ("heartbeat.session", "qq:c2c:STRANGER"),
+        ] {
+            assert!(
+                change_setting(&path, key, value, lang).is_err(),
+                "{key} = {value}"
+            );
+        }
+        // A reset goes back to the default.
+        assert_eq!(
+            change_setting(&path, "life.morning", "-", lang).unwrap().1,
+            "08:30"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine"), "{text}");
+        let config: Config = toml::from_str(&text).unwrap();
+        assert!(config.heartbeat.enabled);
+        assert_eq!(config.life.dates[0].name, "my birthday");
+        assert_eq!(config.access.owners, ["qq:ME"]);
+        assert_eq!(config.heartbeat.quiet_hours, "23:00-08:00");
     }
 
     #[test]
@@ -1928,7 +2260,7 @@ mod tests {
         let out = drive_in(
             Lang::Zh,
             &path,
-            "5\n?\n是\n\n\n\n99\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
+            "5\n?\n是\n\n\n\n\n99\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
         );
         assert!(out.contains("2) 模型与上下文"), "{out}");
         assert!(out.contains("s) 保存并退出"), "{out}");
@@ -1958,6 +2290,7 @@ mod tests {
             NOT_SAVED,
             SAVED,
             RESTART,
+            RESTARTED,
             RESULT_INVALID,
             CANNOT_RESET,
             NOT_ACCEPTED,
@@ -1968,6 +2301,7 @@ mod tests {
             LOADING_MODELS,
             NO_MODEL_LIST,
             YES_NO,
+            NOT_A_DATE,
             PICK_ONE,
             DEFAULT,
             EMPTY,

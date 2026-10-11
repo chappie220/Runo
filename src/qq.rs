@@ -29,6 +29,13 @@ const CHUNK_CHARS: usize = 1500;
 const C2C_REPLIES: usize = 4;
 const GROUP_REPLIES: usize = 5;
 const SEEN_CAPACITY: usize = 1000;
+/// Longest reply that is split into several messages; longer ones are
+/// answers to read, not chat.
+const CHAT_CHARS: usize = 600;
+/// Messages one chatty reply becomes at most, keeping to QQ's passive
+/// replies (an approval card may have used one).
+const CHAT_PARTS: usize = 3;
+
 /// Longest tool summary shown in an approval card.
 const SUMMARY_CHARS: usize = 1000;
 
@@ -382,6 +389,41 @@ impl QqBot {
             || allow.contains(&incoming.sender)
             || matches!(&incoming.target, Target::Group(id) if allow.contains(id))
     }
+}
+
+/// A short chatty reply as the messages it is sent in, one per paragraph
+/// up to `CHAT_PARTS` (the last takes the rest). Anything with code, a
+/// table or more length than chat stays one message.
+fn chat_parts(text: &str) -> Vec<String> {
+    let text = text.trim();
+    let structured = text.contains("```") || text.lines().any(|l| l.trim_start().starts_with('|'));
+    if structured || text.chars().count() > CHAT_CHARS {
+        return vec![text.to_owned()];
+    }
+    let paragraphs: Vec<&str> = text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if paragraphs.len() < 2 {
+        return vec![text.to_owned()];
+    }
+    let mut parts: Vec<String> = paragraphs
+        .iter()
+        .take(CHAT_PARTS - 1)
+        .map(|p| (*p).to_owned())
+        .collect();
+    let rest = &paragraphs[parts.len()..];
+    if !rest.is_empty() {
+        parts.push(rest.join("\n\n"));
+    }
+    parts
+}
+
+/// The pause before sending `next`, as if typing it.
+fn typing_pause(next: &str) -> Duration {
+    let chars = next.chars().count() as u64;
+    Duration::from_millis((500 + 40 * chars).min(2500))
 }
 
 /// A reply to an approval request: whether it allows, and the request
@@ -838,11 +880,23 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
         if reply.is_empty() {
             return;
         }
-        if let Err(err) = bot
-            .send_from(&incoming.target, &reply, Some(&incoming.id), &seq)
-            .await
-        {
-            eprintln!("qq: cannot reply in {session}: {err:#}");
+        let split = crate::live::read(|c| c.qq.split_replies).unwrap_or(bot.config.split_replies);
+        let parts = if split {
+            chat_parts(&reply)
+        } else {
+            vec![reply]
+        };
+        for (index, part) in parts.iter().enumerate() {
+            if index > 0 {
+                tokio::time::sleep(typing_pause(part)).await;
+            }
+            if let Err(err) = bot
+                .send_from(&incoming.target, part, Some(&incoming.id), &seq)
+                .await
+            {
+                eprintln!("qq: cannot reply in {session}: {err:#}");
+                break;
+            }
         }
     });
 }
@@ -991,6 +1045,7 @@ mod tests {
             allow: vec!["U1".into(), "G1".into()],
             api_base: base.clone(),
             token_url: format!("{base}/app/getAppAccessToken"),
+            split_replies: true,
         })
         .unwrap();
         let agent = Arc::new(Agent {
@@ -1000,7 +1055,10 @@ mod tests {
             voice: None,
             tools: NoTools,
             store: Store::open_in_memory().unwrap(),
-            config: AgentConfig::default(),
+            config: AgentConfig {
+                time_sense: false,
+                ..AgentConfig::default()
+            },
         });
         let gateway = Gateway::new(agent.clone(), None, Default::default());
         tokio::spawn(run(bot, gateway));
@@ -1032,6 +1090,28 @@ mod tests {
         );
         let id = agent.store.session_id("qq:c2c:U1").unwrap();
         assert_eq!(agent.store.history(id, 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn short_chat_replies_go_out_as_a_few_messages() {
+        assert_eq!(chat_parts("早！"), ["早！"]);
+        assert_eq!(
+            chat_parts("早上好呀\n\n今天要下雨，记得带伞。\n\n面试加油！"),
+            ["早上好呀", "今天要下雨，记得带伞。", "面试加油！"]
+        );
+        assert_eq!(
+            chat_parts("一\n\n二\n\n三\n\n四"),
+            ["一", "二", "三\n\n四"],
+            "at most three"
+        );
+        let code = "看这个：\n\n```\nls\n```";
+        assert_eq!(chat_parts(code), [code]);
+        let table = "结果：\n\n| a | b |\n|---|---|";
+        assert_eq!(chat_parts(table), [table]);
+        let long = format!("{}\n\n{}", "长".repeat(400), "长".repeat(400));
+        assert_eq!(chat_parts(&long), [long]);
+        assert!(typing_pause("短") < typing_pause(&"长".repeat(30)));
+        assert_eq!(typing_pause(&"长".repeat(500)), Duration::from_millis(2500));
     }
 
     #[test]

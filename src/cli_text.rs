@@ -241,6 +241,13 @@ const COMMANDS: &[(&str, Tr)] = &[
             "按会话统计模型调用的 token 和费用",
         ),
     ),
+    (
+        "diary",
+        tr(
+            "Read the agent's diary, written when it reflects each night ([life])",
+            "查看智能体每晚反思时写的日记（[life]）",
+        ),
+    ),
     ("sessions", tr("List or delete sessions", "列出或删除会话")),
     ("sessions list", tr("List sessions", "列出会话")),
     (
@@ -448,6 +455,11 @@ const ARGS: &[(&str, &str, Tr)] = &[
         "days",
         tr("How many days back to count", "统计最近多少天"),
     ),
+    (
+        "diary",
+        "days",
+        tr("How many entries to show", "显示最近几篇"),
+    ),
     ("sessions delete", "name", tr("Session name", "会话名")),
     (
         "completions install",
@@ -626,6 +638,10 @@ pub const QQ_OPEN_TO_STRANGERS: Tr = tr(
     "access.guest or access.grants.\"qq:*\" lets any QQ user run commands or write files; list trusted openids in qq.allow (the log shows each sender's openid), or grant those capabilities to named senders only",
     "access.guest 或 access.grants.\"qq:*\" 让任何 QQ 用户都能运行命令或写文件；请在 qq.allow 里列出可信的 openid（日志会显示每个发送者的 openid），或只把这些权限授予指定的发送者",
 );
+pub const NO_DIARY: Tr = tr(
+    "No diary yet: turn on [life] and let the Gateway run through a night.",
+    "还没有日记：打开 [life]，让 Gateway 运行过一个夜晚。",
+);
 pub const NO_OWNERS: Tr = tr(
     "access: no access.owners, so every QQ and email sender is a guest that can only use {}; add yourself as \"qq:<openid>\" or \"mail:<address>\" to use memory, cron, files or shell from there",
     "权限：没有设置 access.owners，所以每个 QQ 和邮件发送者都是访客，只能使用 {}；把自己加为 \"qq:<openid>\" 或 \"mail:<地址>\"，才能从那里使用记忆、定时任务、文件或 shell",
@@ -704,6 +720,7 @@ mod tests {
         NO_MODEL,
         QQ_OPEN_TO_STRANGERS,
         NO_OWNERS,
+        NO_DIARY,
         NEVER,
         CRON_ADDED,
         CRON_ROW,

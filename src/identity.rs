@@ -72,7 +72,7 @@ impl Identity {
     }
 
     /// System prompt section that puts the agent in this identity.
-    fn prompt(&self) -> String {
+    pub fn prompt(&self) -> String {
         format!(
             "## IDENTITY.md\n{}\n\n## SOUL.md\n{}\n\n\
              This is who you are in every conversation. It shapes your voice, \
