@@ -161,6 +161,11 @@ pub mod chat {
         "你的消息已加入当前这一轮，但给它的回应没能生成：{}",
     );
 
+    pub const QQ_APPROVAL: Tr = tr(
+        "Allow {}?\n{}\n\nReply \"yes\" to allow or \"no\" to decline (5 minutes).",
+        "允许 {}？\n{}\n\n回复“是”允许，回复“否”拒绝（5 分钟内有效）。",
+    );
+
     #[cfg(test)]
     pub const ALL: &[Tr] = &[
         FAILED,
@@ -184,6 +189,7 @@ pub mod chat {
         STOP_NOT_ALLOWED,
         FOLLOW_UP_QUEUED,
         ACK_FAILED,
+        QQ_APPROVAL,
     ];
 }
 

@@ -29,7 +29,7 @@ use crate::tools::{Approver, with_approver};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 /// An unanswered approval is declined so a turn never waits forever.
-const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_SESSION_NAME: usize = 64;
 const SCHEDULER_TICK: Duration = Duration::from_secs(20);
 /// An acknowledgement that takes longer is dropped; the turn goes on regardless.

@@ -3,8 +3,8 @@
 //! Private chats (C2C) and group @-mentions each map to one session:
 //! `qq:c2c:<user_openid>` and `qq:group:<group_openid>`.
 
-use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,13 +12,14 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent::{Model, Tools};
 use crate::attachments::Upload;
 use crate::config::QqConfig;
-use crate::gateway::{Gateway, Notifier};
+use crate::gateway::{APPROVAL_TIMEOUT, Gateway, Notifier};
+use crate::tools::{Approver, with_approver};
 
 /// GROUP_AND_C2C_EVENT: private messages and group @-mentions.
 const INTENTS: u64 = 1 << 25;
@@ -73,6 +74,10 @@ pub struct QqBot {
     secret: String,
     token: tokio::sync::Mutex<Option<(String, Instant)>>,
     seen: Mutex<(HashSet<String>, VecDeque<String>)>,
+    /// Approvals waiting for a yes or no, by session: the sender who must
+    /// answer and where the answer goes. A session runs one turn at a time,
+    /// and a turn calls its tools one by one, so one per session is enough.
+    approvals: Mutex<HashMap<String, (String, oneshot::Sender<bool>)>>,
 }
 
 /// An incoming message the agent should answer.
@@ -133,6 +138,7 @@ impl QqBot {
             secret,
             token: tokio::sync::Mutex::new(None),
             seen: Mutex::new((HashSet::new(), VecDeque::new())),
+            approvals: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -236,6 +242,20 @@ impl QqBot {
     /// Sends `text`, replying to `reply_to` while QQ still accepts passive
     /// replies and falling back to active messages after that.
     pub async fn send(&self, target: &Target, text: &str, reply_to: Option<&str>) -> Result<()> {
+        self.send_from(target, text, reply_to, &AtomicUsize::new(1))
+            .await
+    }
+
+    /// Like `send`, numbering passive replies from `seq`, which several
+    /// sends answering the same message share so QQ sees no repeated
+    /// `msg_seq`.
+    async fn send_from(
+        &self,
+        target: &Target,
+        text: &str,
+        reply_to: Option<&str>,
+        seq: &AtomicUsize,
+    ) -> Result<()> {
         let mut chunks = split(text, CHUNK_CHARS);
         let max = target.max_replies();
         if chunks.len() > max {
@@ -245,11 +265,11 @@ impl QqBot {
             }
         }
         let mut passive = reply_to;
-        for (index, chunk) in chunks.iter().enumerate() {
+        for chunk in &chunks {
             let mut body = json!({ "msg_type": 0, "content": chunk });
             if let Some(id) = passive {
                 body["msg_id"] = json!(id);
-                body["msg_seq"] = json!(index + 1);
+                body["msg_seq"] = json!(seq.fetch_add(1, Ordering::Relaxed));
             }
             match self
                 .api(reqwest::Method::POST, &target.path(), Some(body))
@@ -288,11 +308,100 @@ impl QqBot {
         true
     }
 
+    /// Hands a yes or no to the approval waiting in this session, if the
+    /// message answers it; anything else goes to the agent as usual.
+    fn answer_approval(&self, incoming: &Incoming) -> bool {
+        let Some(allow) = parse_answer(&incoming.text) else {
+            return false;
+        };
+        let mut approvals = self.approvals.lock().unwrap_or_else(|p| p.into_inner());
+        let session = incoming.target.session();
+        if !approvals
+            .get(&session)
+            .is_some_and(|(sender, _)| *sender == incoming.sender)
+        {
+            return false;
+        }
+        let (_, answer) = approvals.remove(&session).expect("checked above");
+        let _ = answer.send(allow);
+        true
+    }
+
     fn allowed(&self, incoming: &Incoming) -> bool {
         let allow = &self.config.allow;
         allow.is_empty()
             || allow.contains(&incoming.sender)
             || matches!(&incoming.target, Target::Group(id) if allow.contains(id))
+    }
+}
+
+/// A reply to an approval request: `Some(true)` allows, `Some(false)` declines.
+fn parse_answer(text: &str) -> Option<bool> {
+    let text = text
+        .trim()
+        .trim_end_matches(['.', '!', '。', '！'])
+        .to_lowercase();
+    match text.as_str() {
+        "y" | "yes" | "ok" | "allow" | "是" | "好" | "可以" | "同意" | "允许" | "批准" => {
+            Some(true)
+        }
+        "n" | "no" | "deny" | "否" | "不" | "不行" | "不同意" | "拒绝" | "不允许" => {
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
+/// Answers a QQ turn's approvals: the owner is asked in the conversation and
+/// replies yes or no; anyone else is declined without being asked.
+struct QqApprover {
+    bot: Arc<QqBot>,
+    target: Target,
+    sender: String,
+    owner: bool,
+    reply_to: String,
+    seq: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Approver for QqApprover {
+    async fn approve(&self, tool: &str, summary: &str) -> bool {
+        let session = self.target.session();
+        if !self.owner {
+            eprintln!(
+                "qq: declined {tool} for {} in {session} (not an owner)",
+                self.sender
+            );
+            return false;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.bot
+            .approvals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(session.clone(), (self.sender.clone(), tx));
+        let prompt = crate::i18n::chat::QQ_APPROVAL.with(&[tool, summary]);
+        let asked = self
+            .bot
+            .send_from(&self.target, &prompt, Some(&self.reply_to), &self.seq)
+            .await;
+        let allowed = match asked {
+            Ok(()) => matches!(
+                tokio::time::timeout(APPROVAL_TIMEOUT, rx).await,
+                Ok(Ok(true))
+            ),
+            Err(err) => {
+                eprintln!("qq: cannot ask for approval in {session}: {err:#}");
+                false
+            }
+        };
+        // Unanswered: nobody may answer it later.
+        self.bot
+            .approvals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&session);
+        allowed
     }
 }
 
@@ -583,6 +692,14 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
         );
         return;
     }
+    if bot.answer_approval(&incoming) {
+        eprintln!(
+            "qq: approval answered by {} in {}",
+            incoming.sender,
+            incoming.target.session()
+        );
+        return;
+    }
     eprintln!(
         "qq: message from {} in {}",
         incoming.sender,
@@ -606,10 +723,17 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
             .collect();
         let text = crate::voice::with_notes(&incoming.text, &heard);
         let text = crate::attachments::with_problems(&text, &problems);
-        let reply = match gateway
-            .chat_unattended_with(actor, &session, &text, &uploads)
-            .await
-        {
+        let seq = Arc::new(AtomicUsize::new(1));
+        let approver: Arc<dyn Approver> = Arc::new(QqApprover {
+            bot: bot.clone(),
+            target: incoming.target.clone(),
+            sender: incoming.sender.clone(),
+            owner: actor.owner,
+            reply_to: incoming.id.clone(),
+            seq: seq.clone(),
+        });
+        let turn = gateway.chat_unattended_with(actor, &session, &text, &uploads);
+        let reply = match with_approver(approver, turn).await {
             Ok(text) => text,
             Err(err) => crate::i18n::chat::FAILED.with(&[&format!("{err:#}")]),
         };
@@ -617,7 +741,10 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
         if reply.is_empty() {
             return;
         }
-        if let Err(err) = bot.send(&incoming.target, &reply, Some(&incoming.id)).await {
+        if let Err(err) = bot
+            .send_from(&incoming.target, &reply, Some(&incoming.id), &seq)
+            .await
+        {
             eprintln!("qq: cannot reply in {session}: {err:#}");
         }
     });
@@ -804,6 +931,81 @@ mod tests {
         );
         let id = agent.store.session_id("qq:c2c:U1").unwrap();
         assert_eq!(agent.store.history(id, 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn parses_approval_answers() {
+        for yes in ["是", "yes", " Y ", "同意。", "OK!"] {
+            assert_eq!(parse_answer(yes), Some(true), "{yes}");
+        }
+        for no in ["否", "no", "N", "拒绝！"] {
+            assert_eq!(parse_answer(no), Some(false), "{no}");
+        }
+        assert_eq!(parse_answer("是什么？"), None);
+        assert_eq!(parse_answer(""), None);
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_is_asked_and_only_their_answer_counts() {
+        let sent: Sent = Arc::default();
+        let base = fake_qq(sent.clone()).await;
+        let bot = QqBot::new(QqConfig {
+            app_id: "1".into(),
+            app_secret: Some("s".into()),
+            api_base: base.clone(),
+            token_url: format!("{base}/app/getAppAccessToken"),
+            ..QqConfig::default()
+        })
+        .unwrap();
+        let target = Target::User("U1".into());
+        let approver = |owner| QqApprover {
+            bot: bot.clone(),
+            target: target.clone(),
+            sender: "U1".into(),
+            owner,
+            reply_to: "m1".into(),
+            seq: Arc::new(AtomicUsize::new(1)),
+        };
+        let message = |sender: &str, text: &str| Incoming {
+            id: "m2".into(),
+            target: target.clone(),
+            sender: sender.into(),
+            text: text.into(),
+            files: Vec::new(),
+            voice: Vec::new(),
+        };
+
+        // A guest is declined at once, without a message.
+        assert!(!approver(false).approve("shell", "rm -rf x").await);
+        assert!(sent.lock().unwrap().is_empty());
+
+        // The owner is asked, as a passive reply to their message.
+        let owner = approver(true);
+        let asked = tokio::spawn(async move { owner.approve("shell", "ls").await });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while bot.approvals.lock().unwrap().is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !bot.answer_approval(&message("U1", "帮我看看")),
+            "not an answer"
+        );
+        assert!(
+            !bot.answer_approval(&message("OTHER", "是")),
+            "not the owner"
+        );
+        assert!(bot.answer_approval(&message("U1", "是")));
+        assert!(asked.await.unwrap());
+        assert!(
+            !bot.answer_approval(&message("U1", "是")),
+            "nothing waiting"
+        );
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "/v2/users/U1/messages");
+        assert_eq!(sent[0].1["msg_id"], "m1");
+        assert_eq!(sent[0].1["msg_seq"], 1);
+        assert!(sent[0].1["content"].as_str().unwrap().contains("ls"));
     }
 
     #[test]
