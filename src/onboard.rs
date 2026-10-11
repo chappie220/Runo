@@ -170,12 +170,39 @@ const WELCOME: Tr = tr(
     "Welcome to OpenClaw. A few questions and you are ready; everything else can be changed later with `openclaw-rs config`.",
     "欢迎使用 OpenClaw。回答几个问题就能开始用；其他设置以后可以用 `openclaw-rs config` 修改。",
 );
-const STEP: Tr = tr("\n[{}/5] {}", "\n[{}/5] {}");
+const STEP: Tr = tr("\n[{}/6] {}", "\n[{}/6] {}");
 const STEP_LANGUAGE: Tr = tr("Language", "语言");
 const STEP_KEY: Tr = tr("OpenRouter API key", "OpenRouter API key");
 const STEP_MODEL: Tr = tr("Main model", "主模型");
 const STEP_IMAGES: Tr = tr("Images", "图片");
 const STEP_GATEWAY: Tr = tr("Gateway", "Gateway");
+const STEP_COMPANION: Tr = tr("Companion", "陪伴");
+const COMPANION_HOW: Tr = tr(
+    "It can be more than a chatbot: keep a diary and a mood of its own, remember what is going on in your life, say good morning and good night, and message you on its own now and then when it has something worth saying (never 23:00-08:00). That takes a few model calls a day and the Gateway running.",
+    "它可以不只是聊天机器人：有自己的日记和心情，记住你生活里正在发生的事，早晚问候，偶尔在有话想说时主动找你（23:00–08:00 不打扰）。这每天需要几次模型调用，并且 Gateway 要在运行。",
+);
+const COMPANION_ASK: Tr = tr("Turn this on? [Y/n]: ", "要打开吗？[Y/n]：");
+const COMPANION_CITY: Tr = tr(
+    "Your city, for the weather in the morning (Enter to skip): ",
+    "你所在的城市，早安时说说天气（回车跳过）：",
+);
+const COMPANION_BIRTHDAY: Tr = tr(
+    "Your birthday as MM-DD, so it remembers (Enter to skip): ",
+    "你的生日，格式 月-日，例如 03-14，它会记住（回车跳过）：",
+);
+const COMPANION_QUIET: Tr = tr(
+    "Quiet hours, when it never messages you first [23:00-08:00]: ",
+    "免打扰时段，这段时间它不会主动找你 [23:00-08:00]：",
+);
+const COMPANION_BAD: Tr = tr(
+    "{} is not right; try again or press Enter.",
+    "{} 格式不对；请重新输入，或直接回车。",
+);
+const COMPANION_LATER: Tr = tr(
+    "Change it any time with `openclaw-rs config` or /config in the chat window, section \"Companion\".",
+    "以后随时可以用 `openclaw-rs config` 或聊天窗口里的 /config 修改，在“陪伴”一节。",
+);
+const MY_BIRTHDAY: Tr = tr("my birthday", "我的生日");
 const LANGUAGE_TITLE: Tr = tr("Language / 语言", "语言 / Language");
 const PICK_MODEL: Tr = tr("Pick a model", "选择模型");
 const SEARCH_AGAIN: Tr = tr("Search again", "重新搜索");
@@ -316,6 +343,15 @@ pub const ALL: &[Tr] = &[
     STEP_MODEL,
     STEP_IMAGES,
     STEP_GATEWAY,
+    STEP_COMPANION,
+    COMPANION_HOW,
+    COMPANION_ASK,
+    COMPANION_CITY,
+    COMPANION_BIRTHDAY,
+    COMPANION_QUIET,
+    COMPANION_BAD,
+    COMPANION_LATER,
+    MY_BIRTHDAY,
     LANGUAGE_TITLE,
     PICK_MODEL,
     SEARCH_AGAIN,
@@ -675,10 +711,15 @@ pub async fn wizard<R: BufRead, W: Write>(
         None => term.tell(BROWSER_MISSING, &[])?,
     }
 
-    // 5. The Gateway, in the background.
+    // 5. Companion: the heartbeat and an inner life. Optional, so running
+    // out of answers here skips it rather than the whole setup.
+    step(term, 5, STEP_COMPANION)?;
+    companion(&mut doc, term)?;
+
+    // 6. The Gateway, in the background.
     let mut start = None;
     if let Some(gateway) = gateway {
-        step(term, 5, STEP_GATEWAY)?;
+        step(term, 6, STEP_GATEWAY)?;
         let bind = setup::parse(&doc)
             .map(|c| c.gateway.bind)
             .unwrap_or_else(|_| crate::config::GatewayConfig::default().bind);
@@ -706,6 +747,64 @@ pub async fn wizard<R: BufRead, W: Write>(
         None => term.tell(GATEWAY_LATER, &[])?,
     }
     Ok(Some(term.lang))
+}
+
+/// Asks whether to turn on the heartbeat and the inner life, and with them
+/// the city, a birthday and quiet hours.
+fn companion<R: BufRead, W: Write>(doc: &mut DocumentMut, term: &mut Term<R, W>) -> Result<()> {
+    term.tell(COMPANION_HOW, &[])?;
+    let Some(true) = term.confirm(COMPANION_ASK.get(term.lang), true)? else {
+        return term.tell(COMPANION_LATER, &[]);
+    };
+    setup::set(doc, &["heartbeat", "enabled"], Value::from(true));
+    setup::set(doc, &["life", "enabled"], Value::from(true));
+    if let Some(city) = term.ask(COMPANION_CITY.get(term.lang))?
+        && !city.is_empty()
+    {
+        setup::set(doc, &["life", "city"], Value::from(city.as_str()));
+    }
+    loop {
+        let Some(day) = term.ask(COMPANION_BIRTHDAY.get(term.lang))? else {
+            break;
+        };
+        if day.is_empty() {
+            break;
+        }
+        let valid = day
+            .split_once('-')
+            .and_then(|(m, d)| Some((m.parse().ok()?, d.parse().ok()?)))
+            .is_some_and(|(m, d)| chrono::NaiveDate::from_ymd_opt(2024, m, d).is_some());
+        if !valid {
+            term.tell(COMPANION_BAD, &[&day])?;
+            continue;
+        }
+        let mut date = toml_edit::InlineTable::new();
+        date.insert("date", day.as_str().into());
+        date.insert("name", MY_BIRTHDAY.get(term.lang).into());
+        let mut dates = toml_edit::Array::new();
+        dates.push(date);
+        setup::set(doc, &["life", "dates"], Value::Array(dates));
+        break;
+    }
+    loop {
+        let Some(quiet) = term.ask(COMPANION_QUIET.get(term.lang))? else {
+            break;
+        };
+        if quiet.is_empty() {
+            break;
+        }
+        if crate::heartbeat::Quiet::parse(&quiet).is_err() {
+            term.tell(COMPANION_BAD, &[&quiet])?;
+            continue;
+        }
+        setup::set(
+            doc,
+            &["heartbeat", "quiet_hours"],
+            Value::from(quiet.as_str()),
+        );
+        break;
+    }
+    term.tell(COMPANION_LATER, &[])
 }
 
 fn step<R: BufRead, W: Write>(term: &mut Term<R, W>, n: usize, title: Tr) -> Result<()> {
@@ -1040,8 +1139,10 @@ mod tests {
         let path = dir.path().join("config.toml");
         let catalog = fake();
         // English (already highlighted); key; search "sees", pick the first;
-        // yes (highlighted) to installing a browser and to the Gateway.
-        let script = "\rsk-good\nsees\n\r\r\r";
+        // yes (highlighted) to installing a browser; yes to the companion,
+        // a city, a bad then a good birthday, default quiet hours; yes to
+        // the Gateway.
+        let script = "\rsk-good\nsees\n\r\r\rShanghai\n31-02\n03-14\n\n\r";
         let mut term = Term {
             input: script.as_bytes(),
             out: Vec::new(),
@@ -1067,10 +1168,17 @@ mod tests {
         assert_eq!(started, 1);
         assert!(out.contains("Install Chromium"), "{out}");
         assert!(out.contains("Browser: /usr/bin/chromium"), "{out}");
-        assert!(out.contains("[5/5] Gateway"), "{out}");
+        assert!(out.contains("[6/6] Gateway"), "{out}");
         assert!(out.contains("http://127.0.0.1:18789"), "{out}");
         assert!(out.contains("Pick a model › other/sees"), "{out}");
-        assert_eq!(Config::load(&path).unwrap().model.model, "other/sees");
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.model.model, "other/sees");
+        assert!(config.heartbeat.enabled && config.life.enabled);
+        assert_eq!(config.life.city.as_deref(), Some("Shanghai"));
+        assert_eq!(config.life.dates[0].date, "03-14");
+        assert_eq!(config.life.dates[0].name, "my birthday");
+        assert!(out.contains("31-02 is not right"), "{out}");
+        assert_eq!(config.heartbeat.quiet_hours, "23:00-08:00");
 
         // A Gateway that does not start leaves the saved config and says how.
         let path = dir.path().join("second.toml");

@@ -91,7 +91,9 @@ piped input still takes typed numbers:
    typed in full;
 4. if that model cannot see images, whether to pick an image model for
    pictures people send and browser screenshots (`agent.vision_model`);
-5. whether to start the Gateway (Web UI, QQ, email) now, as with
+5. whether to turn on the companion ([heartbeat](#heartbeat) and
+   [inner life](#inner-life)), and if so your city, birthday and quiet hours;
+6. whether to start the Gateway (Web UI, QQ, email) now, as with
    `openclaw-rs gateway install`: at boot where the system allows, asking
    for your password through sudo/doas for the system service (see
    [Gateway service](#gateway-service)).
@@ -165,7 +167,9 @@ one running with `gateway.web = "off"`.
   with its state.
 - Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
   `/skills`, `/compact`, `/clear`, `/identity …`, `/sidebar`, `/expand`,
-  `/help`.
+  `/config`, `/help`.
+- `/config` opens the settings editor (below) in the window and comes back
+  to the chat when you leave it.
 
 It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over
@@ -175,8 +179,13 @@ the screen.
 
 `openclaw-rs init` sets up what a first run needs (see [Usage](#usage)).
 
-`openclaw-rs config` edits `<state dir>/config.toml` interactively, section by
-section (model and context, tools, gateway, QQ, email, web search, browser, access).
+`openclaw-rs config` (or `/config` in the terminal UI) edits
+`<state dir>/config.toml` interactively, section by section (model and
+context, tools, gateway, QQ, email, web search, browser, limits, updates,
+skills, access, and the companion: time sense, heartbeat, inner life). Every
+setting below can be changed there; nothing needs editing by hand. Saving
+restarts a running Gateway so the change applies at once (when this user
+may restart it; otherwise it says how).
 Sections and fields are picked with ↑/↓ and Enter, Esc goes back; each field
 shows the value in effect and its help. Choices and yes/no fields are menus
 (with "Default" to reset); for typed fields Enter keeps the value and `-`
@@ -649,6 +658,9 @@ with `agent.time_sense = false`.
 
 ## Heartbeat
 
+Turn it on in `openclaw-rs config` → Companion (or `/config` in the terminal
+UI); `init` offers it too. The settings, for reference:
+
 `serve` can give the agent a quiet turn every so often in your own chat to
 reach out on its own: a follow-up on something you mentioned, a reminder, a
 word after a long silence. It decides itself, and when it has nothing worth
@@ -681,7 +693,10 @@ heartbeats or the morning and evening messages stop arriving.
 
 ## Inner life
 
-With `[life]` on, the agent keeps a life of its own around you:
+Turn it on in `openclaw-rs config` → Companion (or `/config`), where the
+times, your city and the days that matter (`03-14 my birthday, 05-20 …`)
+are set too; `init` offers it. With `[life]` on, the agent keeps a life of
+its own around you:
 
 - **Every night** (`reflect_at`) it reads the last day of your conversations
   (local sessions and your own QQ chat and mailbox; never groups or other
@@ -725,7 +740,7 @@ openclaw-rs gateway install     # set it up and start it
 openclaw-rs gateway status      # how it runs, whether it runs (exit 3 when stopped)
 openclaw-rs gateway stop
 openclaw-rs gateway start
-openclaw-rs gateway restart     # e.g. after `openclaw-rs config`
+openclaw-rs gateway restart     # `openclaw-rs config` does this when it saves
 openclaw-rs gateway uninstall   # keeps state and logs
 ```
 

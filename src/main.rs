@@ -405,7 +405,7 @@ async fn run(cli: Cli) -> Result<()> {
     let config_path = cli.config.unwrap_or_else(|| state.join("config.toml"));
     // Before loading, so a file that does not load can still be repaired.
     if let Command::Config = cli.command {
-        return setup::run(&config_path, i18n::current());
+        return setup::run(&config_path, i18n::current()).map(|_| ());
     }
     if let Command::Doctor { offline } = cli.command {
         if !doctor::run(&config_path, &state, offline).await? {
@@ -615,7 +615,15 @@ async fn run(cli: Cli) -> Result<()> {
                 .skills
                 .enabled
                 .then(|| skills::Skills::new(&agent.config.workspace, &config.skills));
-            tui::run(&agent, session, config.model.model.clone(), &state, skills).await
+            tui::run(
+                &agent,
+                session,
+                config.model.model.clone(),
+                &state,
+                &config_path,
+                skills,
+            )
+            .await
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);

@@ -223,25 +223,21 @@ impl Moment {
 
 /// The owner's conversation that `section` (`heartbeat`, `life`) reaches
 /// out in, and the owner it acts as: `session`, or by default the private
-/// QQ chat of the first `qq:` owner. Refuses anyone who is not an owner,
-/// since the turn uses their permissions unasked.
+/// QQ chat of the first `qq:` owner, else the local `main` session (seen in
+/// the terminal and the Web UI). Refuses anyone who is not an owner, since
+/// the turn uses their permissions unasked.
 pub fn owner_chat(
     section: &str,
     session: Option<&str>,
     access: &AccessConfig,
 ) -> Result<(String, Actor)> {
-    let session = match session {
+    let session = match session.map(str::trim).filter(|s| !s.is_empty()) {
         Some(session) => session.to_owned(),
         None => access
             .owners
             .iter()
             .find_map(|o| o.strip_prefix("qq:"))
-            .map(|id| format!("qq:c2c:{id}"))
-            .with_context(|| {
-                format!(
-                    "{section}: set {section}.session, or add a \"qq:<openid>\" owner to access.owners"
-                )
-            })?,
+            .map_or_else(|| "main".to_owned(), |id| format!("qq:c2c:{id}")),
     };
     let actor = match sender(&session) {
         Some(sender) => access.resolve(&sender, &session),
@@ -405,10 +401,21 @@ mod tests {
         assert!(beat.actor.owner);
         assert!(beat.prompt.starts_with(PROMPT_PREFIX));
         assert!(beat.prompt.ends_with("Ask about my run."));
-        assert!(
+        let local =
             Heartbeat::from_config(&on(HeartbeatConfig::default()), &AccessConfig::default())
-                .is_err(),
-            "no QQ owner to default to"
+                .unwrap()
+                .unwrap();
+        assert_eq!(local.session, "main", "no QQ owner to default to");
+        let blank = HeartbeatConfig {
+            session: Some(" ".into()),
+            ..on(HeartbeatConfig::default())
+        };
+        assert_eq!(
+            Heartbeat::from_config(&blank, &owner_access())
+                .unwrap()
+                .unwrap()
+                .session,
+            "qq:c2c:ME"
         );
     }
 
