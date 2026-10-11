@@ -701,6 +701,15 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
         _ => None,
     };
     let mcp = mcp::Mcp::connect(&config.mcp, &workspace).await;
+    // `serve` refuses to start on a broken [mail]; elsewhere only send_mail is lost.
+    let mail = config
+        .mail
+        .enabled
+        .then(|| mail::MailBot::new(config.mail.clone()))
+        .and_then(|bot| {
+            bot.map_err(|err| eprintln!("mail: send_mail is unavailable: {err:#}"))
+                .ok()
+        });
     let auto_context = match config.agent.context_tokens {
         config::ContextBudget::Auto => onboard::auto_context(config, state).await,
         config::ContextBudget::Tokens(_) => None,
@@ -723,7 +732,8 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
                     .enabled
                     .then(|| skills::Skills::new(&workspace, &config.skills)),
             )
-            .with_review(review),
+            .with_review(review)
+            .with_mail(mail),
         store,
         config: config::AgentConfig {
             workspace,

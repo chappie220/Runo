@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 
 use crate::agent::{Model, Tools};
 use crate::attachments::Upload;
-use crate::config::{MailConfig, MailSecurity};
+use crate::config::{MailConfig, MailMode, MailSecurity};
 use crate::gateway::{Gateway, Notifier};
 use crate::store::{Store, now};
 
@@ -165,8 +165,10 @@ pub fn session_for(address: &str) -> String {
 
 impl MailBot {
     pub fn new(config: MailConfig) -> Result<Arc<Self>> {
-        if config.allow.is_empty() {
-            bail!("mail.allow is empty; list the addresses (or @domains) that may email the bot");
+        if config.mode == MailMode::Allow && config.allow.is_empty() {
+            bail!(
+                "mail.allow is empty; list the addresses (or @domains) that may email the bot, or set mail.mode = \"receive\" or \"open\""
+            );
         }
         Self::connect_only(config)
     }
@@ -236,6 +238,11 @@ impl MailBot {
         })
     }
 
+    /// Whether mail may go to `address`: replies and scheduled messages.
+    pub fn may_send(&self, address: &str) -> bool {
+        self.config.mode == MailMode::Open || self.allowed(address)
+    }
+
     /// Turns raw RFC 5322 bytes into a message to answer, or the reason to skip it.
     pub fn classify(&self, raw: &[u8]) -> Result<Incoming, Skip> {
         let message = MessageParser::default()
@@ -258,7 +265,7 @@ impl MailBot {
         if sender == self.from.to_lowercase() || sender == self.config.username.to_lowercase() {
             return Err(Skip::FromSelf);
         }
-        if !self.allowed(&sender) {
+        if self.config.mode == MailMode::Allow && !self.allowed(&sender) {
             return Err(Skip::NotAllowed(sender));
         }
         let subject = message.subject().unwrap_or("").trim().to_owned();
@@ -357,6 +364,18 @@ impl MailBot {
             }
         })?;
         Ok(())
+    }
+
+    /// Starts a new email to `to`, for the `send_mail` tool; `mail.mode`
+    /// decides who may receive one.
+    pub async fn send_new(&self, to: &str, subject: &str, text: &str) -> Result<()> {
+        let to = to.trim().to_lowercase();
+        if !self.may_send(&to) {
+            bail!("mail.mode only sends to mail.allow, and {to} is not on it");
+        }
+        self.send(&to, subject, text, None, None)
+            .await
+            .map_err(SendError::into_inner)
     }
 
     /// Sends the reply under the stable `message_id` recorded before the attempt,
@@ -787,7 +806,7 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         let mut stmt = conn.prepare(
             "SELECT id, key, sender, state, attempts, last_error, updated_at FROM mail_inbox
-             WHERE state NOT IN ('sent', 'skipped') ORDER BY id",
+             WHERE state NOT IN ('sent', 'skipped', 'read') ORDER BY id",
         )?;
         let entries = stmt
             .query_map([], |row| {
@@ -831,6 +850,9 @@ impl Notifier for MailBot {
         let to = session
             .strip_prefix(SESSION_PREFIX)
             .context("not a mail session")?;
+        if !self.may_send(to) {
+            bail!("mail.mode = \"receive\" only sends to mail.allow, and {to} is not on it");
+        }
         self.send(to, "[OpenClaw] 定时消息", text, None, None)
             .await
             .map_err(SendError::into_inner)
@@ -898,17 +920,23 @@ async fn advance<M: Model + 'static, T: Tools + 'static>(
     };
     if item.state == "processing" {
         let session = session_for(&incoming.sender);
-        let prompt = if item.interrupted {
-            format!(
+        let mut prompt = incoming.text.clone();
+        if !bot.may_send(&incoming.sender) {
+            prompt = format!(
+                "[This email is from {}, who is not on mail.allow: it is read, but no reply \
+                 will be sent to them.]\n\n{prompt}",
+                incoming.sender
+            );
+        }
+        if item.interrupted {
+            prompt = format!(
                 "[An earlier attempt to answer this email was interrupted before a reply was \
                  sent. Tool calls from that attempt may already have taken effect; check the \
-                 conversation above before repeating anything with side effects.]\n\n{}",
-                incoming.text
-            )
-        } else {
-            incoming.text.clone()
-        };
-        // `classify` checked the From address against mail.allow.
+                 conversation above before repeating anything with side effects.]\n\n{prompt}"
+            );
+        }
+        // A sender is only who the From address says; outside mode `allow`
+        // that can be anyone, with the access a stranger has.
         let actor = gateway.actor(&session, &session);
         // Saved by content, so a retried turn reuses the same files.
         let reply = match gateway
@@ -941,6 +969,15 @@ async fn advance<M: Model + 'static, T: Tools + 'static>(
         store.mail_fail(item.id, "no reply was stored")?;
         return Ok(());
     };
+    // Checked here too: mail.mode or mail.allow may have changed since the turn.
+    if !bot.may_send(&incoming.sender) {
+        store.mail_set(item.id, "read", Some("not on mail.allow; no reply sent"), 0)?;
+        eprintln!(
+            "mail: read {} from {} (no reply: not on mail.allow)",
+            item.key, incoming.sender
+        );
+        return Ok(());
+    }
     match bot.reply(&incoming, reply, message_id).await {
         Ok(()) => {
             store.mail_sent(item.id)?;
@@ -1084,6 +1121,36 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn modes_decide_whose_mail_is_read_and_who_gets_mail() {
+        let config = |mode, allow: &[&str]| MailConfig {
+            mode,
+            allow: allow.iter().map(|a| (*a).to_owned()).collect(),
+            ..bot().config.clone()
+        };
+        let stranger = b"From: x@spam.org\r\nSubject: hi\r\n\r\nhello\r\n";
+        let allowed = bot();
+        assert_eq!(
+            allowed.classify(stranger),
+            Err(Skip::NotAllowed("x@spam.org".into()))
+        );
+        assert!(allowed.may_send("me@example.org") && !allowed.may_send("x@spam.org"));
+
+        let receive = MailBot::new(config(MailMode::Receive, &["me@example.org"])).unwrap();
+        assert_eq!(receive.classify(stranger).unwrap().sender, "x@spam.org");
+        assert!(receive.may_send("me@example.org") && !receive.may_send("x@spam.org"));
+        // Reading without anyone to send to is a valid setup.
+        assert!(
+            !MailBot::new(config(MailMode::Receive, &[]))
+                .unwrap()
+                .may_send("me@example.org")
+        );
+
+        let open = MailBot::new(config(MailMode::Open, &[])).unwrap();
+        assert!(open.classify(stranger).is_ok() && open.may_send("x@spam.org"));
+        assert!(MailBot::new(config(MailMode::Allow, &[])).is_err());
     }
 
     #[test]

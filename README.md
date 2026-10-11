@@ -761,7 +761,8 @@ in from the address, so this is enough:
 enabled = true
 username = "mybot@qq.com"
 # password = "..."            # prefer MAIL_PASSWORD: the provider's app authorization code
-allow = ["me@example.com", "@family.cn"]   # required: addresses or @domains
+mode = "allow"                # "allow" | "receive" | "open", see below
+allow = ["me@example.com", "@family.cn"]   # addresses or @domains
 poll_secs = 60
 ```
 
@@ -787,8 +788,27 @@ smtp_security = "starttls"       # "tls" for 465
 
 Outlook/Hotmail personal accounts only allow OAuth sign-in and are not supported.
 
-- `allow` is required, because anyone could otherwise spend your model
-  credits by email. Replies always go to `From`, never `Reply-To`.
+- `mode` decides whose mail is read and who gets mail back:
+
+  | mode      | reads mail from | sends mail to |
+  |-----------|-----------------|---------------|
+  | `allow`   | `allow` only    | `allow` only  |
+  | `receive` | anyone          | `allow` only  |
+  | `open`    | anyone          | anyone        |
+
+  "Sends" covers replies, scheduled-job results and the `send_mail` tool,
+  which lets the model write to someone first. `send_mail` needs the `mail`
+  [capability](#access) (owners only, unless granted) and follows
+  `tools.mail` (`ask` by default, so it is declined from QQ and email, where
+  nobody can approve).
+
+  `allow` (the default) requires `allow`, because anyone could otherwise
+  spend your model credits by email. In `receive` the model still reads mail
+  from other senders (told that no reply will go out); its answer is kept,
+  the message ends as `read`, and nothing is sent. Scheduled jobs follow the
+  same rule. In `receive` and `open`, other senders count as strangers under
+  [Access](#access) (tools and daily limits). Replies always go to `From`,
+  never `Reply-To`.
 - Auto-replies, mailing lists (`Auto-Submitted`, `Precedence`, `List-Id`) and
   mail from the bot's own address are skipped, and replies carry
   `Auto-Submitted: auto-replied`, so two robots cannot loop.
@@ -844,8 +864,9 @@ guest = ["web_search", "web_fetch"] # what any other sender may use
 ```
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
-`memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`. `shell`, `files_write` and
-`identity` still follow `tools.shell`, `tools.write` and `tools.identity`, and
+`memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
+`mail` (`send_mail`). `shell`, `files_write`, `identity` and `mail` still follow
+`tools.shell`, `tools.write`, `tools.identity` and `tools.mail`, and
 `ask` is still declined where nobody can approve.
 
 Memories and scheduled jobs record who created them. Someone granted `memory`
@@ -1022,6 +1043,7 @@ context_tokens = "auto"  # budget per model call: auto, or e.g. "128k", "1m"
 shell = "ask"           # allow | ask | deny
 write = "ask"           # write_file and edit_file; reads are always allowed
 identity = "ask"        # identity_set: deny removes it; drafts always need approval
+mail = "ask"            # send_mail, when [mail] is enabled; deny removes it
 shell_timeout_secs = 120
 max_output_bytes = 16384  # per stream; also the most shell output held in memory
 ```

@@ -266,10 +266,24 @@ pub enum MailSecurity {
     None,
 }
 
+/// Whose mail the bot reads, and to whom it may send.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailMode {
+    /// Reads and answers only mail from `allow`.
+    #[default]
+    Allow,
+    /// Reads mail from anyone; sends only to `allow`.
+    Receive,
+    /// Reads mail from anyone and answers anyone.
+    Open,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MailConfig {
     pub enabled: bool,
+    pub mode: MailMode,
     pub imap_host: String,
     pub imap_port: u16,
     pub imap_security: MailSecurity,
@@ -281,7 +295,8 @@ pub struct MailConfig {
     pub password: Option<String>,
     /// Sender address for replies (default: username).
     pub from: Option<String>,
-    /// Required: addresses (or `@domain`) allowed to talk to the bot.
+    /// Addresses (or `@domain`) the bot reads (mode `allow`, required there)
+    /// or sends to (mode `receive`).
     pub allow: Vec<String>,
     pub mailbox: String,
     pub poll_secs: u64,
@@ -291,6 +306,7 @@ impl Default for MailConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            mode: MailMode::Allow,
             imap_host: String::new(),
             imap_port: 993,
             imap_security: MailSecurity::Tls,
@@ -586,6 +602,8 @@ pub struct ToolsConfig {
     /// `deny` removes `identity_set`; otherwise every draft, including the
     /// first, is saved only after a person approves it.
     pub identity: Permission,
+    /// `send_mail`; `deny` removes it. Recipients also follow `mail.mode`.
+    pub mail: Permission,
     pub shell_timeout_secs: u64,
     /// Per-stream cap on tool output returned to the model, and on shell output
     /// buffered while a command runs.
@@ -657,6 +675,7 @@ impl Default for ToolsConfig {
             shell: Permission::Ask,
             write: Permission::Ask,
             identity: Permission::Ask,
+            mail: Permission::Ask,
             shell_timeout_secs: 120,
             max_output_bytes: 16 * 1024,
             review: ReviewConfig::default(),
