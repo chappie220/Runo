@@ -120,22 +120,48 @@ Run it again any time to change these; everything else is in
 agent runs in that process, so it needs no Gateway and works over SSH next to
 one running with `gateway.web = "off"`.
 
-- Replies stream in; each tool call shows as a line that turns ✓ when done.
+```
+╭ Sessions ─────────╮╭ ✻ OpenClaw · main ──────────── anthropic/claude-sonnet-4.5 ╮
+│▸ main          24 ││ ▌ You                                                     │
+│  work          12 ││ ▌ how much disk is left?                                  │
+│  mail:me@x.org  3 ││                                                           │
+│                   ││ ✻ OpenClaw                                                │
+│                   ││   ▸ shell {"command":"df -h /"}                    ✓ 0.2s │
+│                   ││                                                           │
+│                   ││   The root partition has 12G free (81% used).             │
+│                   │├───────────────────────────────────────────────────────────┤
+│ ^N + · Tab ⇄      ││ › _                                                       │
+╰───────────────────╯╰───────────────────────────────────────────────────────────╯
+ Enter send · Alt+Enter new line · ^K commands …     context 12k / 200k ▰▱▱▱▱▱▱▱ 6%
+```
+
+- The session list on the left opens a session with a click, or with Tab,
+  ↑/↓ and Enter. Ctrl+N starts a new one, Ctrl+B hides the list (it also
+  hides itself below 72 columns).
+- Replies stream in as Markdown: headings, bold and italic, lists, quotes,
+  links, tables, and code blocks with syntax highlighting.
+- Each tool call is a line with its time that turns ✓ (or ✗) when done.
+  Click it, or press Ctrl+O for all of them, to see the output.
+- `/` at the start of the input lists the commands; Ctrl+K opens a palette
+  of commands and sessions to search. Both narrow as you type (↑/↓ and
+  Enter or Tab pick, Esc closes).
 - An `ask` tool opens a prompt in the window: `y` allows, `n` or Esc denies.
 - Enter sends, Alt+Enter (or Ctrl+J) adds a line, pasted text goes in as is.
   Messages sent while a reply runs wait and go after it.
 - Esc or Ctrl+C stops the running reply; Ctrl+D on an empty line, Ctrl+C
   when idle or `/quit` leaves.
-- ↑/↓ bring back earlier messages, PgUp/PgDn and Shift+↑/↓ scroll.
-- The top right shows how full the context is: an estimate of the next
+- ↑/↓ bring back earlier messages; the mouse wheel, PgUp/PgDn and
+  Shift+↑/↓ scroll. The window takes the mouse, so hold Shift to select text.
+- The bottom right shows how full the context is: an estimate of the next
   model call (system prompt, tools, summary, history), corrected by the
   provider's token counts, against `agent.context_tokens`. `/compact` folds
   the conversation into a summary when it gets full.
-- Type `@` for the list of ready skills (↑/↓, Tab or Enter picks, Esc
-  closes). A message naming `@skill` asks the agent to load that skill
-  before it starts; `/skills` lists every skill with its state.
+- Type `@` for the list of ready skills. A message naming `@skill` asks the
+  agent to load that skill before it starts; `/skills` lists every skill
+  with its state.
 - Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
-  `/skills`, `/compact`, `/clear`, `/identity …`, `/help`.
+  `/skills`, `/compact`, `/clear`, `/identity …`, `/sidebar`, `/expand`,
+  `/help`.
 
 It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over
