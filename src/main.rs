@@ -20,6 +20,7 @@ mod i18n;
 mod identity;
 mod life;
 mod limits;
+mod live;
 mod llm;
 mod mail;
 mod mcp;
@@ -521,7 +522,7 @@ async fn run(cli: Cli) -> Result<()> {
             if store.identity()?.is_none() {
                 eprintln!("{}", text::FIRST_START.now());
             }
-            let agent = Arc::new(build_agent(&config, &state, store).await?);
+            let agent = Arc::new(build_agent(&config, &config_path, &state, store).await?);
             let bind = bind.unwrap_or_else(|| config.gateway.bind.clone());
             let gateway =
                 gateway::Gateway::new(agent, config.gateway.token(), config.access.clone());
@@ -558,14 +559,20 @@ async fn run(cli: Cli) -> Result<()> {
                 tokio::spawn(mail::run(bot, gateway.clone()));
             }
             tokio::spawn(gateway.clone().run_scheduler());
-            if let Some(beat) =
-                heartbeat::Heartbeat::from_config(&config.heartbeat, &config.access)?
-            {
-                tokio::spawn(heartbeat::run(beat, gateway.clone()));
-            }
-            if let Some(life) = life::Life::from_config(&config.life, &config.access)? {
-                tokio::spawn(life::run(life, gateway.clone()));
-            }
+            // Checked now so a mistake stops the start; both run even when
+            // off, since they can be turned on in chat.
+            heartbeat::Heartbeat::from_config(&config.heartbeat, &config.access)?;
+            life::Life::from_config(&config.life, &config.access)?;
+            tokio::spawn(heartbeat::run(
+                config.heartbeat.clone(),
+                config.access.clone(),
+                gateway.clone(),
+            ));
+            tokio::spawn(life::run(
+                config.life.clone(),
+                config.access.clone(),
+                gateway.clone(),
+            ));
             let idle = gateway.clone();
             tokio::spawn(update::watch(config.update.clone(), move || idle.idle()));
             gateway::serve(gateway, &bind, web.unwrap_or(config.gateway.web)).await
@@ -603,14 +610,14 @@ async fn run(cli: Cli) -> Result<()> {
                 .iter()
                 .map(|path| read_upload(path))
                 .collect::<Result<Vec<_>>>()?;
-            let agent = build_agent(&config, &state, store).await?;
+            let agent = build_agent(&config, &config_path, &state, store).await?;
             turn(&agent, &session, &message, &uploads).await
         }
         Command::Tui { session } => {
             if !onboard::interactive() {
                 bail!(text::TUI_NEEDS_TERMINAL.now());
             }
-            let agent = build_agent(&config, &state, store).await?;
+            let agent = build_agent(&config, &config_path, &state, store).await?;
             let skills = config
                 .skills
                 .enabled
@@ -627,7 +634,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);
-            let agent = build_agent(&config, &state, store).await?;
+            let agent = build_agent(&config, &config_path, &state, store).await?;
             eprintln!(
                 "{}",
                 text::CHAT_BANNER.with(&[
@@ -704,7 +711,14 @@ fn completions_command(
 
 type CliAgent = Agent<llm::Client, BuiltinTools>;
 
-async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliAgent> {
+async fn build_agent(
+    config: &Config,
+    config_path: &Path,
+    state: &Path,
+    store: Store,
+) -> Result<CliAgent> {
+    // What the `settings` tool changes takes effect from here, live.
+    live::init(config_path, config);
     let workspace = config
         .tools
         .workspace
@@ -767,7 +781,8 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
                     .then(|| skills::Skills::new(&workspace, &config.skills)),
             )
             .with_review(review)
-            .with_mail(mail),
+            .with_mail(mail)
+            .with_settings(Some(config_path.to_owned())),
         store,
         config: config::AgentConfig {
             workspace,

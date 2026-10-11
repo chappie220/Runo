@@ -40,10 +40,13 @@ pub enum Capability {
     /// `send_mail`: sends email from the bot's address, still subject to
     /// `tools.mail` and `mail.mode`.
     Mail,
+    /// `settings`: shows and changes the companion settings (heartbeat,
+    /// inner life, QQ reply splitting, language) when asked in chat.
+    Settings,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 13] = [
         Capability::Shell,
         Capability::FilesRead,
         Capability::FilesWrite,
@@ -56,6 +59,7 @@ impl Capability {
         Capability::Mcp,
         Capability::Skills,
         Capability::Mail,
+        Capability::Settings,
     ];
 
     /// The capability a built-in tool needs; `None` for tools anyone may call.
@@ -72,6 +76,7 @@ impl Capability {
             "web_fetch" => Capability::WebFetch,
             "skill" => Capability::Skills,
             "send_mail" => Capability::Mail,
+            "settings" => Capability::Settings,
             name if crate::mcp::is_mcp_tool(name) => Capability::Mcp,
             _ => return None,
         })

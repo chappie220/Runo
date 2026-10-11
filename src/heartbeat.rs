@@ -118,10 +118,9 @@ pub struct Heartbeat {
 impl Heartbeat {
     /// `None` when it is off. The session's person must be an owner: the
     /// heartbeat acts with their permissions, unasked.
+    /// `None` when it is off. Checked either way, so a setting that would
+    /// stop it from starting is refused before it is ever turned on.
     pub fn from_config(config: &HeartbeatConfig, access: &AccessConfig) -> Result<Option<Self>> {
-        if !config.enabled {
-            return Ok(None);
-        }
         let (session, actor) = owner_chat("heartbeat", config.session.as_deref(), access)?;
         if config.every_minutes == 0 {
             bail!("heartbeat.every_minutes must be at least 1");
@@ -131,11 +130,15 @@ impl Heartbeat {
             prompt.push_str("\n\nThe owner adds: ");
             prompt.push_str(extra.trim());
         }
+        let quiet = Quiet::parse(&config.quiet_hours)?;
+        if !config.enabled {
+            return Ok(None);
+        }
         Ok(Some(Self {
             session,
             actor,
             every: Duration::from_secs(config.every_minutes * 60),
-            quiet: Quiet::parse(&config.quiet_hours)?,
+            quiet,
             max_per_day: config.max_per_day,
             prompt,
         }))
@@ -266,26 +269,67 @@ pub fn is_silent(reply: &str) -> bool {
     reply.is_empty() || reply.contains(SILENT)
 }
 
-/// Beats for the life of the process.
+/// How often the loops look at the live settings.
+const CHECK: Duration = Duration::from_secs(60);
+
+/// What the settings say now: the live ones, else those it started with.
+pub(crate) fn current<C: Clone>(
+    started: &(C, AccessConfig),
+    pick: impl FnOnce(&crate::config::Config) -> C,
+) -> (C, AccessConfig) {
+    crate::live::read(|c| (pick(c), c.access.clone())).unwrap_or_else(|| started.clone())
+}
+
+/// Says once what the loop is doing now, when that changes.
+pub(crate) fn announce(shown: &mut String, now: String) {
+    if *shown != now {
+        eprintln!("{now}");
+        *shown = now;
+    }
+}
+
+/// Beats for the life of the process, following the settings as they
+/// change: turned on or off, a new interval or quiet hours apply within a
+/// minute.
 pub async fn run<M: Model + 'static, T: Tools + 'static>(
-    heartbeat: Heartbeat,
+    config: HeartbeatConfig,
+    access: AccessConfig,
     gateway: Arc<Gateway<M, T>>,
 ) {
-    eprintln!(
-        "heartbeat: every {} min in {}",
-        heartbeat.every.as_secs() / 60,
-        heartbeat.session
-    );
-    let mut tick = tokio::time::interval(heartbeat.every);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // The first tick is now; wait one period instead.
-    tick.tick().await;
+    let started = (config, access);
+    let mut last = tokio::time::Instant::now();
+    let mut shown = String::new();
     loop {
-        tick.tick().await;
-        match beat(&heartbeat, &gateway).await {
-            Ok(outcome) => eprintln!("heartbeat: {outcome}"),
-            Err(err) => eprintln!("heartbeat: {err:#}"),
+        let (config, access) = current(&started, |c| c.heartbeat.clone());
+        let heartbeat = match Heartbeat::from_config(&config, &access) {
+            Ok(Some(heartbeat)) => heartbeat,
+            Ok(None) => {
+                announce(&mut shown, "heartbeat: off".into());
+                tokio::time::sleep(CHECK).await;
+                continue;
+            }
+            Err(err) => {
+                announce(&mut shown, format!("heartbeat: off: {err:#}"));
+                tokio::time::sleep(CHECK).await;
+                continue;
+            }
+        };
+        announce(
+            &mut shown,
+            format!(
+                "heartbeat: every {} min in {}",
+                heartbeat.every.as_secs() / 60,
+                heartbeat.session
+            ),
+        );
+        if last.elapsed() >= heartbeat.every {
+            last = tokio::time::Instant::now();
+            match beat(&heartbeat, &gateway).await {
+                Ok(outcome) => eprintln!("heartbeat: {outcome}"),
+                Err(err) => eprintln!("heartbeat: {err:#}"),
+            }
         }
+        tokio::time::sleep(CHECK).await;
     }
 }
 

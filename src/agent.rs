@@ -499,7 +499,13 @@ impl<M: Model, T: Tools> Agent<M, T> {
     /// The agent's inner life (`[life]`), for the owner's turns only: it
     /// holds what the agent knows and feels about them.
     fn inner_life(&self, session: &str) -> Option<String> {
-        let inner = self.config.life.as_ref()?;
+        // Live, so turning it on or off in chat applies at once.
+        let live = crate::live::read(|c| crate::life::Inner::from_config(&c.life).ok().flatten());
+        let inner = match live {
+            Some(inner) => inner,
+            None => self.config.life.clone(),
+        };
+        let inner = inner.as_ref()?;
         if !access::current().is_some_and(|a| a.owner) {
             return None;
         }
@@ -511,7 +517,8 @@ impl<M: Model, T: Tools> Agent<M, T> {
     /// The local time, and how long ago the person last wrote here when it
     /// has been a while, as a note for this turn only (`agent.time_sense`).
     fn moment(&self, session_id: i64) -> Option<String> {
-        if !self.config.time_sense {
+        let on = crate::live::read(|c| c.agent.time_sense).unwrap_or(self.config.time_sense);
+        if !on {
             return None;
         }
         let now = chrono::Local::now();

@@ -1798,6 +1798,65 @@ fn edit_section<R: BufRead, W: Write>(
     Ok(true)
 }
 
+/// The settings a person may change by asking in chat (the `settings`
+/// tool): the companion section, QQ reply splitting and the language.
+/// Keys, permissions and access stay with the editor.
+fn chat_settable() -> impl Iterator<Item = &'static Field> {
+    let companion = SECTIONS.last().map_or(&[][..], |s| s.fields);
+    let elsewhere = SECTIONS
+        .iter()
+        .flat_map(|s| s.fields)
+        .filter(|f| matches!(f.path, ["qq", "split_replies"] | ["language"]));
+    companion.iter().chain(elsewhere)
+}
+
+fn key_of(field: &Field) -> String {
+    field.path.join(".")
+}
+
+/// The chat-settable settings in `path`, one per line: key, value, what it is.
+pub fn chat_settings(path: &Path, lang: Lang) -> Result<String> {
+    let doc = load(path)?;
+    Ok(chat_settable()
+        .map(|f| {
+            format!(
+                "{} = {} ({}: {})",
+                key_of(f),
+                describe(&doc, f, lang),
+                f.label.get(lang),
+                f.help.get(lang)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Changes one chat-settable setting in `path` to `text`, as typed in the
+/// editor (`-` resets it), after checking that the result still loads and
+/// that the heartbeat and inner life accept it. The value before and after.
+pub fn change_setting(path: &Path, key: &str, text: &str, lang: Lang) -> Result<(String, String)> {
+    let field = chat_settable()
+        .find(|f| key_of(f) == key.trim())
+        .with_context(|| {
+            let keys: Vec<String> = chat_settable().map(key_of).collect();
+            format!(
+                "{key:?} cannot be changed here; use one of {}",
+                keys.join(", ")
+            )
+        })?;
+    let mut doc = load(path)?;
+    let before = describe(&doc, field, lang);
+    match text.trim() {
+        "-" => remove(&mut doc, field.path),
+        text => set(&mut doc, field.path, value_for(field.kind, text, lang)?),
+    }
+    let config = parse(&doc).context("the result does not load")?;
+    crate::heartbeat::Heartbeat::from_config(&config.heartbeat, &config.access)?;
+    crate::life::Life::from_config(&config.life, &config.access)?;
+    write_private(path, &doc.to_string())?;
+    Ok((before, describe(&doc, field, lang)))
+}
+
 fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
     Ok(match kind {
         Kind::Text | Kind::Model(_) => Value::from(text),
@@ -2089,6 +2148,54 @@ mod tests {
         let enter = "\n".repeat(14);
         let again = drive_in(Lang::Zh, &path, &format!("{section}\n{enter}q\n"));
         assert!(again.contains("03-14 我的生日, 05-20 纪念日"), "{again}");
+    }
+
+    #[test]
+    fn chat_changes_only_what_it_may_and_only_to_what_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# mine\n[access]\nowners = [\"qq:ME\"]\n").unwrap();
+        let lang = Lang::En;
+        let shown = chat_settings(&path, lang).unwrap();
+        assert!(
+            shown.contains("life.morning = 08:30 (Good-morning at"),
+            "{shown}"
+        );
+        assert!(shown.contains("qq.split_replies = true"), "{shown}");
+        assert!(!shown.contains("access.owners") && !shown.contains("api_key"));
+
+        assert_eq!(
+            change_setting(&path, "life.morning", "09:00", lang).unwrap(),
+            ("08:30".to_owned(), "09:00".to_owned())
+        );
+        change_setting(&path, "heartbeat.enabled", "是", lang).unwrap();
+        change_setting(&path, "life.dates", "03-14 my birthday", lang).unwrap();
+        for (key, value) in [
+            ("access.owners", "qq:EVE"),
+            ("model.api_key", "sk-x"),
+            ("tools.shell", "allow"),
+            ("heartbeat.enabled", "maybe"),
+            ("heartbeat.quiet_hours", "late"),
+            ("life.morning", "9"),
+            ("heartbeat.session", "qq:c2c:STRANGER"),
+        ] {
+            assert!(
+                change_setting(&path, key, value, lang).is_err(),
+                "{key} = {value}"
+            );
+        }
+        // A reset goes back to the default.
+        assert_eq!(
+            change_setting(&path, "life.morning", "-", lang).unwrap().1,
+            "08:30"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine"), "{text}");
+        let config: Config = toml::from_str(&text).unwrap();
+        assert!(config.heartbeat.enabled);
+        assert_eq!(config.life.dates[0].name, "my birthday");
+        assert_eq!(config.access.owners, ["qq:ME"]);
+        assert_eq!(config.heartbeat.quiet_hours, "23:00-08:00");
     }
 
     #[test]

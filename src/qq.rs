@@ -880,7 +880,8 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
         if reply.is_empty() {
             return;
         }
-        let parts = if bot.config.split_replies {
+        let split = crate::live::read(|c| c.qq.split_replies).unwrap_or(bot.config.split_replies);
+        let parts = if split {
             chat_parts(&reply)
         } else {
             vec![reply]

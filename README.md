@@ -659,7 +659,8 @@ with `agent.time_sense = false`.
 ## Heartbeat
 
 Turn it on in `openclaw-rs config` → Companion (or `/config` in the terminal
-UI); `init` offers it too. The settings, for reference:
+UI), or just tell the agent ([Settings in chat](#settings-in-chat)); `init`
+offers it too. The settings, for reference:
 
 `serve` can give the agent a quiet turn every so often in your own chat to
 reach out on its own: a follow-up on something you mentioned, a reminder, a
@@ -695,7 +696,7 @@ heartbeats or the morning and evening messages stop arriving.
 
 Turn it on in `openclaw-rs config` → Companion (or `/config`), where the
 times, your city and the days that matter (`03-14 my birthday, 05-20 …`)
-are set too; `init` offers it. With `[life]` on, the agent keeps a life of
+are set too, or tell the agent in chat; `init` offers it. With `[life]` on, the agent keeps a life of
 its own around you:
 
 - **Every night** (`reflect_at`) it reads the last day of your conversations
@@ -729,6 +730,22 @@ dates = [
 ```
 
 Times are in the host's time zone.
+
+## Settings in chat
+
+Owners can change the companion settings by asking, in QQ or anywhere else:
+"say good morning at 9", "don't message me first any more", "no messages
+after 22:00", "my birthday is March 14", "send each reply as one message".
+The model uses the `settings` tool, which can show and change only these:
+time sense, the heartbeat and inner-life settings, `qq.split_replies` and
+`language`. Keys, permissions, `access` and everything else stay with
+`openclaw-rs config`. Each change is checked like one made in the editor
+(a bad time or a session that is not an owner's is refused), written to
+config.toml with its comments kept, and applied at once without a restart:
+the heartbeat and the morning and evening messages follow the file within a
+minute, and the next message sees the new time sense and inner life. The
+tool is the `settings` [capability](#access), which only owners have unless
+granted.
 
 ## Gateway service
 
@@ -999,7 +1016,7 @@ guest = ["web_search", "web_fetch"] # what any other sender may use
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
-`mail` (`send_mail`). `shell`, `files_write`, `identity` and `mail` still follow
+`mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)). `shell`, `files_write`, `identity` and `mail` still follow
 `tools.shell`, `tools.write`, `tools.identity` and `tools.mail`, and
 `ask` is still declined where nobody can approve.
 

@@ -78,25 +78,28 @@ pub struct Inner {
 impl Inner {
     /// `None` when `[life]` is off.
     pub fn from_config(config: &LifeConfig) -> Result<Option<Self>> {
-        if !config.enabled {
-            return Ok(None);
-        }
-        let mut dates = Vec::new();
-        for special in &config.dates {
-            let (month, day) = special
-                .date
-                .trim()
-                .split_once('-')
-                .and_then(|(m, d)| Some((m.parse().ok()?, d.parse().ok()?)))
-                .filter(|&(m, d)| NaiveDate::from_ymd_opt(2024, m, d).is_some())
-                .with_context(|| format!("life.dates: {:?} is not MM-DD", special.date))?;
-            if special.name.trim().is_empty() {
-                bail!("life.dates: {} has no name", special.date);
-            }
-            dates.push((month, day, special.name.trim().to_owned()));
-        }
-        Ok(Some(Self { dates }))
+        let dates = dates(config)?;
+        Ok(config.enabled.then_some(Self { dates }))
     }
+}
+
+/// `life.dates` as `(month, day, name)`.
+fn dates(config: &LifeConfig) -> Result<Vec<(u32, u32, String)>> {
+    let mut dates = Vec::new();
+    for special in &config.dates {
+        let (month, day) = special
+            .date
+            .trim()
+            .split_once('-')
+            .and_then(|(m, d)| Some((m.parse().ok()?, d.parse().ok()?)))
+            .filter(|&(m, d)| NaiveDate::from_ymd_opt(2024, m, d).is_some())
+            .with_context(|| format!("life.dates: {:?} is not MM-DD", special.date))?;
+        if special.name.trim().is_empty() {
+            bail!("life.dates: {} has no name", special.date);
+        }
+        dates.push((month, day, special.name.trim().to_owned()));
+    }
+    Ok(dates)
 }
 
 /// `[life]`, checked at startup.
@@ -118,10 +121,9 @@ fn time(field: &str, text: &str) -> Result<Option<NaiveTime>> {
 }
 
 impl Life {
+    /// `None` when it is off; checked either way, as for the heartbeat.
     pub fn from_config(config: &LifeConfig, access: &AccessConfig) -> Result<Option<Self>> {
-        if Inner::from_config(config)?.is_none() {
-            return Ok(None);
-        }
+        dates(config)?;
         let (session, actor) =
             crate::heartbeat::owner_chat("life", config.session.as_deref(), access)?;
         let mut rituals = Vec::new();
@@ -138,6 +140,9 @@ impl Life {
             if let Some(at) = time(field, text)? {
                 rituals.push((name, at));
             }
+        }
+        if !config.enabled {
+            return Ok(None);
         }
         Ok(Some(Self {
             session,
@@ -183,17 +188,39 @@ fn due(at: NaiveTime, now: NaiveTime) -> bool {
     (0..LATE).contains(&late)
 }
 
-/// Runs the rituals for the life of the process.
-pub async fn run<M: Model + 'static, T: Tools + 'static>(life: Life, gateway: Arc<Gateway<M, T>>) {
-    let names: Vec<String> = life
-        .rituals
-        .iter()
-        .map(|(name, at)| format!("{name} {}", at.format("%H:%M")))
-        .collect();
-    eprintln!("life: {} in {}", names.join(", "), life.session);
+/// Runs the rituals for the life of the process, following the settings
+/// as they change.
+pub async fn run<M: Model + 'static, T: Tools + 'static>(
+    config: LifeConfig,
+    access: AccessConfig,
+    gateway: Arc<Gateway<M, T>>,
+) {
+    let started = (config, access);
+    let mut shown = String::new();
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     loop {
         tick.tick().await;
+        let (config, access) = crate::heartbeat::current(&started, |c| c.life.clone());
+        let life = match Life::from_config(&config, &access) {
+            Ok(Some(life)) => life,
+            Ok(None) => {
+                crate::heartbeat::announce(&mut shown, "life: off".into());
+                continue;
+            }
+            Err(err) => {
+                crate::heartbeat::announce(&mut shown, format!("life: off: {err:#}"));
+                continue;
+            }
+        };
+        let names: Vec<String> = life
+            .rituals
+            .iter()
+            .map(|(name, at)| format!("{name} {}", at.format("%H:%M")))
+            .collect();
+        crate::heartbeat::announce(
+            &mut shown,
+            format!("life: {} in {}", names.join(", "), life.session),
+        );
         let now = Local::now();
         let today = now.date_naive().to_string();
         for &(name, at) in &life.rituals {
