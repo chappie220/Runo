@@ -2,25 +2,32 @@
 //!
 //! The agent runs in this process, as with `chat`, so it works with the
 //! Gateway stopped or running without the Web UI (`gateway.web = "off"`).
-//! Replies stream in, tool calls show as they run, approvals are a prompt
-//! in the window, and messages typed while a turn runs are sent after it.
+//! Sessions are listed in a sidebar, replies render as Markdown and stream
+//! in, tool calls show as they run and open to show their output, approvals
+//! are a prompt in the window, and messages typed while a turn runs are sent
+//! after it. `/` and Ctrl+K open the commands; the mouse scrolls and clicks.
 
-use std::collections::VecDeque;
+mod highlight;
+mod markdown;
+mod view;
+
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use futures_util::StreamExt;
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Padding, Paragraph};
+use ratatui::layout::{Position, Rect};
+use ratatui::text::Line;
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthChar;
 
@@ -30,11 +37,16 @@ use crate::attachments::Upload;
 use crate::i18n::{Lang, Tr, tr};
 use crate::llm::Role;
 use crate::skills::Skills;
+use crate::store::SessionSummary;
 use crate::tools::{Approver, with_approver};
 
 const HINTS: Tr = tr(
-    "Enter send · Alt+Enter new line · PgUp/PgDn scroll · /help · Ctrl+D quit",
-    "回车发送 · Alt+回车换行 · PgUp/PgDn 滚动 · /help 帮助 · Ctrl+D 退出",
+    "Enter send · Alt+Enter new line · ^K commands · ^N new · ^B sessions · ^O tool output",
+    "回车发送 · Alt+回车换行 · ^K 命令 · ^N 新会话 · ^B 会话栏 · ^O 工具输出",
+);
+const SIDEBAR_HINTS: Tr = tr(
+    "↑/↓ choose · Enter open · ^N new · Esc back",
+    "↑/↓ 选择 · 回车打开 · ^N 新会话 · Esc 返回",
 );
 const WORKING: Tr = tr("working… Esc stops", "处理中… Esc 停止");
 const STOPPING: Tr = tr("stopping…", "正在停止…");
@@ -42,8 +54,8 @@ const QUEUED: Tr = tr("{} waiting", "{} 条待发送");
 const FILES: Tr = tr("files: {}", "附件：{}");
 const YOU: Tr = tr("You", "你");
 const HELP: Tr = tr(
-    "Commands:\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /quit            leave\nThe top right shows how full the context is. Type @ for the skill list (↑/↓, Tab or Enter picks, Esc closes).\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn or Shift+↑/↓ scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.",
-    "命令：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /quit            退出\n右上角显示上下文用了多少。输入 @ 弹出 skill 列表（↑/↓ 选择，Tab 或回车确认，Esc 关闭）。\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn 或 Shift+↑/↓ 滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。",
+    "Commands (type / or press Ctrl+K for the list):\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /sidebar         show or hide the session list\n  /expand          open or close every tool output\n  /quit            leave\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn, Shift+↑/↓ or the mouse wheel scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.\nCtrl+K commands and sessions · Ctrl+N new session · Ctrl+B session list · Tab moves between the list and the input · Ctrl+O opens tool output, or click a tool line. Hold Shift to select text with the mouse.",
+    "命令（输入 / 或按 Ctrl+K 弹出列表）：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /sidebar         显示或隐藏会话栏\n  /expand          展开或收起所有工具输出\n  /quit            退出\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn、Shift+↑/↓ 或鼠标滚轮滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。\nCtrl+K 命令和会话 · Ctrl+N 新会话 · Ctrl+B 会话栏 · Tab 在会话栏和输入框之间切换 · Ctrl+O 展开工具输出，也可以点击工具那一行。按住 Shift 用鼠标选中文字。",
 );
 const SWITCHED: Tr = tr("Session: {}", "会话：{}");
 const ATTACHED: Tr = tr(
@@ -62,7 +74,7 @@ const QUIT_AGAIN: Tr = tr(
     "A reply is running: press Ctrl+D again to stop it and quit.",
     "回复还在进行：再按一次 Ctrl+D 停止并退出。",
 );
-const CONTEXT: Tr = tr("context ~{} / {} ({}%)", "上下文 ~{} / {}（{}%）");
+const CONTEXT: Tr = tr("context {} / {}", "上下文 {} / {}");
 const SKILLS_OFF: Tr = tr(
     "Skills are off (skills.enabled in openclaw-rs config).",
     "Skills 已关闭（在 openclaw-rs config 里打开 skills.enabled）。",
@@ -71,15 +83,41 @@ const NO_SKILLS: Tr = tr(
     "No skills yet: openclaw-rs skills install <source>, or ask the agent to save one.",
     "还没有 skill：用 openclaw-rs skills install <来源> 安装，或者让智能体保存一个。",
 );
-const NO_MATCH: Tr = tr("no skill matches", "没有匹配的 skill");
+const NO_MATCH: Tr = tr("nothing matches", "没有匹配项");
 const FIRST_START_NOTE: Tr = tr(
     "First start: the agent has no identity yet and will ask who it should be.",
     "首次启动：智能体还没有身份，会先问你它该是谁。",
 );
+const SESSIONS: Tr = tr("Sessions", "会话");
+const PLACEHOLDER: Tr = tr(
+    "Message {} · / commands · @ skills",
+    "给 {} 发消息 · / 命令 · @ skills",
+);
+const PALETTE: Tr = tr("Commands", "命令");
+const PALETTE_SESSION: Tr = tr("open session", "打开会话");
+const MORE_OUTPUT: Tr = tr(
+    "… {} more lines (Ctrl+O closes)",
+    "… 还有 {} 行（Ctrl+O 收起）",
+);
+const NO_OUTPUT: Tr = tr("(no output)", "（没有输出）");
+
+const CMD_HELP: Tr = tr("commands and keys", "命令和按键");
+const CMD_NEW: Tr = tr("start a fresh session", "开始一个新会话");
+const CMD_SESSION: Tr = tr("switch to a session by name", "按名字切换会话");
+const CMD_SESSIONS: Tr = tr("list sessions", "列出会话");
+const CMD_ATTACH: Tr = tr("send a file with the next message", "随下一条消息发送文件");
+const CMD_CLEAR: Tr = tr("clear the screen", "清屏");
+const CMD_SKILLS: Tr = tr("list skills", "列出 skills");
+const CMD_COMPACT: Tr = tr("fold the conversation into a summary", "把对话折叠成摘要");
+const CMD_IDENTITY: Tr = tr("show or approve the identity", "查看或批准身份");
+const CMD_SIDEBAR: Tr = tr("show or hide the session list", "显示或隐藏会话栏");
+const CMD_EXPAND: Tr = tr("open or close every tool output", "展开或收起所有工具输出");
+const CMD_QUIT: Tr = tr("leave", "退出");
 
 #[cfg(test)]
 const ALL: &[Tr] = &[
     HINTS,
+    SIDEBAR_HINTS,
     WORKING,
     STOPPING,
     QUEUED,
@@ -99,27 +137,150 @@ const ALL: &[Tr] = &[
     SKILLS_OFF,
     NO_SKILLS,
     NO_MATCH,
+    SESSIONS,
+    PLACEHOLDER,
+    PALETTE,
+    PALETTE_SESSION,
+    MORE_OUTPUT,
+    NO_OUTPUT,
+    CMD_HELP,
+    CMD_NEW,
+    CMD_SESSION,
+    CMD_SESSIONS,
+    CMD_ATTACH,
+    CMD_CLEAR,
+    CMD_SKILLS,
+    CMD_COMPACT,
+    CMD_IDENTITY,
+    CMD_SIDEBAR,
+    CMD_EXPAND,
+    CMD_QUIT,
+];
+
+/// A slash command: its name, whether it needs an argument, what it does.
+struct Command {
+    name: &'static str,
+    arg: bool,
+    help: Tr,
+}
+
+const COMMANDS: &[Command] = &[
+    Command {
+        name: "new",
+        arg: false,
+        help: CMD_NEW,
+    },
+    Command {
+        name: "session",
+        arg: true,
+        help: CMD_SESSION,
+    },
+    Command {
+        name: "sessions",
+        arg: false,
+        help: CMD_SESSIONS,
+    },
+    Command {
+        name: "attach",
+        arg: true,
+        help: CMD_ATTACH,
+    },
+    Command {
+        name: "skills",
+        arg: false,
+        help: CMD_SKILLS,
+    },
+    Command {
+        name: "compact",
+        arg: false,
+        help: CMD_COMPACT,
+    },
+    Command {
+        name: "identity",
+        arg: false,
+        help: CMD_IDENTITY,
+    },
+    Command {
+        name: "clear",
+        arg: false,
+        help: CMD_CLEAR,
+    },
+    Command {
+        name: "sidebar",
+        arg: false,
+        help: CMD_SIDEBAR,
+    },
+    Command {
+        name: "expand",
+        arg: false,
+        help: CMD_EXPAND,
+    },
+    Command {
+        name: "help",
+        arg: false,
+        help: CMD_HELP,
+    },
+    Command {
+        name: "quit",
+        arg: false,
+        help: CMD_QUIT,
+    },
 ];
 
 /// Added to a message that names skills with @, for the model.
 const SKILL_HINT: &str = "(Skills to use: {}. Load each with the skill tool before you start.)";
-/// Skills shown at once in the @ list.
+/// Rows shown at once in a list popup.
 const MAX_SUGGESTIONS: usize = 8;
-
-/// The @ list under the cursor: skills whose name matches what follows @.
-#[derive(Debug)]
-struct Completion {
-    /// Index of the @ in the input.
-    start: usize,
-    /// Name and description.
-    items: Vec<(String, String)>,
-    selected: usize,
-}
-
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 /// Lines of input shown before the box scrolls.
 const MAX_INPUT_LINES: usize = 6;
 const HISTORY_LOADED: usize = 200;
+/// Tool output kept for showing; the model got all of it.
+const MAX_TOOL_OUTPUT: usize = 64 * 1024;
+/// Lines of tool output shown when it is opened.
+const TOOL_OUTPUT_LINES: usize = 40;
+/// Below this width the session list hides itself.
+const SIDEBAR_MIN_WIDTH: u16 = 72;
+/// Lines one mouse wheel step scrolls.
+const WHEEL_LINES: usize = 3;
+
+/// What a list popup completes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    /// `@skill` anywhere in the input.
+    Skill,
+    /// `/command` at the start of the input.
+    Command,
+}
+
+/// A popup list under the cursor: skills after @, commands after a leading /.
+#[derive(Debug)]
+struct Completion {
+    kind: Kind,
+    /// Index of the @ or / in the input.
+    start: usize,
+    /// Name and description; an empty name is a note, not a choice.
+    items: Vec<(String, String)>,
+    selected: usize,
+}
+
+/// One row of the Ctrl+K palette.
+#[derive(Debug, Clone, PartialEq)]
+struct PaletteItem {
+    label: String,
+    detail: String,
+    /// The command line it runs.
+    line: String,
+    /// Put the line in the input to finish typing instead of running it.
+    edit: bool,
+}
+
+/// The Ctrl+K palette: commands and sessions, filtered by what is typed.
+#[derive(Default)]
+struct Palette {
+    query: Input,
+    selected: usize,
+}
 
 /// What the window shows, oldest first.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,7 +290,11 @@ enum Entry {
     Tool {
         name: String,
         detail: String,
-        done: Option<usize>,
+        /// `None` while it runs.
+        output: Option<String>,
+        started: Instant,
+        elapsed: Option<Duration>,
+        expanded: bool,
     },
     Note(String),
     Error(String),
@@ -167,13 +332,23 @@ struct Outgoing {
     files: Vec<Upload>,
 }
 
-/// What a key asked for, beyond editing the screen.
+/// What a key or click asked for, beyond editing the screen.
 #[derive(Debug, PartialEq)]
 enum Action {
     None,
+    /// Send what is in the input.
     Send,
+    /// Run this command line, leaving the input as it is.
+    Run(String),
     Stop,
     Quit,
+}
+
+/// Where keys go.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Focus {
+    Input,
+    Sidebar,
 }
 
 /// The line editor at the bottom; `cursor` is a char index.
@@ -197,6 +372,10 @@ impl Input {
     fn set(&mut self, text: &str) {
         self.text = text.chars().collect();
         self.cursor = self.text.len();
+    }
+
+    fn string(&self) -> String {
+        self.text.iter().collect()
     }
 
     fn is_empty(&self) -> bool {
@@ -227,6 +406,29 @@ impl Input {
         }
         self.text.drain(start..self.cursor);
         self.cursor = start;
+    }
+
+    /// Keys every one-line editor shares; `false` when the key is not one.
+    fn edit_key(&mut self, key: &KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('a') if ctrl => self.cursor = 0,
+            KeyCode::Char('e') if ctrl => self.cursor = self.text.len(),
+            KeyCode::Char('u') if ctrl => {
+                self.text.drain(..self.cursor);
+                self.cursor = 0;
+            }
+            KeyCode::Char('w') if ctrl => self.delete_word(),
+            KeyCode::Char(c) if !ctrl => self.insert(c),
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Right => self.cursor = (self.cursor + 1).min(self.text.len()),
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.cursor = self.text.len(),
+            _ => return false,
+        }
+        true
     }
 
     /// The input broken into rows of `width` columns, and the cursor's row
@@ -264,9 +466,30 @@ impl Input {
     }
 }
 
+/// Where things were drawn, for the mouse.
+#[derive(Default)]
+struct Hits {
+    body: Rect,
+    /// The entry each visible body row belongs to, for tool lines.
+    body_rows: Vec<Option<usize>>,
+    sidebar: Rect,
+    /// The session on each visible sidebar row, from its first list row.
+    sidebar_rows: Vec<String>,
+    sidebar_first_row: u16,
+}
+
+/// A message's rendered lines, kept while its text and the width stay the same.
+struct Cached {
+    width: usize,
+    hash: u64,
+    lines: Vec<Line<'static>>,
+}
+
 struct App {
     lang: Lang,
     name: String,
+    /// The identity's emoji, or ✻.
+    icon: String,
     model: String,
     session: String,
     entries: Vec<Entry>,
@@ -291,10 +514,19 @@ struct App {
     /// Ready skills (name, description), read when an @ list opens.
     known_skills: Vec<(String, String)>,
     completion: Option<Completion>,
-    /// The @ whose list was closed with Esc; it stays closed.
+    /// The @ or / whose list was closed with Esc; it stays closed.
     dismissed: Option<usize>,
     /// Estimated tokens of the next call, and the budget.
     context: Option<(usize, usize)>,
+    sessions: Vec<SessionSummary>,
+    /// The person wants the session list (it still hides when narrow).
+    sidebar: bool,
+    focus: Focus,
+    /// Highlighted row of the session list while it has focus.
+    sidebar_selected: usize,
+    palette: Option<Palette>,
+    hits: RefCell<Hits>,
+    cache: RefCell<HashMap<usize, Cached>>,
 }
 
 impl App {
@@ -302,6 +534,7 @@ impl App {
         Self {
             lang,
             name,
+            icon: "✻".into(),
             model,
             session,
             entries: Vec::new(),
@@ -322,6 +555,13 @@ impl App {
             completion: None,
             dismissed: None,
             context: None,
+            sessions: Vec::new(),
+            sidebar: true,
+            focus: Focus::Input,
+            sidebar_selected: 0,
+            palette: None,
+            hits: RefCell::default(),
+            cache: RefCell::default(),
         }
     }
 
@@ -337,9 +577,22 @@ impl App {
             .then(|| (start, text[start + 1..self.input.cursor].iter().collect()))
     }
 
-    /// Opens, narrows or closes the @ list after the input changed.
+    /// The command name being typed: the input starts with / and the cursor
+    /// is still in its first word.
+    fn command_at_cursor(&self) -> Option<String> {
+        let text = &self.input.text;
+        let before = &text[..self.input.cursor];
+        (text.first() == Some(&'/') && !before.iter().any(|c| c.is_whitespace()))
+            .then(|| before[1..].iter().collect())
+    }
+
+    /// Opens, narrows or closes the popup list after the input changed.
     fn refresh_completion(&mut self) {
-        let Some((start, query)) = self.mention_at_cursor() else {
+        let (kind, start, query) = if let Some(query) = self.command_at_cursor() {
+            (Kind::Command, 0, query)
+        } else if let Some((start, query)) = self.mention_at_cursor() {
+            (Kind::Skill, start, query)
+        } else {
             self.completion = None;
             self.dismissed = None;
             return;
@@ -347,63 +600,94 @@ impl App {
         if self.dismissed == Some(start) {
             return;
         }
-        if self.completion.as_ref().is_none_or(|c| c.start != start) {
-            self.known_skills = self
-                .skills
-                .as_ref()
-                .map(|s| {
-                    s.ready()
-                        .into_iter()
-                        .map(|s| (s.name, s.description))
-                        .collect()
-                })
-                .unwrap_or_default();
-        }
-        let query = query.to_lowercase();
-        // Names that start with the query first, then any that contain it.
-        let mut items: Vec<(String, String)> = self
-            .known_skills
-            .iter()
-            .filter(|(name, _)| name.to_lowercase().starts_with(&query))
-            .chain(self.known_skills.iter().filter(|(name, _)| {
-                let name = name.to_lowercase();
-                !name.starts_with(&query) && name.contains(&query)
-            }))
-            .take(MAX_SUGGESTIONS)
-            .cloned()
-            .collect();
+        let reopened = self
+            .completion
+            .as_ref()
+            .is_none_or(|c| c.start != start || c.kind != kind);
+        let mut items: Vec<(String, String)> = match kind {
+            Kind::Command => {
+                let all: Vec<(String, String)> = COMMANDS
+                    .iter()
+                    .map(|c| (c.name.to_owned(), c.help.get(self.lang).to_owned()))
+                    .collect();
+                ranked(&all, &query, |(name, _)| name)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            }
+            Kind::Skill => {
+                if reopened {
+                    self.known_skills = self
+                        .skills
+                        .as_ref()
+                        .map(|s| {
+                            s.ready()
+                                .into_iter()
+                                .map(|s| (s.name, s.description))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                }
+                ranked(&self.known_skills, &query, |(name, _)| name)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            }
+        };
+        items.truncate(if kind == Kind::Command {
+            COMMANDS.len()
+        } else {
+            MAX_SUGGESTIONS
+        });
         if items.is_empty() {
-            let why = match &self.skills {
-                None => SKILLS_OFF,
-                Some(_) if self.known_skills.is_empty() => NO_SKILLS,
-                Some(_) => NO_MATCH,
+            let why = match (&self.skills, kind) {
+                (_, Kind::Command) => NO_MATCH,
+                (None, _) => SKILLS_OFF,
+                (Some(_), _) if self.known_skills.is_empty() => NO_SKILLS,
+                (Some(_), _) => NO_MATCH,
             };
             items.push((String::new(), why.get(self.lang).to_owned()));
         }
-        let selected = self
-            .completion
-            .as_ref()
-            .map_or(0, |c| c.selected.min(items.len() - 1));
+        let selected = if reopened {
+            0
+        } else {
+            self.completion
+                .as_ref()
+                .map_or(0, |c| c.selected.min(items.len() - 1))
+        };
         self.completion = Some(Completion {
+            kind,
             start,
             items,
             selected,
         });
     }
 
-    /// Puts the highlighted skill in place of the `@word`.
-    fn accept_completion(&mut self) {
+    /// Puts the highlighted choice in place of what was typed. A command
+    /// that needs nothing more runs on Enter (`run`).
+    fn accept_completion(&mut self, run: bool) -> Action {
         let Some(c) = self.completion.take() else {
-            return;
+            return Action::None;
         };
         let Some((name, _)) = c.items.get(c.selected).filter(|(n, _)| !n.is_empty()) else {
             self.dismissed = Some(c.start);
-            return;
+            return Action::None;
         };
+        if c.kind == Kind::Command {
+            let takes_arg = COMMANDS.iter().any(|cmd| cmd.name == name && cmd.arg);
+            if run && !takes_arg {
+                self.input.take();
+                return Action::Run(format!("/{name}"));
+            }
+            self.input.set(&format!("/{name} "));
+            self.dismissed = Some(0);
+            return Action::None;
+        }
         let insert: Vec<char> = format!("@{name} ").chars().collect();
         let end = self.input.cursor;
         self.input.text.splice(c.start..end, insert.iter().copied());
         self.input.cursor = c.start + insert.len();
+        Action::None
     }
 
     /// Ready skills named with @ in `text`.
@@ -426,8 +710,101 @@ impl App {
         names
     }
 
+    /// Everything Ctrl+K offers for `query`: commands, then sessions.
+    fn palette_items(&self, query: &str) -> Vec<PaletteItem> {
+        let commands: Vec<PaletteItem> = COMMANDS
+            .iter()
+            .map(|c| PaletteItem {
+                label: format!("/{}", c.name),
+                detail: c.help.get(self.lang).to_owned(),
+                line: if c.arg {
+                    format!("/{} ", c.name)
+                } else {
+                    format!("/{}", c.name)
+                },
+                edit: c.arg,
+            })
+            .collect();
+        let sessions: Vec<PaletteItem> = self
+            .sessions
+            .iter()
+            .filter(|s| s.name != self.session)
+            .map(|s| PaletteItem {
+                label: s.name.clone(),
+                detail: PALETTE_SESSION.get(self.lang).to_owned(),
+                line: format!("/session {}", s.name),
+                edit: false,
+            })
+            .collect();
+        let query = query.trim().trim_start_matches('/');
+        ranked(&commands, query, |i| &i.label[1..])
+            .into_iter()
+            .chain(ranked(&sessions, query, |i| &i.label))
+            .cloned()
+            .collect()
+    }
+
+    fn palette_key(&mut self, key: KeyEvent) -> Action {
+        let Some(palette) = &mut self.palette else {
+            return Action::None;
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.palette = None,
+            KeyCode::Char('c' | 'k') if ctrl => self.palette = None,
+            KeyCode::Up => palette.selected = palette.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => palette.selected += 1,
+            KeyCode::Enter => {
+                let query = palette.query.string();
+                let items = self.palette_items(&query);
+                let selected = self.palette.as_ref().map_or(0, |p| p.selected);
+                self.palette = None;
+                let Some(item) = items.get(selected.min(items.len().saturating_sub(1))) else {
+                    return Action::None;
+                };
+                if item.edit {
+                    self.input.set(&item.line);
+                    self.focus = Focus::Input;
+                    return Action::None;
+                }
+                return Action::Run(item.line.clone());
+            }
+            _ => {
+                if palette.query.edit_key(&key) {
+                    palette.selected = 0;
+                }
+            }
+        }
+        if let Some(query) = self.palette.as_ref().map(|p| p.query.string()) {
+            let count = self.palette_items(&query).len();
+            if let Some(palette) = &mut self.palette {
+                palette.selected = palette.selected.min(count.saturating_sub(1));
+            }
+        }
+        Action::None
+    }
+
     fn update_context<M: Model, T: Tools>(&mut self, agent: &Agent<M, T>) {
         self.context = agent.context_use(&self.session).ok();
+    }
+
+    /// Reads the session list again, with the open session in it even
+    /// before it has messages.
+    fn refresh_sessions<M: Model, T: Tools>(&mut self, agent: &Agent<M, T>) {
+        self.sessions = agent.store.sessions().unwrap_or_default();
+        if !self.sessions.iter().any(|s| s.name == self.session) {
+            self.sessions.insert(
+                0,
+                SessionSummary {
+                    name: self.session.clone(),
+                    messages: 0,
+                    updated_at: crate::store::now(),
+                },
+            );
+        }
+        self.sidebar_selected = self
+            .sidebar_selected
+            .min(self.sessions.len().saturating_sub(1));
     }
 
     fn note(&mut self, text: impl Into<String>) {
@@ -444,15 +821,33 @@ impl App {
             AgentEvent::ToolStart { name, arguments } => self.entries.push(Entry::Tool {
                 name,
                 detail: one_line(&arguments, 200),
-                done: None,
+                output: None,
+                started: Instant::now(),
+                elapsed: None,
+                expanded: false,
             }),
-            AgentEvent::ToolEnd { name, output } => {
+            AgentEvent::ToolEnd { name, output: text } => {
                 let open =
                     self.entries.iter_mut().rev().find(
-                        |e| matches!(e, Entry::Tool { name: n, done: None, .. } if *n == name),
+                        |e| matches!(e, Entry::Tool { name: n, output: None, .. } if *n == name),
                     );
-                if let Some(Entry::Tool { done, .. }) = open {
-                    *done = Some(output.len());
+                if let Some(Entry::Tool {
+                    output,
+                    started,
+                    elapsed,
+                    ..
+                }) = open
+                {
+                    let mut text = text;
+                    if text.len() > MAX_TOOL_OUTPUT {
+                        let mut cut = MAX_TOOL_OUTPUT;
+                        while !text.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
+                        text.truncate(cut);
+                    }
+                    *output = Some(text);
+                    *elapsed = Some(started.elapsed());
                 }
             }
             AgentEvent::FollowUp(_) => {}
@@ -463,6 +858,19 @@ impl App {
     fn finished(&mut self, result: Result<String>) {
         self.running = false;
         self.stopping = false;
+        // A stopped turn leaves tools that never reported back.
+        for entry in &mut self.entries {
+            if let Entry::Tool {
+                output: output @ None,
+                started,
+                elapsed,
+                ..
+            } = entry
+            {
+                *output = Some(String::new());
+                *elapsed = Some(started.elapsed());
+            }
+        }
         match result {
             Ok(reply) => {
                 // Replies that did not stream (stopped, a limit) show here.
@@ -476,13 +884,43 @@ impl App {
         }
     }
 
+    /// Opens or closes every tool output: all open unless all already are.
+    fn toggle_tools(&mut self) {
+        let open = self.entries.iter().any(|e| {
+            matches!(
+                e,
+                Entry::Tool {
+                    expanded: false,
+                    ..
+                }
+            )
+        });
+        for entry in &mut self.entries {
+            if let Entry::Tool { expanded, .. } = entry {
+                *expanded = open;
+            }
+        }
+    }
+
+    /// Whether the session list is on screen at `width` columns.
+    fn sidebar_shown(&self, width: u16) -> bool {
+        self.sidebar && width >= SIDEBAR_MIN_WIDTH
+    }
+
     fn key(&mut self, key: KeyEvent) -> Action {
         if key.kind == KeyEventKind::Release {
             return Action::None;
         }
-        if self.approval.is_none()
-            && let Some(c) = &mut self.completion
-        {
+        if self.approval.is_some() {
+            return self.edit(key);
+        }
+        if self.palette.is_some() {
+            return self.palette_key(key);
+        }
+        if self.focus == Focus::Sidebar {
+            return self.sidebar_key(key);
+        }
+        if let Some(c) = &mut self.completion {
             let plain = !key
                 .modifiers
                 .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
@@ -496,12 +934,14 @@ impl App {
                     return Action::None;
                 }
                 KeyCode::Tab => {
-                    self.accept_completion();
-                    return Action::None;
+                    let action = self.accept_completion(false);
+                    self.refresh_completion();
+                    return action;
                 }
                 KeyCode::Enter if plain => {
-                    self.accept_completion();
-                    return Action::None;
+                    let action = self.accept_completion(true);
+                    self.refresh_completion();
+                    return action;
                 }
                 KeyCode::Esc => {
                     self.dismissed = Some(c.start);
@@ -516,7 +956,44 @@ impl App {
         action
     }
 
-    /// Keys while no @ list is open.
+    /// Keys while the session list has focus.
+    fn sidebar_key(&mut self, key: KeyEvent) -> Action {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let last = self.sessions.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') if !ctrl => {
+                self.sidebar_selected = self.sidebar_selected.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') if !ctrl => {
+                self.sidebar_selected = (self.sidebar_selected + 1).min(last)
+            }
+            KeyCode::Home => self.sidebar_selected = 0,
+            KeyCode::End => self.sidebar_selected = last,
+            KeyCode::Enter => {
+                self.focus = Focus::Input;
+                if let Some(s) = self.sessions.get(self.sidebar_selected)
+                    && s.name != self.session
+                {
+                    return Action::Run(format!("/session {}", s.name));
+                }
+            }
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Input,
+            // Global keys work from here too.
+            _ if ctrl => {
+                self.focus = Focus::Input;
+                return self.key(key);
+            }
+            // Typing goes back to the input.
+            KeyCode::Char(_) => {
+                self.focus = Focus::Input;
+                return self.key(key);
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Keys while no popup list is open.
     fn edit(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -569,30 +1046,69 @@ impl App {
                     self.note(text);
                 }
             }
-            KeyCode::Char('a') if ctrl => self.input.cursor = 0,
-            KeyCode::Char('e') if ctrl => self.input.cursor = self.input.text.len(),
-            KeyCode::Char('u') if ctrl => {
-                self.input.text.drain(..self.input.cursor);
-                self.input.cursor = 0;
-            }
-            KeyCode::Char('k') if ctrl => self.input.text.truncate(self.input.cursor),
-            KeyCode::Char('w') if ctrl => self.input.delete_word(),
+            KeyCode::Char('k') if ctrl => self.palette = Some(Palette::default()),
+            KeyCode::Char('n') if ctrl => return Action::Run("/new".into()),
+            KeyCode::Char('b') if ctrl => self.sidebar = !self.sidebar,
+            KeyCode::Char('o') if ctrl => self.toggle_tools(),
             KeyCode::Char('l') if ctrl => self.scroll = 0,
-            KeyCode::Char(c) if !ctrl => self.input.insert(c),
-            KeyCode::Backspace => self.input.backspace(),
-            KeyCode::Delete => self.input.delete(),
-            KeyCode::Left => self.input.cursor = self.input.cursor.saturating_sub(1),
-            KeyCode::Right => {
-                self.input.cursor = (self.input.cursor + 1).min(self.input.text.len())
+            // Only when the list is on screen (it hides on narrow terminals).
+            KeyCode::Tab if self.sidebar && self.hits.borrow().sidebar.width > 0 => {
+                self.focus = Focus::Sidebar;
+                self.sidebar_selected = self
+                    .sessions
+                    .iter()
+                    .position(|s| s.name == self.session)
+                    .unwrap_or(0);
             }
-            KeyCode::Home => self.input.cursor = 0,
-            KeyCode::End => self.input.cursor = self.input.text.len(),
             KeyCode::PageUp => self.scroll += 10,
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::Up if shift => self.scroll += 1,
             KeyCode::Down if shift => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::Up => self.recall_older(),
             KeyCode::Down => self.recall_newer(),
+            _ => {
+                self.input.edit_key(&key);
+            }
+        }
+        Action::None
+    }
+
+    /// The wheel scrolls, a click on a session opens it, a click on a tool
+    /// line opens or closes its output.
+    fn mouse(&mut self, event: MouseEvent) -> Action {
+        let at = Position::new(event.column, event.row);
+        match event.kind {
+            MouseEventKind::ScrollUp => self.scroll += WHEEL_LINES,
+            MouseEventKind::ScrollDown => self.scroll = self.scroll.saturating_sub(WHEEL_LINES),
+            MouseEventKind::Down(MouseButton::Left)
+                if self.approval.is_none() && self.palette.is_none() =>
+            {
+                let hits = self.hits.borrow();
+                if hits.sidebar.contains(at) {
+                    let row = event.row.checked_sub(hits.sidebar_first_row);
+                    let name = row.and_then(|r| hits.sidebar_rows.get(usize::from(r)).cloned());
+                    drop(hits);
+                    self.focus = Focus::Input;
+                    if let Some(name) = name
+                        && name != self.session
+                    {
+                        return Action::Run(format!("/session {name}"));
+                    }
+                } else if hits.body.contains(at) {
+                    let row = usize::from(event.row - hits.body.y);
+                    let entry = hits.body_rows.get(row).copied().flatten();
+                    drop(hits);
+                    self.focus = Focus::Input;
+                    if let Some(Some(Entry::Tool { expanded, .. })) =
+                        entry.map(|i| self.entries.get_mut(i))
+                    {
+                        *expanded = !*expanded;
+                    }
+                } else {
+                    drop(hits);
+                    self.focus = Focus::Input;
+                }
+            }
             _ => {}
         }
         Action::None
@@ -628,11 +1144,17 @@ impl App {
     fn submit<M: Model, T: Tools>(&mut self, agent: &Agent<M, T>) -> Option<Outgoing> {
         let text = self.input.take();
         self.recall = None;
-        self.scroll = 0;
         let trimmed = text.trim();
         if !trimmed.is_empty() && self.sent.last().map(String::as_str) != Some(trimmed) {
             self.sent.push(trimmed.to_owned());
         }
+        self.run(agent, text)
+    }
+
+    /// Runs a command line, or turns text into a message for the agent.
+    fn run<M: Model, T: Tools>(&mut self, agent: &Agent<M, T>, text: String) -> Option<Outgoing> {
+        self.scroll = 0;
+        let trimmed = text.trim();
         if trimmed.starts_with('/') && !trimmed.starts_with("/identity") && trimmed != "/compact" {
             self.command(agent, trimmed);
             return None;
@@ -667,7 +1189,12 @@ impl App {
         match name {
             "/help" | "/?" => self.note(HELP.get(self.lang)),
             "/quit" | "/exit" | "/q" => self.quit = true,
-            "/clear" => self.entries.clear(),
+            "/clear" => {
+                self.entries.clear();
+                self.cache.borrow_mut().clear();
+            }
+            "/sidebar" => self.sidebar = !self.sidebar,
+            "/expand" => self.toggle_tools(),
             "/attach" if !arg.is_empty() => match crate::read_upload(Path::new(arg)) {
                 Ok(upload) => {
                     self.note(ATTACHED.fill(self.lang, &[&upload.name]));
@@ -727,266 +1254,39 @@ impl App {
         }
         self.session = session;
         self.entries = load_history(agent, &self.session);
+        self.cache.borrow_mut().clear();
         self.update_context(agent);
+        self.refresh_sessions(agent);
         self.note(SWITCHED.fill(self.lang, &[&self.session]));
     }
+}
 
-    fn draw(&self, frame: &mut Frame) {
-        let area = frame.area();
-        let input_width = usize::from(area.width.saturating_sub(4)).max(4);
-        let (rows, cursor) = self.input.layout(input_width);
-        let shown = rows.len().clamp(1, MAX_INPUT_LINES);
-        let [header, body, status, input] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(shown as u16 + 2),
-        ])
-        .areas(area);
-
-        let title = Line::from(vec![
-            Span::styled(
-                format!(" {} ", self.name),
-                Style::new()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" {} · {}", self.session, self.model),
-                Style::new().fg(Color::DarkGray),
-            ),
-        ]);
-        let meter = self.context.map(|(used, budget)| {
-            let percent = used * 100 / budget.max(1);
-            let color = match percent {
-                0..60 => Color::Green,
-                60..85 => Color::Yellow,
-                _ => Color::Red,
+/// `items` whose key matches `query`: names that start with it, then ones
+/// that contain it, then ones that have its letters in order.
+fn ranked<'a, T>(items: &'a [T], query: &str, key: impl Fn(&T) -> &str) -> Vec<&'a T> {
+    let query = query.to_lowercase();
+    let mut scored: Vec<(u8, usize, &T)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| {
+            let name = key(item).to_lowercase();
+            let score = if name.starts_with(&query) {
+                0
+            } else if name.contains(&query) {
+                1
+            } else {
+                let mut rest = name.chars();
+                if query.chars().all(|q| rest.any(|c| c == q)) {
+                    2
+                } else {
+                    return None;
+                }
             };
-            let text = CONTEXT.fill(
-                self.lang,
-                &[
-                    &crate::config::short_tokens(used),
-                    &crate::config::short_tokens(budget),
-                    &percent.to_string(),
-                ],
-            );
-            Span::styled(format!("{text} "), Style::new().fg(color))
-        });
-        let meter_width = meter.as_ref().map_or(0, |m| m.width() as u16);
-        let [left, right] =
-            Layout::horizontal([Constraint::Min(1), Constraint::Length(meter_width)]).areas(header);
-        frame.render_widget(Paragraph::new(title), left);
-        if let Some(meter) = meter {
-            frame.render_widget(Paragraph::new(Line::from(meter)), right);
-        }
-
-        let width = usize::from(body.width.max(10));
-        let lines = self.lines(width);
-        let height = usize::from(body.height);
-        let bottom = lines.len().saturating_sub(height);
-        let top = bottom.saturating_sub(self.scroll.min(bottom));
-        let visible: Vec<Line> = lines.into_iter().skip(top).take(height).collect();
-        frame.render_widget(Paragraph::new(visible), body);
-
-        let mut state = Vec::new();
-        if self.running {
-            let spin = SPINNER[self.spinner % SPINNER.len()];
-            let text = if self.stopping { STOPPING } else { WORKING };
-            state.push(Span::styled(
-                format!(" {spin} {}", text.get(self.lang)),
-                Style::new().fg(Color::Yellow),
-            ));
-        }
-        if !self.queue.is_empty() {
-            state.push(Span::styled(
-                format!(
-                    "  {}",
-                    QUEUED.fill(self.lang, &[&self.queue.len().to_string()])
-                ),
-                Style::new().fg(Color::Magenta),
-            ));
-        }
-        if !self.files.is_empty() {
-            let names: Vec<&str> = self.files.iter().map(|f| f.name.as_str()).collect();
-            state.push(Span::styled(
-                format!("  {}", FILES.fill(self.lang, &[&names.join(", ")])),
-                Style::new().fg(Color::Blue),
-            ));
-        }
-        if self.scroll > 0 {
-            state.push(Span::styled(
-                format!("  ↑{}", self.scroll),
-                Style::new().fg(Color::DarkGray),
-            ));
-        }
-        if state.is_empty() {
-            state.push(Span::styled(
-                format!(" {}", HINTS.get(self.lang)),
-                Style::new().fg(Color::DarkGray),
-            ));
-        }
-        frame.render_widget(Paragraph::new(Line::from(state)), status);
-
-        let first = (cursor.0 + 1).saturating_sub(shown);
-        let text: Vec<Line> = rows
-            .iter()
-            .skip(first)
-            .take(shown)
-            .map(|r| Line::raw(r.clone()))
-            .collect();
-        let border = if self.running {
-            Color::DarkGray
-        } else {
-            Color::Cyan
-        };
-        // One column of padding on each side, as input_width and the cursor assume.
-        let block = Block::bordered()
-            .border_style(Style::new().fg(border))
-            .padding(Padding::horizontal(1))
-            .title(format!(" {} ", self.session));
-        frame.render_widget(Paragraph::new(text).block(block), input);
-        if self.approval.is_none() {
-            frame.set_cursor_position(Position::new(
-                input.x + 2 + cursor.1 as u16,
-                input.y + 1 + (cursor.0 - first) as u16,
-            ));
-        }
-
-        if let Some((tool, summary, _)) = &self.approval {
-            self.draw_approval(frame, area, tool, summary);
-        } else if let Some(c) = &self.completion {
-            Self::draw_completion(frame, body, input, c);
-        }
-    }
-
-    /// The @ list, just above the input box.
-    fn draw_completion(frame: &mut Frame, body: Rect, input: Rect, c: &Completion) {
-        let height = (c.items.len() as u16 + 2).min(body.height);
-        let width = body.width.min(80);
-        let popup = Rect::new(input.x, input.y.saturating_sub(height), width, height);
-        let inner = usize::from(width.saturating_sub(4));
-        let name_width = c
-            .items
-            .iter()
-            .map(|(n, _)| n.chars().count() + 1)
-            .max()
-            .unwrap_or(0)
-            .min(inner / 2);
-        let lines: Vec<Line> = c
-            .items
-            .iter()
-            .enumerate()
-            .map(|(i, (name, description))| {
-                let label = if name.is_empty() {
-                    String::new()
-                } else {
-                    format!("@{name}")
-                };
-                let pad = " ".repeat(name_width.saturating_sub(label.chars().count()) + 1);
-                let text = one_line(&format!("{label}{pad}{description}"), inner);
-                let style = if name.is_empty() {
-                    Style::new().fg(Color::DarkGray)
-                } else if i == c.selected {
-                    Style::new().fg(Color::Black).bg(Color::Cyan)
-                } else {
-                    Style::new()
-                };
-                Line::styled(text, style)
-            })
-            .collect();
-        let block = Block::bordered()
-            .border_style(Style::new().fg(Color::Cyan))
-            .title(" skills · Tab ");
-        frame.render_widget(Clear, popup);
-        frame.render_widget(Paragraph::new(lines).block(block), popup);
-    }
-
-    fn draw_approval(&self, frame: &mut Frame, area: Rect, tool: &str, summary: &str) {
-        let width = area.width.saturating_sub(4).clamp(20, 90);
-        let inner = usize::from(width.saturating_sub(4));
-        let mut lines: Vec<Line> = wrap(summary, inner)
-            .into_iter()
-            .take(usize::from(area.height.saturating_sub(6)).max(1))
-            .map(Line::raw)
-            .collect();
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            ALLOW_KEYS.get(self.lang),
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ));
-        let height = (lines.len() as u16 + 2).min(area.height);
-        let popup = Rect::new(
-            area.x + (area.width.saturating_sub(width)) / 2,
-            area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        );
-        let block = Block::bordered()
-            .border_style(Style::new().fg(Color::Yellow))
-            .title(format!(" {} ", ALLOW.fill(self.lang, &[tool])));
-        frame.render_widget(Clear, popup);
-        frame.render_widget(Paragraph::new(lines).block(block), popup);
-    }
-
-    /// Every entry as screen lines `width` columns wide.
-    fn lines(&self, width: usize) -> Vec<Line<'static>> {
-        let text_width = width.saturating_sub(2).max(4);
-        let mut out = Vec::new();
-        let label = |text: &str, color: Color| {
-            Line::styled(
-                text.to_owned(),
-                Style::new().fg(color).add_modifier(Modifier::BOLD),
-            )
-        };
-        let body = |out: &mut Vec<Line<'static>>, text: &str, style: Style| {
-            for row in wrap(text, text_width) {
-                out.push(Line::styled(format!("  {row}"), style));
-            }
-        };
-        let mut previous: Option<&Entry> = None;
-        for entry in &self.entries {
-            // A reply's tool calls and text stay together under one label.
-            let continues = matches!(
-                (previous, entry),
-                (
-                    Some(Entry::Tool { .. } | Entry::Assistant(_)),
-                    Entry::Tool { .. } | Entry::Assistant(_)
-                )
-            );
-            if !out.is_empty() && !continues {
-                out.push(Line::raw(""));
-            }
-            match entry {
-                Entry::User(text) => {
-                    out.push(label(YOU.get(self.lang), Color::Green));
-                    body(&mut out, text, Style::new());
-                }
-                Entry::Assistant(text) => {
-                    if !continues {
-                        out.push(label(&self.name, Color::Cyan));
-                    }
-                    body(&mut out, text, Style::new());
-                }
-                Entry::Tool { name, detail, done } => {
-                    if !continues {
-                        out.push(label(&self.name, Color::Cyan));
-                    }
-                    let (mark, color) = match done {
-                        Some(_) => ("✓", Color::DarkGray),
-                        None => ("⚙", Color::Yellow),
-                    };
-                    let row = one_line(&format!("{mark} {name} {detail}"), text_width);
-                    out.push(Line::styled(format!("  {row}"), Style::new().fg(color)));
-                }
-                Entry::Note(text) => body(&mut out, text, Style::new().fg(Color::DarkGray)),
-                Entry::Error(text) => body(&mut out, text, Style::new().fg(Color::Red)),
-            }
-            previous = Some(entry);
-        }
-        out
-    }
+            Some((score, i, item))
+        })
+        .collect();
+    scored.sort_by_key(|&(score, i, _)| (score, i));
+    scored.into_iter().map(|(_, _, item)| item).collect()
 }
 
 /// `text` on one line, cut to `max` columns.
@@ -1139,12 +1439,13 @@ struct Restore;
 
 impl Drop for Restore {
     fn drop(&mut self) {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         ratatui::restore();
     }
 }
 
 enum Step {
-    Key(KeyEvent),
+    Act(Action),
     Redraw,
     Ui(UiEvent),
     Done(Result<String>),
@@ -1162,17 +1463,17 @@ pub async fn run<M: Model, T: Tools>(
 ) -> Result<()> {
     let lang = crate::i18n::current();
     let identity = agent.store.identity()?;
-    let name = identity.as_ref().map_or_else(
-        || "OpenClaw".to_owned(),
-        |i| match &i.emoji {
-            Some(emoji) => format!("{emoji} {}", i.name),
-            None => i.name.clone(),
-        },
-    );
+    let name = identity
+        .as_ref()
+        .map_or_else(|| "OpenClaw".to_owned(), |i| i.name.clone());
     let mut app = App::new(lang, name, model, session);
+    if let Some(emoji) = identity.as_ref().and_then(|i| i.emoji.clone()) {
+        app.icon = emoji;
+    }
     app.skills = skills;
     app.entries = load_history(agent, &app.session);
     app.update_context(agent);
+    app.refresh_sessions(agent);
     if identity.is_none() {
         app.note(FIRST_START_NOTE.get(lang));
     }
@@ -1180,6 +1481,7 @@ pub async fn run<M: Model, T: Tools>(
     let _stderr = StderrToFile::new(&state.join("tui.log"));
     let mut terminal = ratatui::init();
     let _restore = Restore;
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
     let mut keys = EventStream::new();
     let (events, mut inbox) = mpsc::unbounded_channel();
     let mut turn: Option<Turn> = None;
@@ -1193,11 +1495,17 @@ pub async fn run<M: Model, T: Tools>(
             biased;
             Some(event) = inbox.recv() => Step::Ui(event),
             event = keys.next() => match event {
-                Some(Ok(Event::Key(key))) => Step::Key(key),
+                Some(Ok(Event::Key(key))) => Step::Act(app.key(key)),
+                Some(Ok(Event::Mouse(mouse))) => Step::Act(app.mouse(mouse)),
                 Some(Ok(Event::Paste(text))) => {
+                    let target = match &mut app.palette {
+                        Some(palette) => &mut palette.query,
+                        None => &mut app.input,
+                    };
                     for c in text.chars() {
-                        app.input.insert(if c == '\r' { '\n' } else { c });
+                        target.insert(if c == '\r' { '\n' } else { c });
                     }
+                    app.focus = Focus::Input;
                     app.refresh_completion();
                     Step::Redraw
                 }
@@ -1209,33 +1517,36 @@ pub async fn run<M: Model, T: Tools>(
             _ = tick.tick(), if app.running => Step::Tick,
         };
         match step {
-            Step::Key(key) => match app.key(key) {
-                Action::None => {}
-                Action::Send => {
-                    if let Some(message) = app.submit(agent) {
-                        if app.running {
-                            app.queue.push_back(message);
-                        } else {
-                            cancel = Cancel::default();
-                            turn = Some(start_turn(
-                                agent,
-                                app.session.clone(),
-                                message,
-                                events.clone(),
-                                cancel.clone(),
-                            ));
-                            app.running = true;
-                        }
+            Step::Act(action) => {
+                let message = match action {
+                    Action::None => None,
+                    Action::Send => app.submit(agent),
+                    Action::Run(line) => app.run(agent, line),
+                    Action::Stop => {
+                        // Stopping also drops what was waiting to go after it.
+                        app.queue.clear();
+                        app.stopping = true;
+                        cancel.cancel();
+                        None
+                    }
+                    Action::Quit => break,
+                };
+                if let Some(message) = message {
+                    if app.running {
+                        app.queue.push_back(message);
+                    } else {
+                        cancel = Cancel::default();
+                        turn = Some(start_turn(
+                            agent,
+                            app.session.clone(),
+                            message,
+                            events.clone(),
+                            cancel.clone(),
+                        ));
+                        app.running = true;
                     }
                 }
-                Action::Stop => {
-                    // Stopping also drops what was waiting to go after it.
-                    app.queue.clear();
-                    app.stopping = true;
-                    cancel.cancel();
-                }
-                Action::Quit => break,
-            },
+            }
             Step::Redraw => {}
             Step::Ui(UiEvent::Agent(event)) => app.on_agent(event),
             Step::Ui(UiEvent::Approval {
@@ -1253,6 +1564,7 @@ pub async fn run<M: Model, T: Tools>(
                 }
                 app.finished(result);
                 app.update_context(agent);
+                app.refresh_sessions(agent);
                 if let Some(message) = app.queue.pop_front() {
                     cancel = Cancel::default();
                     turn = Some(start_turn(
@@ -1282,267 +1594,4 @@ pub async fn run<M: Model, T: Tools>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Action {
-        app.key(KeyEvent::new(code, modifiers))
-    }
-
-    fn typed(app: &mut App, text: &str) {
-        for c in text.chars() {
-            press(app, KeyCode::Char(c), KeyModifiers::NONE);
-        }
-    }
-
-    fn app() -> App {
-        App::new(Lang::En, "Claw".into(), "x/y".into(), "main".into())
-    }
-
-    #[test]
-    fn typed_text_starts_where_the_cursor_does() {
-        let mut app = App::new(Lang::En, "agent".into(), "m".into(), "main".into());
-        app.input.insert('/');
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
-        terminal.draw(|frame| app.draw(frame)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        // The input box is the last three rows; its text row is the second-to-last.
-        assert_eq!(buffer[(2, 8)].symbol(), "/");
-        assert_eq!(buffer[(1, 8)].symbol(), " ");
-        terminal.backend_mut().assert_cursor_position((3, 8));
-    }
-
-    #[test]
-    fn edits_the_input_line() {
-        let mut app = app();
-        typed(&mut app, "hello world");
-        press(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
-        typed(&mut app, "there");
-        press(&mut app, KeyCode::Home, KeyModifiers::NONE);
-        press(&mut app, KeyCode::Delete, KeyModifiers::NONE);
-        typed(&mut app, "H");
-        press(&mut app, KeyCode::End, KeyModifiers::NONE);
-        press(&mut app, KeyCode::Enter, KeyModifiers::ALT);
-        typed(&mut app, "x");
-        let text: String = app.input.text.iter().collect();
-        assert_eq!(text, "Hello there\nx");
-        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
-        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
-        let text: String = app.input.text.iter().collect();
-        assert_eq!(text, "Hello therex");
-        assert_eq!(
-            press(&mut app, KeyCode::Enter, KeyModifiers::NONE),
-            Action::Send
-        );
-    }
-
-    #[test]
-    fn keys_stop_a_reply_and_quit_when_idle() {
-        let mut app = app();
-        assert_eq!(
-            press(&mut app, KeyCode::Enter, KeyModifiers::NONE),
-            Action::None
-        );
-        assert_eq!(
-            press(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Action::Quit
-        );
-        app.running = true;
-        assert_eq!(
-            press(&mut app, KeyCode::Esc, KeyModifiers::NONE),
-            Action::Stop
-        );
-        assert_eq!(
-            press(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Action::Stop
-        );
-        // Ctrl+D asks again while a reply runs.
-        assert_eq!(
-            press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL),
-            Action::None
-        );
-        assert_eq!(
-            press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL),
-            Action::Quit
-        );
-    }
-
-    #[test]
-    fn approvals_take_y_or_n() {
-        let mut app = app();
-        let (reply, answer) = oneshot::channel();
-        app.approval = Some(("shell".into(), "rm -rf build".into(), reply));
-        typed(&mut app, "x");
-        assert!(app.approval.is_some(), "other keys wait");
-        typed(&mut app, "y");
-        assert!(app.approval.is_none());
-        assert_eq!(answer.blocking_recv(), Ok(true));
-        // The tool line shows it ran; only a refusal is noted.
-        assert!(app.entries.is_empty());
-        let (reply, answer) = oneshot::channel();
-        app.approval = Some(("shell".into(), "rm -rf build".into(), reply));
-        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(answer.blocking_recv(), Ok(false));
-        assert_eq!(
-            app.entries.last(),
-            Some(&Entry::Note("Denied shell.".into()))
-        );
-    }
-
-    #[test]
-    fn recalls_earlier_messages() {
-        let mut app = app();
-        app.sent = vec!["one".into(), "two".into()];
-        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
-        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!(app.input.text.iter().collect::<String>(), "one");
-        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(app.input.text.iter().collect::<String>(), "two");
-        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        assert!(app.input.is_empty());
-    }
-
-    #[test]
-    fn streams_text_and_marks_tools_done() {
-        let mut app = app();
-        app.on_agent(AgentEvent::ToolStart {
-            name: "shell".into(),
-            arguments: "{\"command\":\n\"ls\"}".into(),
-        });
-        app.on_agent(AgentEvent::ToolEnd {
-            name: "shell".into(),
-            output: "a b".into(),
-        });
-        app.on_agent(AgentEvent::Text("Hel".into()));
-        app.on_agent(AgentEvent::Text("lo".into()));
-        app.finished(Ok("Hello".into()));
-        assert_eq!(
-            app.entries,
-            [
-                Entry::Tool {
-                    name: "shell".into(),
-                    detail: "{\"command\": \"ls\"}".into(),
-                    done: Some(3)
-                },
-                Entry::Assistant("Hello".into())
-            ]
-        );
-        // A reply that did not stream still shows.
-        app.entries.push(Entry::User("again".into()));
-        app.finished(Ok("Stopped.".into()));
-        assert_eq!(
-            app.entries.last(),
-            Some(&Entry::Assistant("Stopped.".into()))
-        );
-        let lines: Vec<String> = app
-            .lines(40)
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        assert_eq!(lines[0], "Claw");
-        assert!(lines[1].starts_with("  ✓ shell"), "{lines:?}");
-        assert_eq!(lines[2], "  Hello");
-    }
-
-    #[test]
-    fn lays_out_wide_text_and_the_cursor() {
-        assert_eq!(wrap("one two three", 8), ["one two", "three"]);
-        assert_eq!(wrap("中文中文中文", 4), ["中文", "中文", "中文"]);
-        assert_eq!(wrap("a\n\nb", 10), ["a", "", "b"]);
-        assert_eq!(one_line("a\n  b   c", 10), "a b c");
-        assert_eq!(one_line("abcdefgh", 5), "abcd…");
-        let mut input = Input::default();
-        input.set("中文ab\ncd");
-        let (rows, cursor) = input.layout(4);
-        assert_eq!(rows, ["中文", "ab", "cd"]);
-        assert_eq!(cursor, (2, 2));
-        input.cursor = 2;
-        assert_eq!(input.layout(4).1, (1, 0));
-    }
-
-    fn with_skills(names: &[&str]) -> (tempfile::TempDir, App) {
-        let dir = tempfile::tempdir().unwrap();
-        for name in names {
-            let file = dir.path().join("skills").join(name).join("SKILL.md");
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(
-                &file,
-                format!("---\nname: {name}\ndescription: Does {name} things\n---\nSteps.\n"),
-            )
-            .unwrap();
-        }
-        let mut app = app();
-        app.skills = Some(Skills::new(
-            dir.path(),
-            &crate::config::SkillsConfig::default(),
-        ));
-        (dir, app)
-    }
-
-    #[test]
-    fn at_lists_skills_and_tab_completes_one() {
-        let (_dir, mut app) = with_skills(&["weather", "web-research", "deploy"]);
-        typed(&mut app, "look up @");
-        let c = app.completion.as_ref().expect("the list opens on @");
-        let names: Vec<&str> = c.items.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["deploy", "weather", "web-research"]);
-        typed(&mut app, "we");
-        let names: Vec<&str> = app
-            .completion
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .map(|(n, _)| n.as_str())
-            .collect();
-        assert_eq!(names, ["weather", "web-research"]);
-        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(
-            app.input.text.iter().collect::<String>(),
-            "look up @web-research "
-        );
-        assert!(app.completion.is_none());
-        // Esc closes the list for that @ only; Enter still sends.
-        typed(&mut app, "@x");
-        assert!(app.completion.is_some());
-        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        typed(&mut app, "y");
-        assert!(app.completion.is_none());
-        assert_eq!(
-            press(&mut app, KeyCode::Enter, KeyModifiers::NONE),
-            Action::Send
-        );
-        // An email address is not a mention.
-        typed(&mut app, " me@we");
-        assert!(app.completion.is_none());
-        assert_eq!(
-            app.mentioned_skills("use @weather, then @deploy and @nope @weather"),
-            ["weather", "deploy"]
-        );
-    }
-
-    #[test]
-    fn the_at_list_says_why_it_is_empty() {
-        let mut app = app();
-        typed(&mut app, "@");
-        let c = app.completion.as_ref().unwrap();
-        assert_eq!(c.items[0].1, SKILLS_OFF.get(Lang::En));
-        // Enter on the note sends nothing in and closes it.
-        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.completion.is_none());
-        assert_eq!(app.input.text.iter().collect::<String>(), "@");
-        let (_dir, mut app) = with_skills(&[]);
-        typed(&mut app, "@");
-        assert_eq!(
-            app.completion.as_ref().unwrap().items[0].1,
-            NO_SKILLS.get(Lang::En)
-        );
-    }
-
-    #[test]
-    fn every_text_has_both_languages() {
-        crate::i18n::assert_complete(ALL);
-    }
-}
+mod tests;

@@ -29,6 +29,7 @@ futures-util = "0.3.34"
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "rustls-native-certs", "hostname", "aws-lc-rs"] }
 libc = "0.2.190"
 mail-parser = { version = "0.11.9", features = ["full_encoding"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls", "http2"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
