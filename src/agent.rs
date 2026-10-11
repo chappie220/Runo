@@ -618,7 +618,7 @@ impl<M: Model, T: Tools> Agent<M, T> {
             + context::estimate_messages(&history);
         Ok((
             (estimated as f64 * ratio) as usize,
-            self.config.context_tokens,
+            self.config.context_budget(),
         ))
     }
 
@@ -631,7 +631,7 @@ impl<M: Model, T: Tools> Agent<M, T> {
         };
         let count = ctx.messages.len();
         let messages: Vec<ChatMessage> = ctx.messages.into_iter().map(|(_, m)| m).collect();
-        let budget = self.config.context_tokens;
+        let budget = self.config.context_budget();
         let summary = context::summarize(
             self.summarizer(),
             ctx.summary.as_deref(),
@@ -666,7 +666,7 @@ impl<M: Model, T: Tools> Agent<M, T> {
     ) -> Result<Vec<ChatMessage>> {
         let ctx = self.store.context(session_id)?;
         let ratio = ctx.token_ratio.unwrap_or(1.0).clamp(MIN_RATIO, MAX_RATIO);
-        let budget = (self.config.context_tokens as f64 / ratio) as usize;
+        let budget = (self.config.context_budget() as f64 / ratio) as usize;
         let summary_limit = budget / 16;
         let summary_tokens = ctx.summary.as_deref().map_or(0, context::estimate);
         // The current turn starts at the last message the user did not send
@@ -970,7 +970,7 @@ mod tests {
             tools: Echo,
             store: Store::open_in_memory().unwrap(),
             config: AgentConfig {
-                context_tokens: 4000,
+                context_tokens: crate::config::ContextBudget::Tokens(4000),
                 ..AgentConfig::default()
             },
         };

@@ -328,6 +328,23 @@ const SERVICE_MISSING: Tr = tr(
     "not installed: openclaw-rs service install (or service start to run it now)",
     "未安装：openclaw-rs service install（或用 service start 立即运行）",
 );
+const CONTEXT_SET: Tr = tr("context budget: {} per call", "上下文预算：每次调用 {}");
+const CONTEXT_OVER: Tr = tr(
+    "context budget {} is more than {}'s {} window: lower agent.context_tokens, or set it to auto",
+    "上下文预算 {} 超过了 {} 的 {} 窗口：请调小 agent.context_tokens，或设为 auto",
+);
+const CONTEXT_AUTO: Tr = tr(
+    "context budget: {} per call (auto, from the model's window)",
+    "上下文预算：每次调用 {}（auto，来自模型窗口）",
+);
+const CONTEXT_AUTO_OFFLINE: Tr = tr(
+    "context budget: auto (looked up from the model's window at start)",
+    "上下文预算：auto（启动时从模型窗口获取）",
+);
+const CONTEXT_AUTO_UNKNOWN: Tr = tr(
+    "context budget: the model's window is not listed, so auto uses {}; set agent.context_tokens (e.g. 128k) if the model allows more or less",
+    "上下文预算：没有找到模型的窗口，auto 使用 {}；如果模型支持更多或更少，请设置 agent.context_tokens（例如 128k）",
+);
 const SUMMARY_OK: Tr = tr("All good: no problems found.", "一切正常：没有发现问题。");
 const SUMMARY: Tr = tr("{} problem(s), {} warning(s).", "{} 个问题，{} 个警告。");
 
@@ -337,6 +354,11 @@ pub const ALL: &[Tr] = &[
     OFFLINE_NOTE,
     S_CONFIG,
     S_MODELS,
+    CONTEXT_SET,
+    CONTEXT_OVER,
+    CONTEXT_AUTO,
+    CONTEXT_AUTO_OFFLINE,
+    CONTEXT_AUTO_UNKNOWN,
     S_BROWSER,
     S_FETCH,
     S_SEARCH,
@@ -537,6 +559,7 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
         .as_deref()
         .filter(|_| config.model.base_url.trim_end_matches('/') == DEFAULT_BASE_URL);
     report.add(model_findings(&config, binding));
+    report.add([context_finding(&config, state, offline, binding).await]);
     // With a refused key every call fails the same way, so none is made.
     if !offline
         && !refused
@@ -595,6 +618,36 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
     }]);
 
     Ok(finish(&report))
+}
+
+async fn context_finding(
+    config: &Config,
+    state: &Path,
+    offline: bool,
+    catalog: Option<&[crate::onboard::ModelInfo]>,
+) -> Finding {
+    use crate::config::{ContextBudget, FALLBACK_CONTEXT, short_tokens};
+    match config.agent.context_tokens {
+        ContextBudget::Tokens(n) => {
+            let window = catalog
+                .and_then(|list| list.iter().find(|m| m.id == config.model.model))
+                .map(|m| m.context as usize)
+                .filter(|w| *w > 0);
+            match window {
+                Some(w) if n > w => warn(CONTEXT_OVER.with(&[
+                    &short_tokens(n),
+                    &config.model.model,
+                    &short_tokens(w),
+                ])),
+                _ => ok(CONTEXT_SET.with(&[&short_tokens(n)])),
+            }
+        }
+        ContextBudget::Auto if offline => info(CONTEXT_AUTO_OFFLINE.now()),
+        ContextBudget::Auto => match crate::onboard::auto_context(config, state).await {
+            Some(budget) => ok(CONTEXT_AUTO.with(&[&short_tokens(budget)])),
+            None => warn(CONTEXT_AUTO_UNKNOWN.with(&[&short_tokens(FALLBACK_CONTEXT)])),
+        },
+    }
 }
 
 fn finish(report: &Report) -> bool {
@@ -1129,6 +1182,7 @@ mod tests {
             images,
             audio: images,
             tools,
+            max_output: None,
         }
     }
 

@@ -430,9 +430,10 @@ pub struct AgentConfig {
     /// Upper bound on model calls per user turn, so a tool loop cannot run forever.
     pub max_steps: usize,
     /// Token budget for each model call: system prompt, tool specs and
-    /// history. Keep it below the model's context window, leaving room for
-    /// the answer. Older history stays in SQLite.
-    pub context_tokens: usize,
+    /// history. `auto` (the default) takes it from the model's context
+    /// window, leaving room for the answer; or a count such as "128k" or
+    /// "1m". Older history stays in SQLite.
+    pub context_tokens: ContextBudget,
     /// Model that writes the context summary, e.g. a cheaper one; default:
     /// model.model.
     pub summary_model: Option<String>,
@@ -455,6 +456,114 @@ pub struct AgentConfig {
     /// `[limits]`, set at startup; never read from `[agent]`.
     #[serde(skip)]
     pub limits: crate::limits::LimitsConfig,
+    /// What `auto` came to at startup, from the model's window; never read
+    /// from the file.
+    #[serde(skip)]
+    pub auto_context: Option<usize>,
+}
+
+impl AgentConfig {
+    /// The budget in tokens: the one set, or what `auto` came to (64k when
+    /// the model's window could not be found).
+    pub fn context_budget(&self) -> usize {
+        match self.context_tokens {
+            ContextBudget::Tokens(n) => n,
+            ContextBudget::Auto => self.auto_context.unwrap_or(FALLBACK_CONTEXT),
+        }
+    }
+}
+
+/// The budget when `auto` finds no window for the model.
+pub const FALLBACK_CONTEXT: usize = 64_000;
+
+/// `agent.context_tokens`: `auto`, or a token count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContextBudget {
+    #[default]
+    Auto,
+    Tokens(usize),
+}
+
+impl ContextBudget {
+    pub fn parse(text: &str) -> Option<Self> {
+        if text.trim().eq_ignore_ascii_case("auto") {
+            return Some(Self::Auto);
+        }
+        parse_tokens(text).map(Self::Tokens)
+    }
+}
+
+impl Serialize for ContextBudget {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Auto => s.serialize_str("auto"),
+            Self::Tokens(n) => s.serialize_str(&exact_tokens(*n)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContextBudget {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(u64),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Number(n) if n > 0 => Ok(Self::Tokens(n as usize)),
+            Raw::Number(_) => Err(serde::de::Error::custom(
+                "the context budget must be above 0",
+            )),
+            Raw::Text(text) => Self::parse(&text).ok_or_else(|| {
+                serde::de::Error::custom(format!(
+                    "{text:?} is not a context budget: use auto, or a count such as 128k or 1m"
+                ))
+            }),
+        }
+    }
+}
+
+/// "32000", "32k", "1.5m", "200_000" → tokens; k is 1000 and m 1,000,000.
+pub fn parse_tokens(text: &str) -> Option<usize> {
+    let text = text.trim().to_lowercase().replace(['_', ','], "");
+    let (number, unit) = match text.strip_suffix('k') {
+        Some(n) => (n, 1_000.0),
+        None => match text.strip_suffix('m') {
+            Some(n) => (n, 1_000_000.0),
+            None => (text.as_str(), 1.0),
+        },
+    };
+    let n: f64 = number.trim().parse().ok()?;
+    let tokens = (n * unit).round();
+    (1.0..1e12).contains(&tokens).then_some(tokens as usize)
+}
+
+/// Tokens written back exactly, with k or m: 32000 → "32k", 1500000 →
+/// "1.5m", 131072 → "131.072k".
+pub fn exact_tokens(n: usize) -> String {
+    let trim = |s: String| s.trim_end_matches('0').trim_end_matches('.').to_owned();
+    if n >= 1_000_000 && n.is_multiple_of(1_000) {
+        format!("{}m", trim(format!("{:.3}", n as f64 / 1e6)))
+    } else if n >= 1_000 {
+        format!("{}k", trim(format!("{:.3}", n as f64 / 1e3)))
+    } else {
+        n.to_string()
+    }
+}
+
+/// Tokens for people, rounded: 950, 1.2k, 64k, 131k, 1.05m.
+pub fn short_tokens(n: usize) -> String {
+    let trim = |s: String| s.trim_end_matches('0').trim_end_matches('.').to_owned();
+    if n >= 1_000_000 {
+        format!("{}m", trim(format!("{:.2}", n as f64 / 1e6)))
+    } else if n >= 10_000 {
+        format!("{}k", (n as f64 / 1e3).round())
+    } else if n >= 1_000 {
+        format!("{}k", trim(format!("{:.1}", n as f64 / 1e3)))
+    } else {
+        n.to_string()
+    }
 }
 
 /// What a tool category may do without asking.
@@ -574,7 +683,7 @@ impl Default for AgentConfig {
         Self {
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
             max_steps: 25,
-            context_tokens: 64_000,
+            context_tokens: ContextBudget::Auto,
             summary_model: None,
             vision_model: None,
             audio_model: None,
@@ -582,6 +691,7 @@ impl Default for AgentConfig {
             recall_tokens: 800,
             workspace: PathBuf::new(),
             limits: crate::limits::LimitsConfig::default(),
+            auto_context: None,
         }
     }
 }
@@ -637,6 +747,45 @@ pub fn state_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_budgets_read_and_write_with_k_and_m() {
+        let read = |t: &str| toml::from_str::<Config>(&format!("[agent]\ncontext_tokens = {t}\n"));
+        assert_eq!(
+            read("32000").unwrap().agent.context_tokens,
+            ContextBudget::Tokens(32_000)
+        );
+        assert_eq!(
+            read("\"128K\"").unwrap().agent.context_tokens,
+            ContextBudget::Tokens(128_000)
+        );
+        assert_eq!(
+            read("\"1.5m\"").unwrap().agent.context_tokens,
+            ContextBudget::Tokens(1_500_000)
+        );
+        assert_eq!(
+            read("\"auto\"").unwrap().agent.context_tokens,
+            ContextBudget::Auto
+        );
+        assert!(read("\"lots\"").is_err() && read("0").is_err());
+        assert_eq!(Config::default().agent.context_tokens, ContextBudget::Auto);
+        for n in [
+            999, 32_000, 64_000, 131_072, 1_000_000, 1_048_576, 2_500_000,
+        ] {
+            assert_eq!(parse_tokens(&exact_tokens(n)), Some(n), "{n}");
+        }
+        assert_eq!(exact_tokens(32_000), "32k");
+        assert_eq!(exact_tokens(1_500_000), "1.5m");
+        assert_eq!(short_tokens(1_048_576), "1.05m");
+        assert_eq!(short_tokens(131_072), "131k");
+        assert_eq!(short_tokens(1_234), "1.2k");
+        let agent = AgentConfig {
+            auto_context: Some(180_000),
+            ..AgentConfig::default()
+        };
+        assert_eq!(agent.context_budget(), 180_000);
+        assert_eq!(AgentConfig::default().context_budget(), FALLBACK_CONTEXT);
+    }
 
     #[test]
     fn partial_file_keeps_defaults() {

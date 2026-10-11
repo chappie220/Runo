@@ -766,7 +766,11 @@ impl App {
             };
             let text = CONTEXT.fill(
                 self.lang,
-                &[&kilo(used), &kilo(budget), &percent.to_string()],
+                &[
+                    &crate::config::short_tokens(used),
+                    &crate::config::short_tokens(budget),
+                    &percent.to_string(),
+                ],
             );
             Span::styled(format!("{text} "), Style::new().fg(color))
         });
@@ -980,17 +984,6 @@ impl App {
             previous = Some(entry);
         }
         out
-    }
-}
-
-/// 12345 → "12.3k".
-fn kilo(n: usize) -> String {
-    if n >= 10_000 {
-        format!("{}k", n / 1000)
-    } else if n >= 1000 {
-        format!("{:.1}k", n as f64 / 1000.0)
-    } else {
-        n.to_string()
     }
 }
 
@@ -1530,13 +1523,6 @@ mod tests {
             app.completion.as_ref().unwrap().items[0].1,
             NO_SKILLS.get(Lang::En)
         );
-    }
-
-    #[test]
-    fn shows_token_counts_short() {
-        assert_eq!(kilo(950), "950");
-        assert_eq!(kilo(12_345), "12k");
-        assert_eq!(kilo(1_234), "1.2k");
     }
 
     #[test]

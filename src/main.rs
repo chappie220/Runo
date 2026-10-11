@@ -700,6 +700,10 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
         _ => None,
     };
     let mcp = mcp::Mcp::connect(&config.mcp, &workspace).await;
+    let auto_context = match config.agent.context_tokens {
+        config::ContextBudget::Auto => onboard::auto_context(config, state).await,
+        config::ContextBudget::Tokens(_) => None,
+    };
     let voice =
         voice::Transcriber::new(&config.model, config.agent.audio_model.as_deref(), &api_key)?;
     Ok(Agent {
@@ -723,6 +727,7 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
         config: config::AgentConfig {
             workspace,
             limits: config.limits.clone(),
+            auto_context,
             ..config.agent.clone()
         },
     })

@@ -25,6 +25,8 @@ enum Kind {
     Choice(&'static [&'static str]),
     /// Comma-separated strings.
     List,
+    /// `auto`, or a token count written like 128k or 1m.
+    Tokens,
     /// Read without echo; `env` overrides the file when set.
     Secret {
         env: &'static str,
@@ -58,6 +60,13 @@ const RESULT_INVALID: Tr = tr(
 const CANNOT_RESET: Tr = tr("cannot reset: {}", "无法恢复默认：{}");
 const NOT_ACCEPTED: Tr = tr("not accepted: {}", "不接受这个值：{}");
 const NOT_NUMBER: Tr = tr("{} is not a whole number", "{} 不是整数");
+const NOT_TOKENS: Tr = tr(
+    "{} is not a token count: type auto, or e.g. 128k or 1m",
+    "{} 不是 token 数：输入 auto，或者如 128k、1m",
+);
+const OTHER: Tr = tr("Other…", "其他…");
+/// Quick picks for a token count in the arrow menu.
+const TOKEN_PICKS: &[&str] = &["auto", "32k", "64k", "128k", "200k", "1m"];
 const YES_NO: Tr = tr("answer y or n", "请回答 y 或 n");
 const PICK_ONE: Tr = tr("pick one of: {}", "请从这些中选一个：{}");
 const DEFAULT: Tr = tr("default", "默认");
@@ -148,12 +157,12 @@ const SECTIONS: &[Section] = &[
             },
             Field {
                 path: &["agent", "context_tokens"],
-                label: tr("Context budget (tokens)", "上下文预算（token）"),
+                label: tr("Context budget", "上下文预算"),
                 help: tr(
-                    "Per model call: system prompt, tools, summary and history. Keep it below the model's window.",
-                    "每次调用模型的总预算：系统提示、工具、摘要和历史。要小于模型的上下文窗口。",
+                    "Per model call: system prompt, tools, summary and history. auto takes it from the model's window on OpenRouter (checked weekly), leaving room for the answer; or a count such as 128k or 1m, below the model's window.",
+                    "每次调用模型的总预算：系统提示、工具、摘要和历史。auto 从 OpenRouter 上模型的窗口自动获取（每周检查一次）并给回答留出空间；也可以写 128k、1m 这样的数，要小于模型的窗口。",
                 ),
-                kind: Kind::Int,
+                kind: Kind::Tokens,
             },
             Field {
                 path: &["agent", "summary_model"],
@@ -1230,6 +1239,26 @@ fn field_with_arrows<R: BufRead, W: Write>(
         )),
         _ => None,
     };
+    if let Kind::Tokens = field.kind {
+        let mut items: Vec<String> = TOKEN_PICKS.iter().map(|p| (*p).to_owned()).collect();
+        items.push(OTHER.get(lang).into());
+        items.push(RESET.get(lang).into());
+        let start = TOKEN_PICKS.iter().position(|p| *p == current).unwrap_or(0);
+        let help = |_| Some(field.help.get(lang).to_owned());
+        match term.select(&format!("{label} [{current}]"), &items, start, &help)? {
+            Picked::Item(i) if i < TOKEN_PICKS.len() => {
+                change(doc, field.path, Some(Value::from(TOKEN_PICKS[i])), term)?;
+                return Ok(true);
+            }
+            Picked::Item(i) if i > TOKEN_PICKS.len() => {
+                change(doc, field.path, None, term)?;
+                return Ok(true);
+            }
+            Picked::Item(_) => {}
+            Picked::Back => return Ok(true),
+            Picked::End => return Ok(false),
+        }
+    }
     if let Some((mut items, values)) = menu {
         let start = values
             .iter()
@@ -1378,6 +1407,7 @@ fn edit_section<R: BufRead, W: Write>(
                 Lang::En => " (y/n)".into(),
                 Lang::Zh => " (y/n，是/否)".into(),
             },
+            Kind::Tokens => " (auto, 128k, 1m)".into(),
             _ => String::new(),
         };
         let prompt = format!("{}{options} [{current}]: ", field.label.get(term.lang));
@@ -1452,6 +1482,13 @@ fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
                 None => bail!(PICK_ONE.fill(lang, &[&choices.join(", ")])),
             }
         }
+        Kind::Tokens => match crate::config::ContextBudget::parse(text) {
+            Some(crate::config::ContextBudget::Auto) => Value::from("auto"),
+            Some(crate::config::ContextBudget::Tokens(n)) => {
+                Value::from(crate::config::exact_tokens(n))
+            }
+            None => bail!(NOT_TOKENS.fill(lang, &[&format!("{text:?}")])),
+        },
         Kind::List => {
             let mut array = Array::new();
             for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -1581,7 +1618,7 @@ mod tests {
         // models, recall, max steps and both guide fields.
         let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\ns\n";
         let out = drive(&path, script);
-        assert!(out.contains("\"lots\" is not a whole number"), "{out}");
+        assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# my notes"));
@@ -1591,7 +1628,11 @@ mod tests {
         assert_eq!(config.model.model, "a/new");
         assert_eq!(config.model.fallbacks, ["b/one", "c/two"]);
         assert_eq!(config.model.prompt_cache, crate::config::PromptCache::Off);
-        assert_eq!(config.agent.context_tokens, 32000);
+        assert_eq!(
+            config.agent.context_tokens,
+            crate::config::ContextBudget::Tokens(32_000)
+        );
+        assert!(text.contains("context_tokens = \"32k\""), "{text}");
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
@@ -1693,6 +1734,8 @@ mod tests {
             CANNOT_RESET,
             NOT_ACCEPTED,
             NOT_NUMBER,
+            NOT_TOKENS,
+            OTHER,
             YES_NO,
             PICK_ONE,
             DEFAULT,
@@ -1786,6 +1829,24 @@ mod tests {
         assert_eq!(config.tools.shell, crate::config::Permission::Allow);
         assert_eq!(config.gateway.bind, "127.0.0.1:1");
         assert_eq!(config.gateway.token.unwrap().len(), 48);
+    }
+
+    #[test]
+    fn picks_a_context_budget_from_the_menu_or_types_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Model (2), down to the budget (6th field): 128k from the menu.
+        let mut term = keys("2\r6\r4\rq\x1b[F\x1b[A\r");
+        edit(&path, &mut term).unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(out.contains("Context budget [auto] › 128k"), "{out}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("context_tokens = \"128k\""), "{text}");
+        // "Other…" takes a typed count, written back with k or m.
+        let mut term = keys("2\r6\r7\r1500000\nq\x1b[F\x1b[A\r");
+        edit(&path, &mut term).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("context_tokens = \"1.5m\""), "{text}");
     }
 
     #[test]

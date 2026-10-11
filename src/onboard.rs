@@ -36,6 +36,8 @@ pub struct ModelInfo {
     pub audio: bool,
     /// Supports tool calls, without which the agent cannot use its tools.
     pub tools: bool,
+    /// Longest answer the provider allows, when listed.
+    pub max_output: Option<u64>,
 }
 
 /// What checking an API key found.
@@ -155,6 +157,9 @@ fn parse_models(body: &Json) -> Vec<ModelInfo> {
                 images: has("/architecture/input_modalities", "image"),
                 audio: has("/architecture/input_modalities", "audio"),
                 tools: has("/supported_parameters", "tools"),
+                max_output: m
+                    .pointer("/top_provider/max_completion_tokens")
+                    .and_then(Json::as_u64),
                 id,
             })
         })
@@ -265,6 +270,10 @@ const IMAGES_UNKNOWN: Tr = tr(
     "不确定 {} 能否看图片；如果不能，以后可以用 `openclaw-rs config` 设置 agent.vision_model。",
 );
 const VISION_CHOSEN: Tr = tr("✓ Image model: {}", "✓ 图片模型：{}");
+const CONTEXT_AUTO: Tr = tr(
+    "✓ Context: {} has a {} window, so each call may use up to {} (agent.context_tokens = \"auto\").",
+    "✓ 上下文：{} 的窗口是 {}，每次调用最多使用 {}（agent.context_tokens = \"auto\"）。",
+);
 const BROWSER_FOUND: Tr = tr(
     "✓ Browser: {} (used when the agent needs a real web page).",
     "✓ 浏览器：{}（智能体需要打开真实网页时使用）。",
@@ -325,11 +334,90 @@ pub const ALL: &[Tr] = &[
     BLIND,
     IMAGES_UNKNOWN,
     VISION_CHOSEN,
+    CONTEXT_AUTO,
     BROWSER_FOUND,
     BROWSER_MISSING,
     ABORTED,
     DONE,
 ];
+
+/// Room left for the answer: what the provider says an answer may take,
+/// else an eighth of the window; at least 4k, at most a quarter.
+pub fn budget_for(window: usize, max_output: Option<u64>) -> usize {
+    let wanted = max_output.map_or(window / 8, |m| m as usize);
+    let reserve = wanted.max(4096).min(window / 4);
+    window - reserve
+}
+
+/// Model windows seen in the catalog, cached in the state directory.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct WindowCache {
+    fetched_at: i64,
+    /// Model id → (window, longest answer).
+    models: std::collections::BTreeMap<String, (u64, Option<u64>)>,
+}
+
+const WINDOW_CACHE: &str = "model-windows.json";
+const WINDOW_CACHE_SECS: i64 = 7 * 86_400;
+
+impl WindowCache {
+    fn find(&self, id: &str) -> Option<(u64, Option<u64>)> {
+        // Variants such as ":free" or ":online" share the base model's window.
+        self.models
+            .get(id)
+            .or_else(|| self.models.get(id.split(':').next().unwrap_or(id)))
+            .copied()
+            .filter(|(window, _)| *window > 0)
+    }
+}
+
+/// What `agent.context_tokens = "auto"` stands for: the smallest window of
+/// the models a turn may call (main and image model), less room for the
+/// answer. The catalog is read at most once a week; `None` when no window
+/// is known, so the caller falls back.
+pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
+    let mut ids = vec![config.model.model.trim().to_owned()];
+    if let Some(vision) = config
+        .agent
+        .vision_model
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+    {
+        ids.push(vision.trim().to_owned());
+    }
+    let path = state.join(WINDOW_CACHE);
+    let mut cache: WindowCache = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let fresh = crate::store::now() - cache.fetched_at < WINDOW_CACHE_SECS;
+    if !fresh || ids.iter().any(|id| cache.find(id).is_none()) {
+        let fetched = match OpenRouter::new(&config.model.base_url) {
+            Ok(catalog) => tokio::time::timeout(Duration::from_secs(10), catalog.models())
+                .await
+                .ok()
+                .and_then(Result::ok),
+            Err(_) => None,
+        };
+        if let Some(models) = fetched.filter(|m| !m.is_empty()) {
+            cache = WindowCache {
+                fetched_at: crate::store::now(),
+                models: models
+                    .into_iter()
+                    .map(|m| (m.id, (m.context, m.max_output)))
+                    .collect(),
+            };
+            if let Ok(json) = serde_json::to_vec(&cache) {
+                let _ = std::fs::create_dir_all(state);
+                let _ = std::fs::write(&path, json);
+            }
+        }
+    }
+    ids.iter()
+        .filter_map(|id| cache.find(id))
+        .map(|(window, max_output)| budget_for(window as usize, max_output))
+        .min()
+}
 
 /// Whether `config` lacks what a model call needs, so setup should run.
 pub fn needed(config: &Config) -> bool {
@@ -514,6 +602,20 @@ pub async fn wizard<R: BufRead, W: Write>(
             }
         }
         None => term.tell(IMAGES_UNKNOWN, &[&model])?,
+    }
+    let config_now = setup::parse(&doc).unwrap_or_default();
+    if config_now.agent.context_tokens == crate::config::ContextBudget::Auto
+        && let Some(info) = models.iter().find(|m| m.id == model && m.context > 0)
+    {
+        let window = info.context as usize;
+        term.tell(
+            CONTEXT_AUTO,
+            &[
+                &model,
+                &crate::config::short_tokens(window),
+                &crate::config::short_tokens(budget_for(window, info.max_output)),
+            ],
+        )?;
     }
     match &browser {
         Some(path) => term.tell(BROWSER_FOUND, &[&path.display().to_string()])?,
@@ -748,6 +850,7 @@ mod tests {
             images,
             audio: false,
             tools,
+            max_output: None,
         }
     }
 
@@ -900,6 +1003,20 @@ mod tests {
         );
         assert!(out.contains("openclaw-rs gateway start"), "{out}");
         assert!(path.exists());
+    }
+
+    #[test]
+    fn leaves_room_for_the_answer() {
+        assert_eq!(budget_for(200_000, Some(64_000)), 150_000);
+        assert_eq!(budget_for(200_000, None), 175_000);
+        assert_eq!(budget_for(128_000, Some(16_384)), 111_616);
+        assert_eq!(budget_for(8_192, None), 6_144);
+        let cache = WindowCache {
+            fetched_at: 0,
+            models: [("a/b".to_owned(), (131_072, None))].into(),
+        };
+        assert_eq!(cache.find("a/b:free"), Some((131_072, None)));
+        assert_eq!(cache.find("c/d"), None);
     }
 
     #[test]
