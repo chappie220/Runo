@@ -829,7 +829,9 @@ repo = "chappie220/openclaw"   # where releases come from
 
 Releases are published by pushing a tag that matches `Cargo.toml`'s version
 (`git tag v0.2.0 && git push origin v0.2.0`): the Release workflow builds
-the aarch64 and x86_64 musl binaries and their `SHA256SUMS`.
+the aarch64 and x86_64 musl binaries and their `SHA256SUMS`. A release
+already made for the tag (e.g. on the website, which also creates the tag)
+gets the files added; otherwise the workflow creates it with generated notes.
 
 ## Backup and restore
 

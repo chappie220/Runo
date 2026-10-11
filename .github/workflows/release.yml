@@ -52,6 +52,14 @@ jobs:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum openclaw-rs-* > SHA256SUMS && cat SHA256SUMS
-      - env:
+      # A release made by hand for this tag (e.g. on the website) gets the
+      # files; otherwise one is created. Re-runs replace the files.
+      - name: Publish
+        env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          fi
