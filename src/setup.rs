@@ -11,9 +11,10 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use toml_edit::{Array, DocumentMut, Item, Value};
 
-use crate::config::Config;
+use crate::config::{Config, ReviewProvider};
 pub use crate::i18n::Lang;
 use crate::i18n::{Tr, tr};
+use crate::onboard::{ModelInfo, Need};
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -27,6 +28,14 @@ enum Kind {
     List,
     /// `auto`, or a token count written like 128k or 1m.
     Tokens,
+    /// A model id, picked from OpenRouter's list when it can be loaded.
+    Model(Need),
+    /// Which decision model to use; shown with the model it runs, whose id
+    /// is at `model` (a different provider resets it).
+    Decider {
+        model: &'static [&'static str],
+        base_url: &'static [&'static str],
+    },
     /// Read without echo; `env` overrides the file when set.
     Secret {
         env: &'static str,
@@ -65,6 +74,12 @@ const NOT_TOKENS: Tr = tr(
     "{} 不是 token 数：输入 auto，或者如 128k、1m",
 );
 const OTHER: Tr = tr("Other…", "其他…");
+const SEARCH_MODELS: Tr = tr("Search OpenRouter's models…", "搜索 OpenRouter 上的模型…");
+const LOADING_MODELS: Tr = tr("Loading the model list...", "正在获取模型列表……");
+const NO_MODEL_LIST: Tr = tr(
+    "Could not load the model list ({}); type the id.",
+    "无法获取模型列表（{}），请直接输入 id。",
+);
 /// Quick picks for a token count in the arrow menu.
 const TOKEN_PICKS: &[&str] = &["auto", "32k", "64k", "128k", "200k", "1m"];
 const YES_NO: Tr = tr("answer y or n", "请回答 y 或 n");
@@ -89,6 +104,7 @@ struct Section {
 }
 
 const PERMISSION: &[&str] = &["allow", "ask", "deny"];
+const DECIDERS: &[&str] = &["off", "openrouter", "openrouter-chat", "typesafe"];
 const SECURITY: &[&str] = &["tls", "starttls", "none"];
 
 const SECTIONS: &[Section] = &[
@@ -114,7 +130,7 @@ const SECTIONS: &[Section] = &[
                     "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5.",
                     "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5。",
                 ),
-                kind: Kind::Text,
+                kind: Kind::Model(Need::Tools),
             },
             Field {
                 path: &["model", "api_key"],
@@ -171,7 +187,7 @@ const SECTIONS: &[Section] = &[
                     "Model that writes the context summary, e.g. a cheaper one. Reset (-) to use the main model.",
                     "写上下文摘要的模型，例如更便宜的模型。输入 - 恢复为主模型。",
                 ),
-                kind: Kind::Text,
+                kind: Kind::Model(Need::Text),
             },
             Field {
                 path: &["agent", "vision_model"],
@@ -180,7 +196,7 @@ const SECTIONS: &[Section] = &[
                     "Model for messages with images (files people send, browser screenshots). Reset (-) to use the main model; set it when the main model has no image input.",
                     "处理带图片消息（用户发来的图片、浏览器截图）的模型。输入 - 恢复为主模型；主模型不支持图片输入时需要设置。",
                 ),
-                kind: Kind::Text,
+                kind: Kind::Model(Need::Images),
             },
             Field {
                 path: &["agent", "audio_model"],
@@ -189,7 +205,7 @@ const SECTIONS: &[Section] = &[
                     "Model that transcribes voice messages (email, Web UI, QQ when QQ sends no transcript). Reset (-) to use the main model; set it when the main model has no audio input.",
                     "把语音消息转成文字的模型（邮件、Web UI，以及 QQ 没给识别结果时）。输入 - 恢复为主模型；主模型不支持音频输入时需要设置。",
                 ),
-                kind: Kind::Text,
+                kind: Kind::Model(Need::Audio),
             },
             Field {
                 path: &["agent", "recall_limit"],
@@ -222,7 +238,19 @@ const SECTIONS: &[Section] = &[
                     "openrouter: TypeSafe's Jev decision model with your OpenRouter key; off: insert at the next step.",
                     "openrouter：通过 OpenRouter 密钥使用 TypeSafe 的 Jev 决策模型；off：在下一步直接插入。",
                 ),
-                kind: Kind::Choice(&["off", "openrouter", "openrouter-chat", "typesafe"]),
+                kind: Kind::Decider {
+                    model: &["guide", "model"],
+                    base_url: &["guide", "base_url"],
+                },
+            },
+            Field {
+                path: &["guide", "model"],
+                label: tr("Its model id", "它的模型 id"),
+                help: tr(
+                    "Reset (-) for the provider's default, shown on the line above.",
+                    "输入 - 使用该服务的默认模型，即上一行显示的那个。",
+                ),
+                kind: Kind::Text,
             },
         ],
     },
@@ -272,7 +300,19 @@ const SECTIONS: &[Section] = &[
                     "A model rates each `ask` command; see README \"Command auto-review\".",
                     "由模型给每条需要批准的命令打分；见 README 的 \"Command auto-review\"。",
                 ),
-                kind: Kind::Choice(&["off", "openrouter", "openrouter-chat", "typesafe"]),
+                kind: Kind::Decider {
+                    model: &["tools", "review", "model"],
+                    base_url: &["tools", "review", "base_url"],
+                },
+            },
+            Field {
+                path: &["tools", "review", "model"],
+                label: tr("Its model id", "它的模型 id"),
+                help: tr(
+                    "Reset (-) for the provider's default, shown on the line above.",
+                    "输入 - 使用该服务的默认模型，即上一行显示的那个。",
+                ),
+                kind: Kind::Text,
             },
         ],
     },
@@ -475,7 +515,7 @@ const SECTIONS: &[Section] = &[
                     "Model that runs OpenRouter searches. Reset (-) to use the main model.",
                     "执行 OpenRouter 搜索的模型。输入 - 恢复为主模型。",
                 ),
-                kind: Kind::Text,
+                kind: Kind::Model(Need::Text),
             },
         ],
     },
@@ -1067,9 +1107,53 @@ pub fn terminal(lang: Lang) -> Term<std::io::StdinLock<'static>, std::io::Stdout
     }
 }
 
-/// Runs the editor on `path` with the process's terminal.
+/// Runs the editor on `path` with the process's terminal; model fields
+/// offer OpenRouter's list, fetched the first time one is edited.
 pub fn run(path: &Path, lang: Lang) -> Result<()> {
-    edit(path, &mut terminal(lang))
+    let base_url = Config::load(path).unwrap_or_default().model.base_url;
+    let mut models = Models::new(move || {
+        let catalog = crate::onboard::OpenRouter::new(&base_url)?;
+        // The editor runs on a runtime worker; let it wait for the request.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(crate::onboard::Catalog::models(&catalog))
+        })
+    });
+    edit_with(path, &mut terminal(lang), &mut models)
+}
+
+/// OpenRouter's model list for the model fields, loaded once, when first needed.
+#[derive(Default)]
+pub struct Models<'a> {
+    load: Option<Box<dyn FnMut() -> Result<Vec<ModelInfo>> + 'a>>,
+    list: Option<Vec<ModelInfo>>,
+}
+
+impl<'a> Models<'a> {
+    pub fn new(load: impl FnMut() -> Result<Vec<ModelInfo>> + 'a) -> Self {
+        Self {
+            load: Some(Box::new(load)),
+            list: None,
+        }
+    }
+
+    /// The list; empty when there is none, which model fields take as
+    /// "type the id".
+    fn get<R: BufRead, W: Write>(&mut self, term: &mut Term<R, W>) -> Result<&[ModelInfo]> {
+        if self.list.is_none() {
+            let list = match self.load.as_mut() {
+                None => Vec::new(),
+                Some(load) => {
+                    term.tell(LOADING_MODELS, &[])?;
+                    load().or_else(|err| {
+                        term.tell(NO_MODEL_LIST, &[&format!("{err:#}")])?;
+                        anyhow::Ok(Vec::new())
+                    })?
+                }
+            };
+            self.list = Some(list);
+        }
+        Ok(self.list.as_deref().unwrap_or_default())
+    }
 }
 
 pub(crate) fn load(path: &Path) -> Result<DocumentMut> {
@@ -1086,15 +1170,25 @@ pub(crate) fn parse(doc: &DocumentMut) -> Result<Config> {
     Ok(toml::from_str(&doc.to_string())?)
 }
 
-/// The menu loop: edits `path` and saves it when asked.
+/// The menu loop: edits `path` and saves it when asked. Model ids are typed.
+#[cfg(test)]
 pub fn edit<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<()> {
+    edit_with(path, term, &mut Models::default())
+}
+
+/// The menu loop, with `models` for the model fields.
+pub fn edit_with<R: BufRead, W: Write>(
+    path: &Path,
+    term: &mut Term<R, W>,
+    models: &mut Models<'_>,
+) -> Result<()> {
     let mut doc = load(path)?;
     if let Err(err) = parse(&doc) {
         term.tell(BROKEN, &[&format!("{err:#}")])?;
     }
     let original = doc.to_string();
     if term.arrows {
-        return edit_with_arrows(path, doc, &original, term);
+        return edit_with_arrows(path, doc, &original, term, models);
     }
     term.tell(EDITING, &[&path.display().to_string()])?;
     term.tell(HOW, &[])?;
@@ -1133,6 +1227,7 @@ fn edit_with_arrows<R: BufRead, W: Write>(
     mut doc: DocumentMut,
     original: &str,
     term: &mut Term<R, W>,
+    models: &mut Models<'_>,
 ) -> Result<()> {
     let title = EDITING.fill(term.lang, &[&path.display().to_string()]);
     let mut cur = 0;
@@ -1152,7 +1247,7 @@ fn edit_with_arrows<R: BufRead, W: Write>(
         match term.select(&shown, &items, cur, &|_| None)? {
             Picked::Item(i) if i < SECTIONS.len() => {
                 cur = i;
-                if !section_with_arrows(&mut doc, &SECTIONS[i], term)? {
+                if !section_with_arrows(&mut doc, &SECTIONS[i], term, models)? {
                     return finish(path, &doc, original, term, false);
                 }
             }
@@ -1184,6 +1279,7 @@ fn section_with_arrows<R: BufRead, W: Write>(
     doc: &mut DocumentMut,
     section: &'static Section,
     term: &mut Term<R, W>,
+    models: &mut Models<'_>,
 ) -> Result<bool> {
     let lang = term.lang;
     let title = format!("[{}]", section.title.get(lang));
@@ -1208,7 +1304,7 @@ fn section_with_arrows<R: BufRead, W: Write>(
         let help = |i: usize| section.fields.get(i).map(|f| f.help.get(lang).to_owned());
         match term.select(&title, &items, cur, &help)? {
             Picked::Item(i) if i < section.fields.len() => {
-                if !field_with_arrows(doc, &section.fields[i], term)? {
+                if !field_with_arrows(doc, &section.fields[i], term, models)? {
                     return Ok(false);
                 }
                 cur = i;
@@ -1224,10 +1320,80 @@ fn field_with_arrows<R: BufRead, W: Write>(
     doc: &mut DocumentMut,
     field: &Field,
     term: &mut Term<R, W>,
+    models: &mut Models<'_>,
 ) -> Result<bool> {
     let lang = term.lang;
     let label = field.label.get(lang);
     let current = describe(doc, field, lang);
+    if let Kind::Model(need) = field.kind {
+        let list = models.get(term)?;
+        if !list.is_empty() {
+            let items = [
+                SEARCH_MODELS.get(lang).to_owned(),
+                RESET.get(lang).to_owned(),
+            ];
+            let help = |_| Some(field.help.get(lang).to_owned());
+            match term.select(&format!("{label} [{current}]"), &items, 0, &help)? {
+                Picked::Item(0) => {
+                    let list = list.to_vec();
+                    let Some(id) = crate::onboard::pick(term, &list, need)? else {
+                        return Ok(false);
+                    };
+                    change(doc, field.path, Some(Value::from(id)), term)?;
+                }
+                Picked::Item(_) => {
+                    change(doc, field.path, None, term)?;
+                }
+                Picked::Back => {}
+                Picked::End => return Ok(false),
+            }
+            return Ok(true);
+        }
+    }
+    if let Kind::Decider { model, base_url } = field.kind {
+        let config = parse(doc).unwrap_or_default();
+        let now = describe_path(doc, field.path);
+        let items: Vec<String> = DECIDERS
+            .iter()
+            .map(|p| {
+                // Another provider's own model would not fit this one.
+                let same = now.as_deref() == Some(*p);
+                let model = same.then(|| describe_path(doc, model)).flatten();
+                let base_url = describe_path(doc, base_url);
+                match decider_label(
+                    p,
+                    model.as_deref(),
+                    base_url.as_deref(),
+                    &config.model.model,
+                ) {
+                    Some(label) if label.starts_with(p) => label,
+                    Some(label) => format!("{p} · {label}"),
+                    None => (*p).to_owned(),
+                }
+            })
+            .chain([RESET.get(lang).to_owned()])
+            .collect();
+        let start = DECIDERS
+            .iter()
+            .position(|p| now.as_deref() == Some(*p))
+            .unwrap_or(0);
+        let help = |_| Some(field.help.get(lang).to_owned());
+        match term.select(&format!("{label} [{current}]"), &items, start, &help)? {
+            Picked::Item(i) => {
+                let picked = DECIDERS.get(i).copied();
+                let before = doc.clone();
+                if picked != now.as_deref() {
+                    remove(doc, model);
+                }
+                if !change(doc, field.path, picked.map(Value::from), term)? {
+                    *doc = before;
+                }
+            }
+            Picked::Back => {}
+            Picked::End => return Ok(false),
+        }
+        return Ok(true);
+    }
     let menu: Option<(Vec<String>, Vec<Value>)> = match field.kind {
         Kind::Choice(choices) => Some((
             choices.iter().map(|c| (*c).to_owned()).collect(),
@@ -1393,7 +1559,11 @@ fn edit_section<R: BufRead, W: Write>(
     let mut index = 0;
     while let Some(field) = section.fields.get(index) {
         let current = describe(doc, field, term.lang);
-        let options = match field.kind {
+        let kind = match field.kind {
+            Kind::Decider { .. } => Kind::Choice(DECIDERS),
+            kind => kind,
+        };
+        let options = match kind {
             Kind::Choice(choices) => format!(
                 " ({})",
                 choices
@@ -1449,7 +1619,8 @@ fn edit_section<R: BufRead, W: Write>(
 
 fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
     Ok(match kind {
-        Kind::Text => Value::from(text),
+        Kind::Text | Kind::Model(_) => Value::from(text),
+        Kind::Decider { .. } => return value_for(Kind::Choice(DECIDERS), text, lang),
         Kind::Int => {
             let n: u32 = text
                 .replace('_', "")
@@ -1550,6 +1721,32 @@ fn remove(doc: &mut DocumentMut, path: &[&str]) {
 }
 
 /// The value in effect for `field`, defaults included; secrets are never shown.
+/// A string set at `path`, as the config loads it.
+fn describe_path(doc: &DocumentMut, path: &[&str]) -> Option<String> {
+    let config = toml::Value::try_from(parse(doc).ok()?).ok()?;
+    let mut value = Some(&config);
+    for name in path {
+        value = value.and_then(|v| v.get(*name));
+    }
+    value.and_then(toml::Value::as_str).map(str::to_owned)
+}
+
+/// What a decision provider runs, e.g. "openrouter/typesafe/jev-1.13".
+fn decider_label(
+    provider: &str,
+    model: Option<&str>,
+    base_url: Option<&str>,
+    chat: &str,
+) -> Option<String> {
+    let provider = match provider {
+        "openrouter" => ReviewProvider::Openrouter,
+        "openrouter-chat" => ReviewProvider::OpenrouterChat,
+        "typesafe" => ReviewProvider::Typesafe,
+        _ => ReviewProvider::Off,
+    };
+    crate::review::decider_label(provider, model, base_url, chat)
+}
+
 fn describe(doc: &DocumentMut, field: &Field, lang: Lang) -> String {
     let effective = parse(doc)
         .ok()
@@ -1568,6 +1765,19 @@ fn describe(doc: &DocumentMut, field: &Field, lang: Lang) -> String {
             (false, true) => IN_FILE.get(lang).into(),
             (false, false) => NOT_SET.get(lang).into(),
         };
+    }
+    if let Kind::Decider { model, base_url } = field.kind {
+        let provider = value.and_then(toml::Value::as_str).unwrap_or("off");
+        let chat = effective
+            .as_ref()
+            .and_then(|v| v.get("model"))
+            .and_then(|v| v.get("model"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default();
+        let model = describe_path(doc, model);
+        let base_url = describe_path(doc, base_url);
+        return decider_label(provider, model.as_deref(), base_url.as_deref(), chat)
+            .unwrap_or_else(|| provider.to_owned());
     }
     match value {
         None => DEFAULT.get(lang).into(),
@@ -1615,8 +1825,8 @@ mod tests {
         .unwrap();
         // Model (section 2): new id, keep key, two fallbacks, keep retries, cache by number,
         // a bad then a good budget, reset summary model, keep image and audio
-        // models, recall, max steps and both guide fields.
-        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\ns\n";
+        // models, recall, max steps and the three guide fields.
+        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -1670,7 +1880,7 @@ mod tests {
     fn generates_a_token_and_sets_nested_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        drive(&path, "4\n\n+\n\n3\n\n\n\n\nopenrouter\ns\n");
+        drive(&path, "4\n\n+\n\n3\n\n\n\n\nopenrouter\n\ns\n");
         let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let token = config.gateway.token.unwrap();
         assert_eq!(token.len(), 48);
@@ -1736,6 +1946,9 @@ mod tests {
             NOT_NUMBER,
             NOT_TOKENS,
             OTHER,
+            SEARCH_MODELS,
+            LOADING_MODELS,
+            NO_MODEL_LIST,
             YES_NO,
             PICK_ONE,
             DEFAULT,
@@ -1772,6 +1985,42 @@ mod tests {
             raw: false,
             lang: Lang::En,
         }
+    }
+
+    #[test]
+    fn picks_models_from_the_list_and_shows_what_deciders_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[model]\nmodel = \"a/old\"\n").unwrap();
+        let model = |id: &str, images| ModelInfo {
+            id: id.into(),
+            name: id.into(),
+            context: 100_000,
+            price: None,
+            images,
+            audio: false,
+            tools: true,
+            max_output: None,
+        };
+        let mut loads = 0;
+        let mut models = Models::new(|| {
+            loads += 1;
+            Ok(vec![model("maker/blind", false), model("other/sees", true)])
+        });
+        // Section 2, the model field, search "sees" and take it; then the
+        // guide provider (third from the end), one down to openrouter-chat;
+        // back out and save.
+        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\rj\rqq\r";
+        let mut term = keys(script);
+        edit_with(&path, &mut term, &mut models).unwrap();
+        drop(models);
+        let out = String::from_utf8(term.out).unwrap();
+        assert_eq!(loads, 1);
+        assert!(out.contains("openrouter/typesafe/jev-1.13"), "{out}");
+        assert!(out.contains("openrouter/other/sees"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.model.model, "other/sees");
+        assert_eq!(config.guide.provider, ReviewProvider::OpenrouterChat);
     }
 
     #[test]
@@ -1870,7 +2119,7 @@ mod tests {
     fn rejects_a_choice_outside_the_list() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let out = drive(&path, "3\nmaybe\n9\nask\n\n\n\n\ns\n");
+        let out = drive(&path, "3\nmaybe\n9\nask\n\n\n\n\n\ns\n");
         assert_eq!(
             out.matches("pick one of: allow, ask, deny").count(),
             2,

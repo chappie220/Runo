@@ -64,8 +64,8 @@ const UPDATED: Tr = tr(
 );
 const RESTARTED: Tr = tr("Restarted the service.", "已重启服务。");
 const RESTART_HINT: Tr = tr(
-    "A Gateway is running: restart it to use the new version (openclaw-rs service restart, with doas for the system service).",
-    "Gateway 正在运行：重启后才会用上新版本（openclaw-rs service restart；系统服务需要 doas）。",
+    "A Gateway is running: restart it to use the new version (openclaw-rs gateway restart).",
+    "Gateway 正在运行：重启后才会用上新版本（openclaw-rs gateway restart）。",
 );
 const ROLLED_BACK: Tr = tr(
     "Rolled back: {} is the previous binary again ({}).",
@@ -77,8 +77,8 @@ const NO_ASSET: Tr = tr(
     "版本 {} 里没有适用于 {} 的程序（应为 {}）。",
 );
 const NOT_WRITABLE: Tr = tr(
-    "Cannot replace {}: {}. Run the update as the binary's owner (doas openclaw-rs update), or keep the binary where the service account can write it.",
-    "无法替换 {}：{}。请用程序文件的所有者运行（doas openclaw-rs update），或把程序放在服务账号能写入的位置。",
+    "Cannot replace {}: {}. Run the update as the binary's owner (sudo openclaw-rs update), or keep the binary where the service account can write it.",
+    "无法替换 {}：{}。请用程序文件的所有者运行（sudo openclaw-rs update），或把程序放在服务账号能写入的位置。",
 );
 
 #[cfg(test)]
@@ -342,6 +342,21 @@ pub async fn run(
     bind: &str,
 ) -> Result<()> {
     let binary = std::env::current_exe().context("cannot find this binary")?;
+    // A binary in /usr/local/bin belongs to root: do the whole update as root.
+    if !check_only
+        && !crate::elevate::is_root()
+        && binary
+            .parent()
+            .is_some_and(|dir| !crate::elevate::writable(dir))
+        && crate::elevate::can_ask()
+    {
+        let args: &[&str] = if rollback_only {
+            &["update", "--rollback"]
+        } else {
+            &["update"]
+        };
+        return crate::elevate::rerun(args);
+    }
     if rollback_only {
         let version = rollback(&binary)?;
         println!(

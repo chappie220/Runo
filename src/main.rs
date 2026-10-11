@@ -11,6 +11,7 @@ mod config;
 mod context;
 mod cron;
 mod doctor;
+mod elevate;
 mod fetch;
 mod gateway;
 mod guide;

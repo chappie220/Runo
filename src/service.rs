@@ -58,8 +58,8 @@ const DIED: Tr = tr(
     "Gateway 启动后马上退出了；{} 的最后几行：",
 );
 const NO_AUTOSTART: Tr = tr(
-    "Started without OpenRC: it will not come back after a reboot. For that, install the system service as root (doas openclaw-rs service install --user {}), or enable OpenRC user services.",
-    "没有通过 OpenRC 启动：重启机器后不会自动运行。需要开机自启的话，用 root 安装系统服务（doas openclaw-rs service install --user {}），或启用 OpenRC 用户服务。",
+    "Started without OpenRC: it will not come back after a reboot. For that, install the system service as root (sudo openclaw-rs gateway install --user {}), or enable OpenRC user services.",
+    "没有通过 OpenRC 启动：重启机器后不会自动运行。需要开机自启的话，用 root 安装系统服务（sudo openclaw-rs gateway install --user {}），或启用 OpenRC 用户服务。",
 );
 const USER_INSTALLED: Tr = tr(
     "installed the user service {} (state in {}); it starts with your OpenRC session (pam_openrc)",
@@ -70,12 +70,16 @@ const LOGS: Tr = tr(
     "日志：{} · 状态：openclaw-rs service status",
 );
 const SYSTEM_NEEDS_ROOT: Tr = tr(
-    "the Gateway runs as the system service {}; `{}` needs root: doas openclaw-rs service {}",
-    "Gateway 是系统服务 {}；`{}` 需要 root：doas openclaw-rs service {}",
+    "the Gateway runs as the system service {}; `{}` needs root, and there is no sudo or doas and terminal to ask on: run `openclaw-rs gateway {}` as root",
+    "Gateway 是系统服务 {}；`{}` 需要 root，但没有 sudo/doas 或终端可以询问密码：请用 root 运行 `openclaw-rs gateway {}`",
 );
 const OTHER_USER: Tr = tr(
-    "only root can install the service for another account ({}); without root it runs as you",
-    "只有 root 能为其他账户（{}）安装服务；不用 root 时以你自己的身份运行",
+    "only root can install the service for another account ({}), and there is no sudo or doas and terminal to ask on; without root it runs as you",
+    "只有 root 能为其他账户（{}）安装服务，但没有 sudo/doas 或终端可以询问密码；不用 root 时以你自己的身份运行",
+);
+const NO_ROOT: Tr = tr(
+    "! The system service was not installed ({}); running in the background instead.",
+    "! 没有安装系统服务（{}）；改为在后台运行。",
 );
 const DETACHED_REMOVED: Tr = tr(
     "Nothing was installed for this account; state and {} were kept.",
@@ -102,6 +106,7 @@ const ALL: &[Tr] = &[
     LOGS,
     SYSTEM_NEEDS_ROOT,
     OTHER_USER,
+    NO_ROOT,
     DETACHED_REMOVED,
     KIND_SYSTEM,
     KIND_USER,
@@ -152,8 +157,7 @@ unsafe fn account_from(pw: *const libc::passwd) -> Result<Account> {
 }
 
 fn is_root() -> bool {
-    // SAFETY: geteuid has no preconditions.
-    unsafe { libc::geteuid() == 0 }
+    crate::elevate::is_root()
 }
 
 /// openrc-run evaluates these assignments, so values must be single-quoted shell words.
@@ -337,7 +341,14 @@ impl Backend {
         match self {
             Self::System { root: true } => run("rc-service", &[NAME, action]),
             Self::System { root: false } => {
-                bail!(SYSTEM_NEEDS_ROOT.with(&[INIT_SCRIPT, &format!("service {action}"), action]))
+                if !crate::elevate::can_ask() {
+                    bail!(SYSTEM_NEEDS_ROOT.with(&[
+                        INIT_SCRIPT,
+                        &format!("service {action}"),
+                        action
+                    ]))
+                }
+                crate::elevate::run("rc-service", &[NAME, action])
             }
             Self::User(_) => run("rc-service", &["--user", NAME, action]),
             Self::Detached => unreachable!("detached runs do not use OpenRC"),
@@ -423,10 +434,12 @@ pub fn install(user: Option<&str>, config: Option<&Path>) -> Result<()> {
             bail!(crate::cli_text::SERVICE_NO_OPENRC.now());
         }
         let account = lookup_account(user.unwrap_or("root"))?;
-        if !env.iter().any(|(key, _)| key == "OPENROUTER_API_KEY") {
+        let state = account.home.join(".openclaw-rs");
+        let key_in_config = crate::config::Config::load(&state.join("config.toml"))
+            .is_ok_and(|c| c.model.api_key.is_some_and(|k| !k.trim().is_empty()));
+        if !key_in_config && !env.iter().any(|(key, _)| key == "OPENROUTER_API_KEY") {
             eprintln!("{}", crate::cli_text::SERVICE_NO_KEY.with(&[CONF_FILE]));
         }
-        let state = account.home.join(".openclaw-rs");
         write_file(
             Path::new(CONF_FILE),
             &render_conf(&account.home, &state, &env),
@@ -455,11 +468,27 @@ pub fn install(user: Option<&str>, config: Option<&Path>) -> Result<()> {
     if let Some(user) = user
         && user != account.name
     {
-        bail!(OTHER_USER.with(&[user]));
+        if !crate::elevate::can_ask() {
+            bail!(OTHER_USER.with(&[user]));
+        }
+        return crate::elevate::rerun(&["gateway", "install", "--user", user]);
     }
     let state = crate::config::state_dir()?;
     let paths = UserPaths::new(&account.home);
-    if Path::new(OPENRC_RUN).exists() && (paths.init.exists() || user_services_available()) {
+    let openrc = Path::new(OPENRC_RUN).exists();
+    let user_service = openrc && (paths.init.exists() || user_services_available());
+    // Without user services, the system service is the one that survives a
+    // reboot: ask for root rather than settle for a background process.
+    if openrc && !user_service && crate::elevate::can_ask() {
+        if detached_pid().is_some() {
+            detached_stop()?;
+        }
+        match crate::elevate::rerun(&["gateway", "install", "--user", &account.name]) {
+            Ok(()) => return Ok(()),
+            Err(err) => eprintln!("{}", NO_ROOT.with(&[&format!("{err:#}")])),
+        }
+    }
+    if user_service {
         let log = state.join(USER_LOG);
         std::fs::create_dir_all(&state)
             .with_context(|| format!("cannot create {}", state.display()))?;
@@ -511,7 +540,12 @@ pub fn uninstall() -> Result<()> {
                 crate::cli_text::SERVICE_REMOVED.with(&[INIT_SCRIPT, CONF_FILE, LOG_FILE])
             );
         }
-        backend @ Backend::System { root: false } => backend.rc_service("uninstall")?,
+        Backend::System { root: false } => {
+            if !crate::elevate::can_ask() {
+                bail!(SYSTEM_NEEDS_ROOT.with(&[INIT_SCRIPT, "service uninstall", "uninstall"]))
+            }
+            crate::elevate::rerun(&["gateway", "uninstall"])?;
+        }
         Backend::User(paths) => {
             if !paths.init.exists() {
                 println!(

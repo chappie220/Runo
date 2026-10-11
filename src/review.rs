@@ -75,6 +75,30 @@ pub struct DeciderSettings<'a> {
     pub timeout_secs: u64,
 }
 
+/// What `decider` runs for these settings, e.g. "openrouter/typesafe/jev-1.13";
+/// `None` when the provider is off. `chat_model` is model.model.
+pub fn decider_label(
+    provider: ReviewProvider,
+    model: Option<&str>,
+    base_url: Option<&str>,
+    chat_model: &str,
+) -> Option<String> {
+    let pick = |default: &str| {
+        model
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or(default)
+            .to_owned()
+    };
+    let local = base_url.is_some_and(|b| !b.trim().is_empty());
+    Some(match provider {
+        ReviewProvider::Off => return None,
+        ReviewProvider::Typesafe if local => format!("typesafe/{}", pick("kev-latest")),
+        ReviewProvider::Typesafe => format!("typesafe/{}", pick("jev-latest")),
+        ReviewProvider::Openrouter => format!("openrouter/{}", pick(DEFAULT_OPENROUTER_DECIDER)),
+        ReviewProvider::OpenrouterChat => format!("openrouter/{}", pick(chat_model)),
+    })
+}
+
 /// The decider for `settings` and its label, e.g. "openrouter/typesafe/jev-1.13";
 /// `None` when the provider is off.
 pub fn decider(
@@ -581,5 +605,41 @@ pub mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn labels_say_what_runs() {
+        let chat = ModelConfig {
+            model: "maker/chat".into(),
+            ..ModelConfig::default()
+        };
+        let cases = [
+            (ReviewProvider::Openrouter, None, None),
+            (ReviewProvider::Openrouter, Some("typesafe/jev-2"), None),
+            (ReviewProvider::OpenrouterChat, None, None),
+            (
+                ReviewProvider::Typesafe,
+                None,
+                Some("http://127.0.0.1:8009"),
+            ),
+        ];
+        for (provider, model, base_url) in cases {
+            let settings = DeciderSettings {
+                section: "guide",
+                provider,
+                model,
+                typesafe_key: None,
+                base_url,
+                timeout_secs: 5,
+            };
+            let (_, label) = decider(&settings, &chat, "sk").unwrap().unwrap();
+            let shown = decider_label(provider, model, base_url, &chat.model);
+            assert_eq!(shown.as_deref(), Some(label.as_str()));
+        }
+        assert_eq!(
+            decider_label(ReviewProvider::Openrouter, None, None, "x").as_deref(),
+            Some("openrouter/typesafe/jev-1.13")
+        );
+        assert_eq!(decider_label(ReviewProvider::Off, None, None, "x"), None);
     }
 }
