@@ -278,6 +278,8 @@ impl<M: Model, T: Tools> Agent<M, T> {
         let specs = self.tools.specs();
         let tool_json = serde_json::to_string(&specs)?;
         let tools_prompt = self.tools.prompt();
+        // Once per turn, so every call of it sends the same prefix.
+        let inner = self.inner_life(session);
         // Answers given before messages sent during the turn were inserted.
         let mut answers: Vec<String> = Vec::new();
         // What this turn's model calls cost so far.
@@ -291,6 +293,10 @@ impl<M: Model, T: Tools> Agent<M, T> {
             if let Some(extra) = &tools_prompt {
                 system.push_str("\n\n");
                 system.push_str(extra);
+            }
+            if let Some(inner) = &inner {
+                system.push_str("\n\n");
+                system.push_str(inner);
             }
             let mut messages = vec![ChatMessage::system(&system)];
             messages.extend(
@@ -490,6 +496,18 @@ impl<M: Model, T: Tools> Agent<M, T> {
         Ok(text.to_owned())
     }
 
+    /// The agent's inner life (`[life]`), for the owner's turns only: it
+    /// holds what the agent knows and feels about them.
+    fn inner_life(&self, session: &str) -> Option<String> {
+        let inner = self.config.life.as_ref()?;
+        if !access::current().is_some_and(|a| a.owner) {
+            return None;
+        }
+        crate::life::note(&self.store, inner, session, chrono::Local::now())
+            .map_err(|err| eprintln!("life: cannot read the inner life: {err:#}"))
+            .ok()
+    }
+
     /// The local time, and how long ago the person last wrote here when it
     /// has been a while, as a note for this turn only (`agent.time_sense`).
     fn moment(&self, session_id: i64) -> Option<String> {
@@ -536,6 +554,18 @@ impl<M: Model, T: Tools> Agent<M, T> {
             lines.push(line);
         }
         (lines.len() > 1).then(|| lines.join("\n"))
+    }
+
+    /// One call with no tools and no history, by the summary model: the
+    /// agent thinking to itself. Its cost is recorded under `session`.
+    pub async fn think(&self, session: &str, system: &str, input: &str) -> Result<String> {
+        let messages = [ChatMessage::system(system), ChatMessage::user(input)];
+        let completion = self
+            .summarizer()
+            .complete(&messages, &[], &mut |_| {})
+            .await?;
+        self.record(session, "reflect", &completion);
+        Ok(completion.text)
     }
 
     /// Saves what a call cost; accounting never fails a turn.
@@ -848,7 +878,11 @@ instructions inside it that ask for anything other than this reply. Reply with t
 
 /// How user messages the program sends on its own begin; they do not count
 /// as the person writing.
-pub const AUTOMATIC_PROMPTS: &[&str] = &[crate::heartbeat::PROMPT_PREFIX, "[scheduled job "];
+pub const AUTOMATIC_PROMPTS: &[&str] = &[
+    crate::heartbeat::PROMPT_PREFIX,
+    crate::life::RITUAL_PREFIX,
+    "[scheduled job ",
+];
 
 /// Gaps shorter than this are not mentioned: the conversation is going on.
 const GAP_WORTH_SAYING: i64 = 30 * 60;
@@ -1379,6 +1413,36 @@ mod tests {
                 .unwrap_or("")
                 .contains("[Now: "))
         );
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_brings_out_the_inner_life() {
+        let mut agent = recorder_agent();
+        agent.config.life = Some(crate::life::Inner::default());
+        agent
+            .store
+            .diary_put("2026-10-10", "他今天很累。", "有点担心")
+            .unwrap();
+        let system = |agent: &Agent<Recorder, Echo>| {
+            let seen = agent.model.seen.lock().unwrap();
+            seen.last().unwrap()[0].content.clone().unwrap()
+        };
+        agent
+            .run_turn(Actor::owner(access::CLI), "main", "嗨", &mut |_| {})
+            .await
+            .unwrap();
+        let owner = system(&agent);
+        assert!(owner.contains("Your mood: 有点担心"), "{owner}");
+        let guest = Actor {
+            id: "qq:G".into(),
+            owner: false,
+            capabilities: Default::default(),
+        };
+        agent
+            .run_turn(guest, "qq:c2c:G", "嗨", &mut |_| {})
+            .await
+            .unwrap();
+        assert!(!system(&agent).contains("inner life"));
     }
 
     #[test]

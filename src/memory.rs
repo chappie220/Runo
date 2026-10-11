@@ -7,6 +7,10 @@ use crate::store::{Store, now};
 
 /// Notes are facts, not documents; long content belongs in workspace files.
 pub const MAX_MEMORY_CHARS: usize = 2000;
+/// What a memory can be about, besides a plain note: who the person is,
+/// something going on in their life to follow up, a moment the two of you
+/// shared, and something they do not want.
+pub const KINDS: [&str; 4] = ["person", "ongoing", "shared", "dislike"];
 /// The trigram tokenizer cannot index shorter terms; they fall back to LIKE.
 const TRIGRAM: usize = 3;
 
@@ -33,6 +37,24 @@ impl Store {
 
     /// Saves a memory recorded as `created_by`'s.
     pub fn memory_save_by(&self, content: &str, created_by: Option<&str>) -> Result<i64> {
+        self.memory_save_kind(content, None, created_by)
+    }
+
+    /// Saves a memory of a `kind` (see [`KINDS`]); `None` for a plain note.
+    pub fn memory_save_kind(
+        &self,
+        content: &str,
+        kind: Option<&str>,
+        created_by: Option<&str>,
+    ) -> Result<i64> {
+        if let Some(kind) = kind
+            && !KINDS.contains(&kind)
+        {
+            bail!(
+                "unknown memory kind {kind:?}; use one of {}",
+                KINDS.join(", ")
+            );
+        }
         let content = content.trim();
         if content.is_empty() {
             bail!("memory content is empty");
@@ -42,10 +64,23 @@ impl Store {
         }
         let conn = self.soul();
         conn.execute(
-            "INSERT INTO memories(content, created_at, created_by) VALUES (?1, ?2, ?3)",
-            params![content, now(), created_by],
+            "INSERT INTO memories(content, created_at, created_by, kind) VALUES (?1, ?2, ?3, ?4)",
+            params![content, now(), created_by, kind],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// The owner's memories of `kind`, newest first.
+    pub fn memories_of_kind(&self, kind: &str, limit: usize) -> Result<Vec<Memory>> {
+        let conn = self.soul();
+        let mut stmt = conn.prepare(
+            "SELECT id, content, created_at FROM memories
+             WHERE kind = ?1 AND created_by IS NULL ORDER BY id DESC LIMIT ?2",
+        )?;
+        let found = stmt
+            .query_map(params![kind, limit as i64], row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(found)
     }
 
     pub fn memory_delete(&self, id: i64) -> Result<bool> {

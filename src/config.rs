@@ -34,6 +34,7 @@ pub struct Config {
     pub guide: GuideConfig,
     pub access: crate::access::AccessConfig,
     pub heartbeat: crate::heartbeat::HeartbeatConfig,
+    pub life: crate::life::LifeConfig,
 }
 
 /// Guided conversation: messages sent while a turn runs join that turn.
@@ -344,6 +345,9 @@ pub struct QqConfig {
     pub allow: Vec<String>,
     pub api_base: String,
     pub token_url: String,
+    /// Sends a short chatty reply of a few paragraphs as that many messages,
+    /// a moment apart, the way people text.
+    pub split_replies: bool,
 }
 
 impl Default for QqConfig {
@@ -355,6 +359,7 @@ impl Default for QqConfig {
             allow: Vec::new(),
             api_base: "https://api.bot.qq.com".into(),
             token_url: "https://api.bot.qq.com/app/getAppAccessToken".into(),
+            split_replies: true,
         }
     }
 }
@@ -480,6 +485,9 @@ pub struct AgentConfig {
     /// from the file.
     #[serde(skip)]
     pub auto_context: Option<usize>,
+    /// From `[life]` at startup: carried into the owner's turns when on.
+    #[serde(skip)]
+    pub life: Option<crate::life::Inner>,
 }
 
 impl AgentConfig {
@@ -716,6 +724,7 @@ impl Default for AgentConfig {
             workspace: PathBuf::new(),
             limits: crate::limits::LimitsConfig::default(),
             auto_context: None,
+            life: None,
         }
     }
 }

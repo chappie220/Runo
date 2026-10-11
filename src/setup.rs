@@ -268,6 +268,48 @@ const SECTIONS: &[Section] = &[
                 kind: Kind::Int,
             },
             Field {
+                path: &["life", "enabled"],
+                label: tr("Inner life", "内心生活"),
+                help: tr(
+                    "A nightly diary, mood and notes about you, carried into your conversations, plus morning and evening messages; see README \"Inner life\".",
+                    "每晚写日记、记下心情和关于你的事，并带进你们的对话；还有早安和晚安消息。见 README 的 \"Inner life\"。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["life", "reflect_at"],
+                label: tr("Nightly reflection at", "每晚反思时间"),
+                help: tr("Local time HH:MM.", "本地时间 HH:MM。"),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "morning"],
+                label: tr("Good-morning at", "早安时间"),
+                help: tr(
+                    "Local time HH:MM; empty for none.",
+                    "本地时间 HH:MM；留空表示不发。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "evening"],
+                label: tr("Good-night at", "晚安时间"),
+                help: tr(
+                    "Local time HH:MM; empty for none.",
+                    "本地时间 HH:MM；留空表示不发。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["life", "city"],
+                label: tr("City for the weather", "天气所在城市"),
+                help: tr(
+                    "Named in the good-morning message; it looks the weather up with its web tools.",
+                    "早安消息里会提到这里的天气，由它用网页工具去查。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
                 path: &["guide", "enabled"],
                 label: tr("Add messages to a running turn", "对话中插入补充消息"),
                 help: tr(
@@ -446,6 +488,15 @@ const SECTIONS: &[Section] = &[
                     "用逗号分隔的用户或群 openid；留空则所有人都能聊天。日志里会打印每个发送者的 openid。",
                 ),
                 kind: Kind::List,
+            },
+            Field {
+                path: &["qq", "split_replies"],
+                label: tr("Split chatty replies", "闲聊回复分条发送"),
+                help: tr(
+                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                ),
+                kind: Kind::Bool,
             },
         ],
     },
@@ -1888,9 +1939,9 @@ mod tests {
         .unwrap();
         // Model (section 2): new id, keep key, two fallbacks, keep retries, cache by number,
         // a bad then a good budget, reset summary model, keep image and audio
-        // models, recall, max steps, time sense, the four heartbeat fields
-        // and the three guide fields.
-        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\n\n\n\ns\n";
+        // models, recall, max steps, time sense, the four heartbeat fields,
+        // the five life fields and the three guide fields.
+        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -1974,7 +2025,7 @@ mod tests {
         let out = drive_in(
             Lang::Zh,
             &path,
-            "5\n?\n是\n\n\n\n99\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
+            "5\n?\n是\n\n\n\n\n99\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
         );
         assert!(out.contains("2) 模型与上下文"), "{out}");
         assert!(out.contains("s) 保存并退出"), "{out}");

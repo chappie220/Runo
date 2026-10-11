@@ -130,6 +130,8 @@ struct EditArgs {
 #[derive(Deserialize)]
 struct MemorySaveArgs {
     content: String,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -420,7 +422,7 @@ impl BuiltinTools {
         // The owner's memories stay unattributed, like those saved from the terminal.
         let id = self
             .store
-            .memory_save_by(&args.content, actor.scope())
+            .memory_save_kind(&args.content, args.kind.as_deref(), actor.scope())
             .map_err(|e| format!("error: {e:#}"))?;
         Ok(format!("saved memory #{id}"))
     }
@@ -872,8 +874,11 @@ impl BuiltinTools {
         ];
         specs.push(ToolSpec::function(
             "memory_save",
-            "Save a durable fact for future conversations (preferences, names, decisions). One fact per call, under 2000 characters.",
-            json!({"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}),
+            "Save a durable fact for future conversations (preferences, names, decisions). One fact per call, under 2000 characters. Give a kind when it fits: person (who they are: habits, people in their life, dates such as birthdays), ongoing (something in progress or coming up in their life worth following up, e.g. an interview on Friday; delete it once it is over), shared (a moment between you worth recalling), dislike (a topic or style they do not want).",
+            json!({"type": "object", "properties": {
+                "content": {"type": "string"},
+                "kind": {"type": "string", "enum": crate::memory::KINDS}
+            }, "required": ["content"]}),
         ));
         specs.push(ToolSpec::function(
             "memory_search",

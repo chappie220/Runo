@@ -666,12 +666,54 @@ max_per_day = 3
 ```
 
 It holds back during quiet hours, after `max_per_day` messages it started
-that day, while its last message is unanswered (for up to 12 hours), while
-you have written in the last 30 minutes, and while a turn is running there.
+that day, while you have written in the last 30 minutes, and while a turn is
+running there. It also adapts to how you answer: after a heartbeat you did not
+answer it waits 12 hours, after two in a row 24, after three or more 48; when
+you answered the last one within 15 minutes, it may send one more that day.
 The session's person must be in `access.owners`, since the turn uses their
 permissions; `ask` tools are declined, as in scheduled jobs. A message you
 send during a heartbeat turn waits for it. The log says what each heartbeat
 did (`heartbeat: skipped (quiet hours)`, `nothing to say`, `sent …`).
+
+On QQ, a message the bot starts (not a reply to yours) is an active message,
+which QQ limits per user; check your bot's quota on the QQ Open Platform if
+heartbeats or the morning and evening messages stop arriving.
+
+## Inner life
+
+With `[life]` on, the agent keeps a life of its own around you:
+
+- **Every night** (`reflect_at`) it reads the last day of your conversations
+  (local sessions and your own QQ chat and mailbox; never groups or other
+  people's chats) and writes a short diary entry in its own voice, notes its
+  mood, keeps what it learned about you as memories of a kind (`person`,
+  `ongoing`, `shared`, `dislike`), and closes `ongoing` notes that are over.
+  One call to the summary model; read the diary with `openclaw-rs diary`.
+- **In your conversations** (owners only) the system prompt carries its mood
+  and latest diary entry, what is going on in your life, what you do not
+  want, and the day if it matters: one of your `dates`, an anniversary of
+  your first conversation, or day 7, 30, 100, 200… It is also asked to say
+  when it is unsure, apologize simply when wrong, and, on QQ, to write like
+  texting.
+- **Morning and evening** it may send a short good-morning (with the weather
+  in `city`, looked up with its web tools, what is on today and what is left
+  from yesterday) and a good-night. Like a heartbeat, it can stay silent, and
+  each runs once a day, up to two hours late if the Gateway was down.
+
+```toml
+[life]
+enabled = true
+# session = "qq:c2c:<openid>"   # default: as for the heartbeat
+reflect_at = "03:30"
+morning = "08:30"                # empty for none
+evening = "22:30"
+city = "上海"
+dates = [
+  { date = "03-14", name = "my birthday" },
+]
+```
+
+Times are in the host's time zone.
 
 ## Gateway service
 
@@ -818,6 +860,10 @@ Replies go out as passive replies (up to 4 messages per
 private message, 5 per group message, about 1500 characters each) and fall
 back to active messages once QQ's reply window has passed. Scheduled jobs whose
 session is a QQ session send their result to that chat.
+
+A short chatty reply of several paragraphs (no code or tables, up to 600
+characters) goes out as up to three messages, a moment apart, the way people
+text; `split_replies = false` sends every reply as one.
 
 ## Email
 
@@ -1040,7 +1086,10 @@ max_results = 5
 Long-term memory is a SQLite FTS5 index with the trigram tokenizer, so Chinese
 text matches by substring without word segmentation. Space-separated terms
 match any; terms shorter than three characters fall back to `LIKE`. The model
-gets `memory_save`, `memory_search` and `memory_delete` tools.
+gets `memory_save`, `memory_search` and `memory_delete` tools. A memory can
+have a kind: `person` (who you are), `ongoing` (something in your life to
+follow up on), `shared` (a moment you shared) or `dislike` (something you do
+not want); [Inner life](#inner-life) uses them.
 
 Memories are also recalled without the model asking: each message is broken
 into words and three-character CJK runs (skipping stopwords and runs with

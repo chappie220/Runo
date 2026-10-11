@@ -390,6 +390,10 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         &self.agent.store
     }
 
+    pub fn agent(&self) -> &Agent<M, T> {
+        &self.agent
+    }
+
     pub fn add_notifier(&self, notifier: Arc<dyn Notifier>) {
         self.notifiers
             .lock()

@@ -19,6 +19,10 @@ pub const PROMPT_PREFIX: &str = "[heartbeat]";
 pub const SILENT: &str = "NO_REPLY";
 /// A heartbeat nobody answered blocks the next one for this long.
 const UNANSWERED_FOR: i64 = 12 * 3600;
+/// An answer to a heartbeat this soon counts as glad to hear from it.
+const QUICK_ANSWER: i64 = 15 * 60;
+/// How far back heartbeats and answers are weighed.
+const LOOK_BACK: i64 = 7 * 86_400;
 /// Someone who wrote this recently is in a conversation; no need to call.
 const JUST_TALKED: i64 = 30 * 60;
 
@@ -118,27 +122,7 @@ impl Heartbeat {
         if !config.enabled {
             return Ok(None);
         }
-        let session = match &config.session {
-            Some(session) => session.clone(),
-            None => access
-                .owners
-                .iter()
-                .find_map(|o| o.strip_prefix("qq:"))
-                .map(|id| format!("qq:c2c:{id}"))
-                .context(
-                    "heartbeat: set heartbeat.session, or add a \"qq:<openid>\" owner to access.owners",
-                )?,
-        };
-        let actor = match sender(&session) {
-            Some(sender) => access.resolve(&sender, &session),
-            None if session.starts_with("qq:group:") => {
-                bail!("heartbeat: {session} is a group; use a private chat")
-            }
-            None => Actor::owner(crate::access::CLI),
-        };
-        if !actor.owner {
-            bail!("heartbeat: {} is not in access.owners", actor.id);
-        }
+        let (session, actor) = owner_chat("heartbeat", config.session.as_deref(), access)?;
         if config.every_minutes == 0 {
             bail!("heartbeat.every_minutes must be at least 1");
         }
@@ -157,27 +141,36 @@ impl Heartbeat {
         }))
     }
 
-    /// Why this moment is not one to reach out in, if it is not.
-    fn hold_back(&self, at: Moment) -> Option<&'static str> {
+    /// Why this moment is not one to reach out in, if it is not. Ignored
+    /// heartbeats make it wait longer each time; a quick answer to the
+    /// last one allows one more that day.
+    fn hold_back(&self, at: &Moment) -> Option<&'static str> {
         if self.quiet.is_some_and(|q| q.contains(at.time)) {
             return Some("quiet hours");
         }
-        if at.sent_today >= self.max_per_day {
+        let sent_today = at.sent.iter().filter(|&&t| t >= at.midnight).count();
+        let warm = at.warm();
+        if sent_today >= self.max_per_day + usize::from(warm) {
             return Some("daily limit reached");
         }
-        let unanswered = at
-            .last_sent
-            .is_some_and(|sent| at.last_spoken.is_none_or(|spoken| spoken < sent));
-        if unanswered
-            && at
-                .last_sent
-                .is_some_and(|sent| at.now - sent < UNANSWERED_FOR)
+        let ignored = at.ignored();
+        if let Some(&last) = at.sent.last()
+            && ignored > 0
         {
-            return Some("the last one is unanswered");
+            // 12 h after one unanswered heartbeat, then 24 h, then 48 h.
+            let wait = UNANSWERED_FOR << (ignored.min(3) - 1);
+            if at.now - last < wait {
+                return Some(if ignored == 1 {
+                    "the last one is unanswered"
+                } else {
+                    "several in a row were unanswered; waiting longer"
+                });
+            }
         }
         if at
-            .last_spoken
-            .is_some_and(|spoken| at.now - spoken < JUST_TALKED)
+            .spoken
+            .last()
+            .is_some_and(|&spoken| at.now - spoken < JUST_TALKED)
         {
             return Some("they are talking already");
         }
@@ -186,17 +179,85 @@ impl Heartbeat {
 }
 
 /// The facts a heartbeat decides on.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 struct Moment {
     now: i64,
     time: NaiveTime,
-    sent_today: usize,
-    last_sent: Option<i64>,
-    last_spoken: Option<i64>,
+    /// Start of the local day.
+    midnight: i64,
+    /// When recent heartbeats were sent, oldest first.
+    sent: Vec<i64>,
+    /// When the person wrote recently, oldest first.
+    spoken: Vec<i64>,
+}
+
+impl Moment {
+    /// When the person first wrote after the heartbeat at `index`, before
+    /// the next one.
+    fn answer(&self, index: usize) -> Option<i64> {
+        let sent = self.sent[index];
+        let until = self.sent.get(index + 1).copied().unwrap_or(i64::MAX);
+        self.spoken
+            .iter()
+            .copied()
+            .find(|&t| t > sent && t <= until)
+    }
+
+    /// The latest heartbeats in a row that got no answer.
+    fn ignored(&self) -> u32 {
+        (0..self.sent.len())
+            .rev()
+            .take_while(|&i| self.answer(i).is_none())
+            .count() as u32
+    }
+
+    /// Whether the last heartbeat was answered within a few minutes.
+    fn warm(&self) -> bool {
+        let Some(last) = self.sent.len().checked_sub(1) else {
+            return false;
+        };
+        self.answer(last)
+            .is_some_and(|t| t - self.sent[last] <= QUICK_ANSWER)
+    }
+}
+
+/// The owner's conversation that `section` (`heartbeat`, `life`) reaches
+/// out in, and the owner it acts as: `session`, or by default the private
+/// QQ chat of the first `qq:` owner. Refuses anyone who is not an owner,
+/// since the turn uses their permissions unasked.
+pub fn owner_chat(
+    section: &str,
+    session: Option<&str>,
+    access: &AccessConfig,
+) -> Result<(String, Actor)> {
+    let session = match session {
+        Some(session) => session.to_owned(),
+        None => access
+            .owners
+            .iter()
+            .find_map(|o| o.strip_prefix("qq:"))
+            .map(|id| format!("qq:c2c:{id}"))
+            .with_context(|| {
+                format!(
+                    "{section}: set {section}.session, or add a \"qq:<openid>\" owner to access.owners"
+                )
+            })?,
+    };
+    let actor = match sender(&session) {
+        Some(sender) => access.resolve(&sender, &session),
+        None if session.starts_with("qq:group:") => {
+            bail!("{section}: {session} is a group; use a private chat")
+        }
+        None => Actor::owner(crate::access::CLI),
+    };
+    if !actor.owner {
+        bail!("{section}: {} is not in access.owners", actor.id);
+    }
+    Ok((session, actor))
 }
 
 /// Who writes in a channel session: `qq:<openid>` or `mail:<address>`.
-fn sender(session: &str) -> Option<String> {
+pub fn sender(session: &str) -> Option<String> {
     if let Some(id) = session.strip_prefix("qq:c2c:") {
         return Some(format!("qq:{id}"));
     }
@@ -244,22 +305,15 @@ async fn beat<M: Model + 'static, T: Tools + 'static>(
         .and_hms_opt(0, 0, 0)
         .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
         .map_or(now.timestamp() - 86_400, |t| t.timestamp());
-    let sent = store.prompts_since(session_id, PROMPT_PREFIX, midnight)?;
-    let last_sent = match sent.last() {
-        Some(&t) => Some(t),
-        None => store
-            .prompts_since(session_id, PROMPT_PREFIX, now.timestamp() - UNANSWERED_FOR)?
-            .last()
-            .copied(),
-    };
+    let since = now.timestamp() - LOOK_BACK;
     let at = Moment {
         now: now.timestamp(),
         time: now.time(),
-        sent_today: sent.len(),
-        last_sent,
-        last_spoken: store.last_spoken_at(session_id, crate::agent::AUTOMATIC_PROMPTS)?,
+        midnight,
+        sent: store.prompts_since(session_id, PROMPT_PREFIX, since)?,
+        spoken: store.spoken_since(session_id, crate::agent::AUTOMATIC_PROMPTS, since)?,
     };
-    if let Some(why) = heartbeat.hold_back(at) {
+    if let Some(why) = heartbeat.hold_back(&at) {
         return Ok(format!("skipped ({why})"));
     }
     Ok(
@@ -364,58 +418,77 @@ mod tests {
             .unwrap()
             .unwrap();
         let now = 1_000_000;
+        let h = 3600;
         let free = Moment {
             now,
             time: t("10:00"),
-            sent_today: 0,
-            last_sent: None,
-            last_spoken: Some(now - 5 * 3600),
+            midnight: now - 10 * h,
+            sent: Vec::new(),
+            spoken: vec![now - 5 * h],
         };
-        assert_eq!(beat.hold_back(free), None);
-        let at = |m: Moment| beat.hold_back(m);
+        let at = |m: Moment| beat.hold_back(&m);
+        assert_eq!(at(free.clone()), None);
         assert_eq!(
             at(Moment {
                 time: t("23:30"),
-                ..free
+                ..free.clone()
             }),
             Some("quiet hours")
         );
+        // Three today, each answered after a while.
+        let three = Moment {
+            sent: vec![now - 9 * h, now - 6 * h, now - 3 * h],
+            spoken: vec![now - 8 * h, now - 5 * h, now - 2 * h],
+            ..free.clone()
+        };
+        assert_eq!(at(three.clone()), Some("daily limit reached"));
+        // The last answered within minutes: one more is welcome.
         assert_eq!(
             at(Moment {
-                sent_today: 3,
-                ..free
+                spoken: vec![now - 8 * h, now - 5 * h, now - 3 * h + 300],
+                ..three
             }),
-            Some("daily limit reached")
+            None
         );
         // Sent after they last wrote, an hour ago: wait for an answer.
         assert_eq!(
             at(Moment {
-                last_sent: Some(now - 3600),
-                ..free
+                sent: vec![now - h],
+                ..free.clone()
             }),
             Some("the last one is unanswered")
         );
-        // Unanswered for longer than that: try again.
+        // Unanswered for longer than 12 hours: try again.
         assert_eq!(
             at(Moment {
-                last_sent: Some(now - 13 * 3600),
-                last_spoken: Some(now - 20 * 3600),
-                ..free
+                sent: vec![now - 13 * h],
+                spoken: vec![now - 20 * h],
+                ..free.clone()
             }),
             None
         );
-        // Answered.
+        // Two ignored in a row: a day between them; three: two days.
+        let ignored = |sent: Vec<i64>| Moment {
+            sent,
+            spoken: vec![now - 100 * h],
+            ..free.clone()
+        };
         assert_eq!(
-            at(Moment {
-                last_sent: Some(now - 3 * 3600),
-                last_spoken: Some(now - 2 * 3600),
-                ..free
-            }),
+            at(ignored(vec![now - 40 * h, now - 20 * h])),
+            Some("several in a row were unanswered; waiting longer")
+        );
+        assert_eq!(at(ignored(vec![now - 50 * h, now - 25 * h])), None);
+        assert_eq!(
+            at(ignored(vec![now - 90 * h, now - 70 * h, now - 40 * h])),
+            Some("several in a row were unanswered; waiting longer")
+        );
+        assert_eq!(
+            at(ignored(vec![now - 90 * h, now - 70 * h, now - 49 * h])),
             None
         );
         assert_eq!(
             at(Moment {
-                last_spoken: Some(now - 60),
+                spoken: vec![now - 60],
                 ..free
             }),
             Some("they are talking already")

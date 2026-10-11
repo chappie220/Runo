@@ -81,6 +81,17 @@ CREATE TABLE identity_drafts (
   decided_at INTEGER
 );
 "#,
+        r#"
+-- What a memory is about: person, ongoing, shared or dislike; NULL for a plain note.
+ALTER TABLE memories ADD COLUMN kind TEXT;
+-- The agent's own diary, one entry per local day, written when it reflects.
+CREATE TABLE diary (
+  day TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  mood TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+"#,
     ],
     legacy: &[
         ("memories", "id, content, created_at"),
@@ -214,6 +225,13 @@ CREATE INDEX usage_by_time ON usage(created_at);
 -- The sender each call was for (`cli`, `qq:<openid>`, ...), for spending limits.
 ALTER TABLE usage ADD COLUMN actor TEXT;
 CREATE INDEX usage_by_actor ON usage(actor, created_at);
+"#,
+        r#"
+-- The local day each daily ritual (reflection, morning, evening) last ran.
+CREATE TABLE rituals (
+  name TEXT PRIMARY KEY,
+  day TEXT NOT NULL
+);
 "#,
     ],
     legacy: &[
@@ -773,6 +791,33 @@ impl Store {
             }
         }
         Ok(None)
+    }
+
+    /// When the person wrote in the session since `since`, oldest first:
+    /// user messages not starting with one of the `automatic` prefixes.
+    pub fn spoken_since(
+        &self,
+        session_id: i64,
+        automatic: &[&str],
+        since: i64,
+    ) -> Result<Vec<i64>> {
+        let conn = self.chats();
+        let mut stmt = conn.prepare(
+            "SELECT content, created_at FROM messages
+             WHERE session_id = ?1 AND role = 'user' AND created_at >= ?2 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id, since], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut times = Vec::new();
+        for row in rows {
+            let (content, at) = row?;
+            let content = content.unwrap_or_default();
+            if !automatic.iter().any(|p| content.starts_with(p)) {
+                times.push(at);
+            }
+        }
+        Ok(times)
     }
 
     /// When the user messages starting with `prefix` were sent, since `since`.

@@ -18,6 +18,7 @@ mod guide;
 mod heartbeat;
 mod i18n;
 mod identity;
+mod life;
 mod limits;
 mod llm;
 mod mail;
@@ -173,6 +174,12 @@ enum Command {
         /// How many days back to count.
         #[arg(long, default_value_t = 30)]
         days: u32,
+    },
+    /// Read the agent's diary, written when it reflects each night ([life]).
+    Diary {
+        /// How many entries to show.
+        #[arg(long, default_value_t = 7)]
+        days: usize,
     },
     /// List or delete sessions.
     Sessions {
@@ -556,11 +563,24 @@ async fn run(cli: Cli) -> Result<()> {
             {
                 tokio::spawn(heartbeat::run(beat, gateway.clone()));
             }
+            if let Some(life) = life::Life::from_config(&config.life, &config.access)? {
+                tokio::spawn(life::run(life, gateway.clone()));
+            }
             let idle = gateway.clone();
             tokio::spawn(update::watch(config.update.clone(), move || idle.idle()));
             gateway::serve(gateway, &bind, web.unwrap_or(config.gateway.web)).await
         }
         Command::Sessions { action } => sessions(&store, action.unwrap_or(SessionsAction::List)),
+        Command::Diary { days } => {
+            let entries = store.diary(days)?;
+            if entries.is_empty() {
+                println!("{}", text::NO_DIARY.now());
+            }
+            for entry in entries.iter().rev() {
+                println!("{} · {}\n{}\n", entry.day, entry.mood, entry.text);
+            }
+            Ok(())
+        }
         Command::Usage { days } => {
             let since = store::now() - i64::from(days) * 86_400;
             print!(
@@ -745,6 +765,7 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
             workspace,
             limits: config.limits.clone(),
             auto_context,
+            life: life::Inner::from_config(&config.life)?,
             ..config.agent.clone()
         },
     })
