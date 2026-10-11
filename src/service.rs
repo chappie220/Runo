@@ -355,8 +355,13 @@ impl Backend {
         }
     }
 
-    /// `rc-service status` succeeds only when started.
+    /// `rc-service status` succeeds only when started. OpenRC's state under
+    /// /run is root-only, so an ordinary account asking about the system
+    /// service looks for the Gateway process instead.
     fn rc_running(&self) -> bool {
+        if matches!(self, Self::System { root: false }) {
+            return gateway_pids().next().is_some();
+        }
         let mut cmd = Command::new("rc-service");
         if matches!(self, Self::User(_)) {
             cmd.arg("--user");
@@ -613,6 +618,7 @@ pub fn status() -> Result<bool> {
     let backend = Backend::detect()?;
     let running = match &backend {
         Backend::Detached => detached_pid(),
+        Backend::System { root: false } => gateway_pids().next(),
         // OpenRC knows the pid; `rc-service status` only says whether it runs.
         _ => backend.rc_running().then_some(0),
     };
@@ -677,6 +683,17 @@ fn detached_pid() -> Option<u32> {
     let text = std::fs::read_to_string(state_file(PID_FILE)).ok()?;
     let pid: u32 = text.trim().parse().ok()?;
     is_gateway(pid).then_some(pid)
+}
+
+/// Every running Gateway but this process, found through /proc, which
+/// any account may read.
+fn gateway_pids() -> impl Iterator<Item = u32> {
+    let me = std::process::id();
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .filter(move |pid| *pid != me && is_gateway(*pid))
 }
 
 /// Whether `pid` is alive and runs `serve` (a reused pid is not ours).

@@ -37,10 +37,13 @@ pub enum Capability {
     Mcp,
     /// `skill`: loads the instructions of installed skills.
     Skills,
+    /// `send_mail`: sends email from the bot's address, still subject to
+    /// `tools.mail` and `mail.mode`.
+    Mail,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 11] = [
+    pub const ALL: [Capability; 12] = [
         Capability::Shell,
         Capability::FilesRead,
         Capability::FilesWrite,
@@ -52,6 +55,7 @@ impl Capability {
         Capability::WebFetch,
         Capability::Mcp,
         Capability::Skills,
+        Capability::Mail,
     ];
 
     /// The capability a built-in tool needs; `None` for tools anyone may call.
@@ -67,6 +71,7 @@ impl Capability {
             "browser" => Capability::Browser,
             "web_fetch" => Capability::WebFetch,
             "skill" => Capability::Skills,
+            "send_mail" => Capability::Mail,
             name if crate::mcp::is_mcp_tool(name) => Capability::Mcp,
             _ => return None,
         })

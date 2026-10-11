@@ -18,6 +18,7 @@ use crate::config::{Permission, ToolsConfig};
 use crate::fetch::Fetcher;
 use crate::identity::Identity;
 use crate::llm::{ToolCall, ToolSpec};
+use crate::mail::MailBot;
 use crate::mcp::Mcp;
 use crate::review::{Reviewer, Verdict};
 use crate::search::Searcher;
@@ -89,11 +90,19 @@ pub struct BuiltinTools {
     mcp: Option<Mcp>,
     skills: Option<Skills>,
     review: Option<Reviewer>,
+    mail: Option<Arc<MailBot>>,
 }
 
 #[derive(Deserialize)]
 struct ShellArgs {
     command: String,
+}
+
+#[derive(Deserialize)]
+struct SendMailArgs {
+    to: String,
+    subject: String,
+    body: String,
 }
 
 #[derive(Deserialize)]
@@ -193,7 +202,35 @@ impl BuiltinTools {
             mcp: None,
             skills: None,
             review: None,
+            mail: None,
         })
+    }
+
+    /// Offers `send_mail` through this account; `None` when email is off.
+    pub fn with_mail(mut self, mail: Option<Arc<MailBot>>) -> Self {
+        self.mail = mail;
+        self
+    }
+
+    async fn send_mail(&self, args: SendMailArgs) -> Result<String, String> {
+        let mail = self.mail.as_ref().ok_or("error: email is not set up")?;
+        let to = args.to.trim();
+        // Refused before anyone is asked, so nobody approves a send that cannot happen.
+        if !mail.may_send(to) {
+            return Err(format!(
+                "error: {to} is not on mail.allow, and mail.mode only sends to those addresses"
+            ));
+        }
+        let summary = format!(
+            "to {to}: {}\n{}",
+            args.subject,
+            args.body.chars().take(500).collect::<String>()
+        );
+        self.permit(self.config.mail, "send_mail", &summary).await?;
+        mail.send_new(to, &args.subject, &args.body)
+            .await
+            .map_err(|err| format!("error: {err:#}"))?;
+        Ok(format!("sent to {to}"))
     }
 
     pub fn with_search(mut self, search: Option<Searcher>) -> Self {
@@ -942,6 +979,18 @@ impl BuiltinTools {
                     .filter(|spec| mcp.permission(&spec.function.name) != Some(Permission::Deny)),
             );
         }
+        if self.mail.is_some() && self.config.mail != Permission::Deny {
+            specs.push(ToolSpec::function(
+                "send_mail",
+                "Send a new plain-text email from the bot's own address. Replies to an email you are \
+                 answering are sent for you; use this only to write to someone first.",
+                json!({"type": "object", "properties": {
+                    "to": {"type": "string", "description": "one email address"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string", "description": "plain text"}
+                }, "required": ["to", "subject", "body"]}),
+            ));
+        }
         if self.config.write != Permission::Deny {
             specs.push(ToolSpec::function(
                 "write_file",
@@ -1013,6 +1062,10 @@ impl BuiltinTools {
                 Err(e) => Err(e),
             },
             "skill" => parse(call).and_then(|args| self.skill(args)),
+            "send_mail" => match parse(call) {
+                Ok(args) => self.send_mail(args).await,
+                Err(e) => Err(e),
+            },
             "cron_add" => parse(call).and_then(|args| self.cron_add(actor, args)),
             "cron_list" => self.cron_list(actor),
             "cron_remove" => parse(call).and_then(|args| self.cron_remove(actor, args)),
@@ -1070,6 +1123,64 @@ mod tests {
         let tools =
             BuiltinTools::new(dir.to_owned(), config, Store::open_in_memory().unwrap()).unwrap();
         Scoped(tools, Arc::new(Answer(approve)))
+    }
+
+    #[tokio::test]
+    async fn send_mail_needs_the_capability_an_allowed_recipient_and_an_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let bot = MailBot::new(crate::config::MailConfig {
+            enabled: true,
+            mode: crate::config::MailMode::Receive,
+            imap_host: "127.0.0.1".into(),
+            imap_security: crate::config::MailSecurity::None,
+            // Nothing listens on port 1, so a send that gets this far fails to connect.
+            smtp_host: "127.0.0.1".into(),
+            smtp_port: 1,
+            smtp_security: crate::config::MailSecurity::None,
+            username: "bot@example.org".into(),
+            password: Some("pw".into()),
+            allow: vec!["me@example.org".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        let send = |to: &str| call("send_mail", json!({"to": to, "subject": "s", "body": "b"}));
+        let with = |permission, approve| {
+            let mut t = tools(
+                dir.path(),
+                ToolsConfig {
+                    mail: permission,
+                    ..ToolsConfig::default()
+                },
+                approve,
+            );
+            t.0 = t.0.with_mail(Some(bot.clone()));
+            t
+        };
+
+        let t = with(Permission::Ask, false);
+        assert!(
+            t.call(&send("x@spam.org"))
+                .await
+                .contains("not on mail.allow")
+        );
+        assert!(t.call(&send("me@example.org")).await.contains("declined"));
+        let sent = with(Permission::Allow, false)
+            .call(&send("me@example.org"))
+            .await;
+        assert!(sent.contains("SMTP send failed"), "{sent}");
+
+        let guest =
+            crate::access::AccessConfig::default().resolve("mail:x@spam.org", "mail:x@spam.org");
+        let refused = access::with_actor(guest, t.0.call(&send("me@example.org"))).await;
+        assert!(refused.contains("not permitted"), "{refused}");
+
+        let offered = |t: &Scoped| {
+            let specs = futures_util::FutureExt::now_or_never(owner(async { t.specs() })).unwrap();
+            specs.iter().any(|s| s.function.name == "send_mail")
+        };
+        assert!(offered(&t));
+        assert!(!offered(&with(Permission::Deny, true)));
+        assert!(!offered(&tools(dir.path(), ToolsConfig::default(), true)));
     }
 
     #[tokio::test]

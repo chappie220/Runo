@@ -285,6 +285,15 @@ const SECTIONS: &[Section] = &[
                 kind: Kind::Choice(PERMISSION),
             },
             Field {
+                path: &["tools", "mail"],
+                label: tr("Sending email", "发送邮件"),
+                help: tr(
+                    "send_mail, when email is set up. Recipients also follow the email mode; deny removes the tool.",
+                    "send_mail，需要先设置邮件。收件人还要符合邮件模式；deny 会去掉这个工具。",
+                ),
+                kind: Kind::Choice(PERMISSION),
+            },
+            Field {
                 path: &["tools", "workspace"],
                 label: tr("Workspace directory", "工作目录"),
                 help: tr(
@@ -408,6 +417,15 @@ const SECTIONS: &[Section] = &[
                 kind: Kind::Bool,
             },
             Field {
+                path: &["mail", "mode"],
+                label: tr("Mode", "模式"),
+                help: tr(
+                    "allow: read and answer only allowed senders. receive: read mail from anyone, send only to allowed addresses. open: read from and answer anyone (anyone can spend your model credits).",
+                    "allow：只读取并回复允许的发件人。receive：读取任何人的邮件，只给允许的地址发信。open：读取并回复任何人（任何人都能花你的模型额度）。",
+                ),
+                kind: Kind::Choice(&["allow", "receive", "open"]),
+            },
+            Field {
                 path: &["mail", "imap_host"],
                 label: tr("IMAP host", "IMAP 服务器"),
                 help: tr("e.g. imap.qq.com", "例如 imap.qq.com"),
@@ -480,8 +498,8 @@ const SECTIONS: &[Section] = &[
                 path: &["mail", "allow"],
                 label: tr("Allowed senders", "允许的发件人"),
                 help: tr(
-                    "Comma-separated addresses or @domain; required.",
-                    "用逗号分隔的地址或 @域名；必填。",
+                    "Comma-separated addresses or @domain. Mode allow: who may email the bot (required). Mode receive: who it may send to.",
+                    "用逗号分隔的地址或 @域名。allow 模式：谁可以给机器人发邮件（必填）。receive 模式：机器人可以给谁发信。",
                 ),
                 kind: Kind::List,
             },
@@ -1880,7 +1898,7 @@ mod tests {
     fn generates_a_token_and_sets_nested_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        drive(&path, "4\n\n+\n\n3\n\n\n\n\nopenrouter\n\ns\n");
+        drive(&path, "4\n\n+\n\n3\n\n\n\n\n\nopenrouter\n\ns\n");
         let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let token = config.gateway.token.unwrap();
         assert_eq!(token.len(), 48);
@@ -1910,7 +1928,7 @@ mod tests {
         let out = drive_in(
             Lang::Zh,
             &path,
-            "5\n?\n是\n\n\n\n99\n6\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
+            "5\n?\n是\n\n\n\n99\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
         );
         assert!(out.contains("2) 模型与上下文"), "{out}");
         assert!(out.contains("s) 保存并退出"), "{out}");
@@ -2119,7 +2137,7 @@ mod tests {
     fn rejects_a_choice_outside_the_list() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let out = drive(&path, "3\nmaybe\n9\nask\n\n\n\n\n\ns\n");
+        let out = drive(&path, "3\nmaybe\n9\nask\n\n\n\n\n\n\ns\n");
         assert_eq!(
             out.matches("pick one of: allow, ask, deny").count(),
             2,
