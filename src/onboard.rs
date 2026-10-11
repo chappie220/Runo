@@ -18,7 +18,7 @@ use toml_edit::{DocumentMut, Value};
 
 use crate::config::Config;
 use crate::i18n::{Lang, Tr, tr};
-use crate::setup::{self, Term};
+use crate::setup::{self, Picked, Term};
 
 /// Models shown per search.
 const SHOWN: usize = 12;
@@ -165,11 +165,32 @@ const WELCOME: Tr = tr(
     "Welcome to OpenClaw. A few questions and you are ready; everything else can be changed later with `openclaw-rs config`.",
     "欢迎使用 OpenClaw。回答几个问题就能开始用；其他设置以后可以用 `openclaw-rs config` 修改。",
 );
-const STEP: Tr = tr("\n[{}/4] {}", "\n[{}/4] {}");
+const STEP: Tr = tr("\n[{}/5] {}", "\n[{}/5] {}");
 const STEP_LANGUAGE: Tr = tr("Language", "语言");
 const STEP_KEY: Tr = tr("OpenRouter API key", "OpenRouter API key");
 const STEP_MODEL: Tr = tr("Main model", "主模型");
 const STEP_IMAGES: Tr = tr("Images", "图片");
+const STEP_GATEWAY: Tr = tr("Gateway", "Gateway");
+const LANGUAGE_TITLE: Tr = tr("Language / 语言", "语言 / Language");
+const PICK_MODEL: Tr = tr("Pick a model", "选择模型");
+const SEARCH_AGAIN: Tr = tr("Search again", "重新搜索");
+const TYPE_ID: Tr = tr("Type a model id", "输入模型 id");
+const GATEWAY_HOW: Tr = tr(
+    "The Gateway serves the Web UI at http://{} and connects QQ and email. Run in the background, it keeps going after this terminal closes.",
+    "Gateway 在 http://{} 提供 Web UI，并连接 QQ 和邮件。在后台运行时，关掉终端也会继续运行。",
+);
+const GATEWAY_ASK: Tr = tr(
+    "Start the Gateway in the background now? [Y/n]: ",
+    "现在在后台启动 Gateway？[Y/n]：",
+);
+const GATEWAY_LATER: Tr = tr(
+    "Start it later with `openclaw-rs gateway start`, or `openclaw-rs serve` in the foreground.",
+    "以后可以用 `openclaw-rs gateway start` 启动，或用 `openclaw-rs serve` 在前台运行。",
+);
+const GATEWAY_FAILED: Tr = tr(
+    "! Could not start the Gateway: {}",
+    "! 无法启动 Gateway：{}",
+);
 const PICK_LANGUAGE: Tr = tr("1) 中文  2) English [{}]: ", "1) 中文  2) English [{}]: ");
 const KEY_FROM_ENV: Tr = tr(
     "Using the key in $OPENROUTER_API_KEY.",
@@ -257,8 +278,8 @@ const ABORTED: Tr = tr(
     "设置已结束，没有保存任何内容。",
 );
 const DONE: Tr = tr(
-    "Saved {}.\nNext: `openclaw-rs chat` to talk in the terminal, `openclaw-rs serve` for the Web UI, `openclaw-rs config` for QQ, email and everything else.",
-    "已保存 {}。\n接下来：`openclaw-rs chat` 在终端里聊天，`openclaw-rs serve` 启动 Web UI，`openclaw-rs config` 设置 QQ、邮件和其他选项。",
+    "Saved {}.\nNext: `openclaw-rs chat` to talk in the terminal, `openclaw-rs gateway start|stop|status` for the Web UI in the background, `openclaw-rs config` for QQ, email and everything else.",
+    "已保存 {}。\n接下来：`openclaw-rs chat` 在终端里聊天，`openclaw-rs gateway start|stop|status` 在后台运行 Web UI，`openclaw-rs config` 设置 QQ、邮件和其他选项。",
 );
 
 #[cfg(test)]
@@ -269,6 +290,15 @@ pub const ALL: &[Tr] = &[
     STEP_KEY,
     STEP_MODEL,
     STEP_IMAGES,
+    STEP_GATEWAY,
+    LANGUAGE_TITLE,
+    PICK_MODEL,
+    SEARCH_AGAIN,
+    TYPE_ID,
+    GATEWAY_HOW,
+    GATEWAY_ASK,
+    GATEWAY_LATER,
+    GATEWAY_FAILED,
     PICK_LANGUAGE,
     KEY_FROM_ENV,
     KEY_HOW,
@@ -313,22 +343,31 @@ pub fn interactive() -> bool {
 }
 
 /// Runs setup on the process's terminal. Returns the language picked, or
-/// `None` when it ended without saving.
-pub async fn run(path: &Path, lang: Lang) -> Result<Option<Lang>> {
+/// `None` when it ended without saving. `offer_gateway` adds the last step,
+/// starting the Gateway in the background (not when about to `serve`).
+pub async fn run(path: &Path, lang: Lang, offer_gateway: bool) -> Result<Option<Lang>> {
     let config = Config::load(path).unwrap_or_default();
     let catalog = OpenRouter::new(&config.model.base_url)?;
     let browser = crate::browser::find_installed().filter(|_| config.browser.enabled);
     let mut term = setup::terminal(lang);
+    let mut start = || crate::service::install(None, Some(path));
+    let gateway: Option<&mut dyn FnMut() -> Result<()>> = if offer_gateway {
+        Some(&mut start)
+    } else {
+        None
+    };
     // Typed answers come from a blocking terminal; that is all this process does now.
-    wizard(path, &mut term, &catalog, browser).await
+    wizard(path, &mut term, &catalog, browser, gateway).await
 }
 
-/// The setup itself, on any terminal and catalog.
+/// The setup itself, on any terminal and catalog. `gateway` starts the
+/// Gateway in the background once the config is saved.
 pub async fn wizard<R: BufRead, W: Write>(
     path: &Path,
     term: &mut Term<R, W>,
     catalog: &dyn Catalog,
     browser: Option<PathBuf>,
+    gateway: Option<&mut dyn FnMut() -> Result<()>>,
 ) -> Result<Option<Lang>> {
     let mut doc = setup::load(path)?;
     let config = setup::parse(&doc).unwrap_or_default();
@@ -336,18 +375,29 @@ pub async fn wizard<R: BufRead, W: Write>(
 
     // 1. Language.
     step(term, 1, STEP_LANGUAGE)?;
-    let current = match term.lang {
-        Lang::Zh => "1",
-        Lang::En => "2",
-    };
-    let Some(answer) = term.ask(&PICK_LANGUAGE.fill(term.lang, &[current]))? else {
-        return aborted(term);
-    };
-    term.lang = match answer.as_str() {
-        "1" | "zh" | "中文" => Lang::Zh,
-        "2" | "en" | "English" | "english" => Lang::En,
-        _ => term.lang,
-    };
+    if term.arrows {
+        let items = ["中文".to_owned(), "English".to_owned()];
+        let start = usize::from(term.lang == Lang::En);
+        let title = LANGUAGE_TITLE.get(term.lang);
+        match term.select(title, &items, start, &|_| None)? {
+            Picked::Item(i) => term.lang = if i == 0 { Lang::Zh } else { Lang::En },
+            Picked::Back => {}
+            Picked::End => return aborted(term),
+        }
+    } else {
+        let current = match term.lang {
+            Lang::Zh => "1",
+            Lang::En => "2",
+        };
+        let Some(answer) = term.ask(&PICK_LANGUAGE.fill(term.lang, &[current]))? else {
+            return aborted(term);
+        };
+        term.lang = match answer.as_str() {
+            "1" | "zh" | "中文" => Lang::Zh,
+            "2" | "en" | "English" | "english" => Lang::En,
+            _ => term.lang,
+        };
+    }
     let lang_name = match term.lang {
         Lang::Zh => "zh",
         Lang::En => "en",
@@ -426,10 +476,10 @@ pub async fn wizard<R: BufRead, W: Write>(
     let current = config.model.model.trim().to_owned();
     let mut model = None;
     if !current.is_empty() {
-        let Some(answer) = term.ask(&KEEP_MODEL.fill(term.lang, &[&current]))? else {
+        let Some(keep) = term.confirm(&KEEP_MODEL.fill(term.lang, &[&current]), true)? else {
             return aborted(term);
         };
-        if !is_no(&answer) {
+        if keep {
             model = Some(current);
         }
     }
@@ -448,10 +498,10 @@ pub async fn wizard<R: BufRead, W: Write>(
     match models.iter().find(|m| m.id == model) {
         Some(info) if info.images => term.tell(SEES_IMAGES, &[&model])?,
         Some(_) => {
-            let Some(answer) = term.ask(&BLIND.fill(term.lang, &[&model]))? else {
+            let Some(wanted) = term.confirm(&BLIND.fill(term.lang, &[&model]), true)? else {
                 return aborted(term);
             };
-            if !is_no(&answer) {
+            if wanted {
                 let Some(vision) = pick(term, &models, true).await? else {
                     return aborted(term);
                 };
@@ -470,9 +520,36 @@ pub async fn wizard<R: BufRead, W: Write>(
         None => term.tell(BROWSER_MISSING, &[])?,
     }
 
+    // 5. The Gateway, in the background.
+    let mut start = None;
+    if let Some(gateway) = gateway {
+        step(term, 5, STEP_GATEWAY)?;
+        let bind = setup::parse(&doc)
+            .map(|c| c.gateway.bind)
+            .unwrap_or_else(|_| crate::config::GatewayConfig::default().bind);
+        term.tell(GATEWAY_HOW, &[&bind])?;
+        let Some(yes) = term.confirm(GATEWAY_ASK.get(term.lang), true)? else {
+            return aborted(term);
+        };
+        if yes {
+            start = Some(gateway);
+        }
+    }
+
     save(path, &doc)?;
     term.say("")?;
     term.tell(DONE, &[&path.display().to_string()])?;
+    match start {
+        Some(gateway) => {
+            term.say("")?;
+            term.out.flush()?;
+            if let Err(err) = gateway() {
+                term.tell(GATEWAY_FAILED, &[&format!("{err:#}")])?;
+                term.tell(GATEWAY_LATER, &[])?;
+            }
+        }
+        None => term.tell(GATEWAY_LATER, &[])?,
+    }
     Ok(Some(term.lang))
 }
 
@@ -485,14 +562,6 @@ fn aborted<R: BufRead, W: Write>(term: &mut Term<R, W>) -> Result<Option<Lang>> 
     term.say("")?;
     term.tell(ABORTED, &[])?;
     Ok(None)
-}
-
-fn is_no(answer: &str) -> bool {
-    matches!(answer.to_lowercase().as_str(), "n" | "no" | "否" | "不")
-}
-
-fn is_yes(answer: &str) -> bool {
-    matches!(answer.to_lowercase().as_str(), "y" | "yes" | "是" | "要")
 }
 
 fn save(path: &Path, doc: &DocumentMut) -> Result<()> {
@@ -528,11 +597,30 @@ async fn pick<R: BufRead, W: Write>(
             term.tell(NO_MATCH, &[])?;
             continue;
         }
-        for (i, m) in found.iter().enumerate() {
-            term.say(&format!("  {:>2}) {}", i + 1, describe(m, term.lang)))?;
-        }
-        let Some(answer) = term.ask(PICK_PROMPT.get(term.lang))? else {
-            return Ok(None);
+        let answer = if term.arrows {
+            let mut items: Vec<String> = found.iter().map(|m| describe(m, term.lang)).collect();
+            items.push(SEARCH_AGAIN.get(term.lang).into());
+            items.push(TYPE_ID.get(term.lang).into());
+            match term.select(PICK_MODEL.get(term.lang), &items, 0, &|_| None)? {
+                Picked::Item(i) if i < found.len() => (i + 1).to_string(),
+                Picked::Item(i) if i == found.len() => continue,
+                Picked::Item(_) => {
+                    let Some(id) = term.ask(ID_PROMPT.get(term.lang))? else {
+                        return Ok(None);
+                    };
+                    id
+                }
+                Picked::Back => continue,
+                Picked::End => return Ok(None),
+            }
+        } else {
+            for (i, m) in found.iter().enumerate() {
+                term.say(&format!("  {:>2}) {}", i + 1, describe(m, term.lang)))?;
+            }
+            let Some(answer) = term.ask(PICK_PROMPT.get(term.lang))? else {
+                return Ok(None);
+            };
+            answer
         };
         if answer.is_empty() {
             continue;
@@ -545,10 +633,11 @@ async fn pick<R: BufRead, W: Write>(
             Err(_) => match models.iter().find(|m| m.id == answer) {
                 Some(m) => m.clone(),
                 None => {
-                    let Some(yes) = term.ask(&UNKNOWN_ID.fill(term.lang, &[&answer]))? else {
+                    let Some(yes) = term.confirm(&UNKNOWN_ID.fill(term.lang, &[&answer]), false)?
+                    else {
                         return Ok(None);
                     };
-                    if is_yes(&yes) {
+                    if yes {
                         return Ok(Some(answer));
                     }
                     continue;
@@ -556,10 +645,10 @@ async fn pick<R: BufRead, W: Write>(
             },
         };
         if !chosen.tools {
-            let Some(yes) = term.ask(&NO_TOOLS.fill(term.lang, &[&chosen.id]))? else {
+            let Some(yes) = term.confirm(&NO_TOOLS.fill(term.lang, &[&chosen.id]), false)? else {
                 return Ok(None);
             };
-            if !is_yes(&yes) {
+            if !yes {
                 continue;
             }
         }
@@ -682,9 +771,11 @@ mod tests {
             input: script.as_bytes(),
             out: Vec::new(),
             hide_secrets: false,
+            arrows: false,
+            raw: false,
             lang: Lang::En,
         };
-        let done = wizard(path, &mut term, catalog, None).await.unwrap();
+        let done = wizard(path, &mut term, catalog, None, None).await.unwrap();
         (done, String::from_utf8(term.out).unwrap())
     }
 
@@ -752,6 +843,63 @@ mod tests {
         assert_eq!(done, None);
         assert!(out.contains("没有保存"), "{out}");
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn arrow_menus_and_starting_the_gateway() {
+        // SAFETY: as in drive.
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let catalog = fake();
+        // English (already highlighted); key; search "sees", pick the first;
+        // yes (highlighted) to the Gateway.
+        let script = "\rsk-good\nsees\n\r\r";
+        let mut term = Term {
+            input: script.as_bytes(),
+            out: Vec::new(),
+            hide_secrets: false,
+            arrows: true,
+            raw: false,
+            lang: Lang::En,
+        };
+        let mut started = 0;
+        let mut start = || {
+            started += 1;
+            Ok(())
+        };
+        let done = wizard(&path, &mut term, &catalog, None, Some(&mut start))
+            .await
+            .unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert_eq!(done, Some(Lang::En), "{out}");
+        assert_eq!(started, 1);
+        assert!(out.contains("[5/5] Gateway"), "{out}");
+        assert!(out.contains("http://127.0.0.1:18789"), "{out}");
+        assert!(out.contains("Pick a model › other/sees"), "{out}");
+        assert_eq!(Config::load(&path).unwrap().model.model, "other/sees");
+
+        // A Gateway that does not start leaves the saved config and says how.
+        let path = dir.path().join("second.toml");
+        let mut term = Term {
+            input: script.as_bytes(),
+            out: Vec::new(),
+            hide_secrets: false,
+            arrows: true,
+            raw: false,
+            lang: Lang::En,
+        };
+        let mut fail = || anyhow::bail!("port busy");
+        wizard(&path, &mut term, &catalog, None, Some(&mut fail))
+            .await
+            .unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(
+            out.contains("Could not start the Gateway: port busy"),
+            "{out}"
+        );
+        assert!(out.contains("openclaw-rs gateway start"), "{out}");
+        assert!(path.exists());
     }
 
     #[test]

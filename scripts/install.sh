@@ -11,7 +11,8 @@
 #   --dir DIR          install into DIR (default: /usr/local/bin as root,
 #                      ~/.local/bin otherwise; on --update, where it is now)
 #   --version X.Y.Z    this release instead of the latest
-#   --service USER     also install the OpenRC service running as USER (root)
+#   --service USER     also install the Gateway service running as USER
+#                      (another account needs root; without root, only yourself)
 #   --update           update the installed binary (what update.sh does)
 #   --force            reinstall even if that version is already installed
 #
@@ -47,7 +48,7 @@ die() {
 }
 
 usage() {
-	sed -n '2,23p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+	sed -n '2,20p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
 }
 
 while [ $# -gt 0 ]; do
@@ -130,18 +131,23 @@ installed_version() {
 	[ -x "$1" ] && "$1" --version 2>/dev/null | sed -n 's/^openclaw-rs \([^ ]*\).*/\1/p' | head -n 1
 }
 
+# Restarts a running Gateway (system or user service, or background process).
 restart_service() {
-	if is_root && [ -f /etc/init.d/$NAME ] && rc-service $NAME status >/dev/null 2>&1; then
-		rc-service $NAME restart >/dev/null && say "Restarted the service." "已重启服务。"
-	elif [ -f /etc/init.d/$NAME ]; then
-		say "Restart the service to use it: doas rc-service $NAME restart" \
-			"重启服务后生效：doas rc-service $NAME restart"
+	"$BINARY" service status >/dev/null 2>&1 || return 0
+	if "$BINARY" service restart >/dev/null 2>&1; then
+		say "Restarted the Gateway." "已重启 Gateway。"
+	else
+		say "Restart the Gateway to use it: doas $NAME service restart" \
+			"重启 Gateway 后生效：doas $NAME service restart"
 	fi
 }
 
 # Checked before anything is downloaded.
 if [ -n "$SERVICE_USER" ]; then
-	is_root || die "--service needs root: run it with doas or sudo" "--service 需要 root：请用 doas 或 sudo 运行"
+	if ! is_root && [ "$SERVICE_USER" != "$(id -un)" ]; then
+		die "--service for another account needs root: run it with doas or sudo, or name yourself ($(id -un))" \
+			"为其他账号安装 --service 需要 root：请用 doas 或 sudo 运行，或者填你自己（$(id -un)）"
+	fi
 	home=$(awk -F: -v u="$SERVICE_USER" '$1 == u { print $6 }' /etc/passwd)
 	[ -n "$home" ] || die "no account named $SERVICE_USER" "没有叫 $SERVICE_USER 的账号"
 fi
@@ -213,13 +219,21 @@ else
 fi
 
 if [ -n "$SERVICE_USER" ]; then
-	if [ -f "$home/.openclaw-rs/config.toml" ]; then
-		"$BINARY" service install --user "$SERVICE_USER"
+	if ! is_root; then
+		if [ -f "${OPENCLAW_RS_HOME:-$home/.openclaw-rs}/config.toml" ]; then
+			"$BINARY" gateway install
+		else
+			say "Set up your agent first, then start the Gateway:" "请先完成设置，然后启动 Gateway："
+			echo "  $BINARY init"
+			echo "  $BINARY gateway install"
+		fi
+	elif [ -f "$home/.openclaw-rs/config.toml" ]; then
+		"$BINARY" gateway install --user "$SERVICE_USER"
 	else
 		say "Set up $SERVICE_USER's agent first, then install the service:" \
 			"请先为 $SERVICE_USER 完成设置，然后安装服务："
 		echo "  doas -u $SERVICE_USER $BINARY init"
-		echo "  doas $BINARY service install --user $SERVICE_USER"
+		echo "  doas $BINARY gateway install --user $SERVICE_USER"
 	fi
 	exit 0
 fi

@@ -20,6 +20,10 @@ const COMMANDS: &[(&str, Tr)] = &[
         ),
     ),
     (
+        "tui",
+        tr("Full-screen chat in the terminal", "在终端里全屏聊天"),
+    ),
+    (
         "serve",
         tr(
             "Run the Gateway: Web UI and WebSocket API",
@@ -29,15 +33,15 @@ const COMMANDS: &[(&str, Tr)] = &[
     (
         "service",
         tr(
-            "Install or remove the OpenRC system service (run as root)",
-            "安装或移除 OpenRC 系统服务（需要 root）",
+            "Run the Gateway in the background: install, start, stop, status",
+            "在后台运行 Gateway：安装、启动、停止、查看状态",
         ),
     ),
     (
         "service install",
         tr(
-            "Write /etc/init.d/openclaw-rs, enable it, and start it",
-            "写入 /etc/init.d/openclaw-rs，启用并启动它",
+            "Install the service (OpenRC system or user service) and start it",
+            "安装服务（OpenRC 系统服务或用户服务）并启动",
         ),
     ),
     (
@@ -45,6 +49,22 @@ const COMMANDS: &[(&str, Tr)] = &[
         tr(
             "Stop and remove the service; state is kept",
             "停止并移除服务；状态数据保留",
+        ),
+    ),
+    (
+        "service start",
+        tr("Start the Gateway in the background", "在后台启动 Gateway"),
+    ),
+    ("service stop", tr("Stop the Gateway", "停止 Gateway")),
+    (
+        "service restart",
+        tr("Stop and start the Gateway", "重启 Gateway"),
+    ),
+    (
+        "service status",
+        tr(
+            "Say how the Gateway runs and whether it is running",
+            "显示 Gateway 的运行方式和是否在运行",
         ),
     ),
     (
@@ -336,11 +356,19 @@ const ARGS: &[(&str, &str, Tr)] = &[
         ),
     ),
     (
+        "serve",
+        "web",
+        tr(
+            "ui: Web UI and API; api: WebSocket API only; off: no HTTP (default: gateway.web)",
+            "ui：Web UI 和 API；api：只有 WebSocket API；off：不开 HTTP（默认：gateway.web）",
+        ),
+    ),
+    (
         "service install",
         "user",
         tr(
-            "Account the Gateway runs as; its home holds the state",
-            "运行 Gateway 的账户；状态数据放在它的主目录",
+            "Account the Gateway runs as (root only; default root); its home holds the state",
+            "运行 Gateway 的账户（仅 root 可用；默认 root）；状态数据放在它的主目录",
         ),
     ),
     ("cron add", "name", tr("Job name", "任务名")),
@@ -627,10 +655,6 @@ pub const NO_IDENTITY_TO_REMOVE: Tr = tr("no identity to remove", "没有可删�
 pub const SESSION_ROW: Tr = tr("{}\t{} messages\tupdated {}", "{}\t{} 条消息\t更新于 {}");
 pub const NO_SESSION: Tr = tr("no session named {}", "没有名为 {} 的会话");
 pub const DELETED: Tr = tr("deleted {}", "已删除 {}");
-pub const SERVICE_NEEDS_ROOT: Tr = tr(
-    "{} writes system files; run it with sudo or doas",
-    "{} 会写系统文件；请用 sudo 或 doas 运行",
-);
 pub const SERVICE_NO_OPENRC: Tr = tr(
     "OpenRC is not installed (/sbin/openrc-run missing); on systemd hosts run `openclaw-rs serve` from a unit instead",
     "没有安装 OpenRC（缺少 /sbin/openrc-run）；systemd 系统请在 unit 里运行 `openclaw-rs serve`",
@@ -651,6 +675,10 @@ pub const SERVICE_NOT_INSTALLED: Tr = tr("{} is not installed", "{} 没有安装
 pub const SERVICE_REMOVED: Tr = tr(
     "removed {} and {}; state and {} were kept",
     "已删除 {} 和 {}；状态数据和 {} 已保留",
+);
+pub const TUI_NEEDS_TERMINAL: Tr = tr(
+    "tui needs a terminal; use `openclaw-rs ask` or `chat` from scripts and pipes",
+    "tui 需要在终端里运行；脚本和管道里请用 `openclaw-rs ask` 或 `chat`",
 );
 pub const NO_ACCOUNT: Tr = tr("no account named {}", "没有名为 {} 的账户");
 
@@ -692,7 +720,6 @@ mod tests {
         SESSION_ROW,
         NO_SESSION,
         DELETED,
-        SERVICE_NEEDS_ROOT,
         SERVICE_NO_OPENRC,
         SERVICE_NO_KEY,
         SERVICE_INSTALLED,
@@ -700,6 +727,7 @@ mod tests {
         SERVICE_NOT_INSTALLED,
         SERVICE_REMOVED,
         NO_ACCOUNT,
+        TUI_NEEDS_TERMINAL,
     ];
 
     #[test]

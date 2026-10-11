@@ -357,6 +357,8 @@ pub struct GatewayConfig {
     pub bind: String,
     /// Required for non-loopback binds; prefer `OPENCLAW_RS_TOKEN`.
     pub token: Option<String>,
+    /// What `serve` offers over HTTP; QQ, email and cron run in every mode.
+    pub web: WebMode,
 }
 
 impl Default for GatewayConfig {
@@ -364,8 +366,22 @@ impl Default for GatewayConfig {
         Self {
             bind: "127.0.0.1:18789".into(),
             token: None,
+            web: WebMode::Ui,
         }
     }
+}
+
+/// What the Gateway listens for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum WebMode {
+    /// The Web UI and the WebSocket API.
+    #[default]
+    Ui,
+    /// Only the WebSocket API (and /health), for other clients.
+    Api,
+    /// No HTTP listener at all: QQ, email and scheduled jobs only.
+    Off,
 }
 
 impl GatewayConfig {
