@@ -37,6 +37,8 @@ const FORWARDED_ENV: &[&str] = &[
     "OPENROUTER_API_KEY",
     "OPENCLAW_RS_TOKEN",
     "QQ_APP_SECRET",
+    "FEISHU_APP_SECRET",
+    "ZULIP_API_KEY",
     "MAIL_PASSWORD",
     "TYPESAFE_API_KEY",
 ];

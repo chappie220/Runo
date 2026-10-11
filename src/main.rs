@@ -5,6 +5,7 @@ mod agent;
 mod attachments;
 mod backup;
 mod browser;
+mod chat;
 mod cli_text;
 mod completions;
 mod config;
@@ -12,6 +13,7 @@ mod context;
 mod cron;
 mod doctor;
 mod elevate;
+mod feishu;
 mod fetch;
 mod gateway;
 mod guide;
@@ -38,6 +40,7 @@ mod tui;
 mod update;
 mod usage;
 mod voice;
+mod zulip;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -532,22 +535,24 @@ async fn run(cli: Cli) -> Result<()> {
                 gateway.set_guide(guide);
             }
             if config.qq.enabled {
-                // Auto-review runs commands nobody approved, so it counts as unattended.
-                let reviewed_shell = config.tools.shell == config::Permission::Ask
-                    && config.tools.review.provider != config::ReviewProvider::Off;
-                let strangers = config.access.unnamed("qq");
-                let stranger_runs = (strangers.contains(&access::Capability::Shell)
-                    && (config.tools.shell == config::Permission::Allow || reviewed_shell))
-                    || (strangers.contains(&access::Capability::FilesWrite)
-                        && config.tools.write == config::Permission::Allow);
-                if stranger_runs && config.qq.allow.is_empty() {
-                    bail!(text::QQ_OPEN_TO_STRANGERS.now());
-                }
+                refuse_open_channel(&config, "qq", "QQ", &config.qq.allow)?;
                 let bot = qq::QqBot::new(config.qq.clone())?;
                 gateway.add_notifier(bot.clone());
                 tokio::spawn(qq::run(bot, gateway.clone()));
             }
-            if (config.qq.enabled || config.mail.enabled) && config.access.owners.is_empty() {
+            if config.feishu.enabled {
+                refuse_open_channel(&config, "feishu", "Feishu", &config.feishu.allow)?;
+                let bot = feishu::FeishuBot::new(config.feishu.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(feishu::run(bot, gateway.clone()));
+            }
+            if config.zulip.enabled {
+                refuse_open_channel(&config, "zulip", "Zulip", &config.zulip.allow)?;
+                let bot = zulip::ZulipBot::new(config.zulip.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(zulip::run(bot, gateway.clone()));
+            }
+            if config.any_channel() && config.access.owners.is_empty() {
                 eprintln!(
                     "{}",
                     text::NO_OWNERS.with(&[&format!("{:?}", config.access.guest)])
@@ -710,6 +715,28 @@ fn completions_command(
 }
 
 type CliAgent = Agent<llm::Client, BuiltinTools>;
+
+/// Refuses to start a chat channel that lets anyone run commands or write
+/// files while nothing limits who may talk to it.
+fn refuse_open_channel(
+    config: &config::Config,
+    channel: &str,
+    name: &str,
+    allow: &[String],
+) -> Result<()> {
+    // Auto-review runs commands nobody approved, so it counts as unattended.
+    let reviewed_shell = config.tools.shell == config::Permission::Ask
+        && config.tools.review.provider != config::ReviewProvider::Off;
+    let strangers = config.access.unnamed(channel);
+    let stranger_runs = (strangers.contains(&access::Capability::Shell)
+        && (config.tools.shell == config::Permission::Allow || reviewed_shell))
+        || (strangers.contains(&access::Capability::FilesWrite)
+            && config.tools.write == config::Permission::Allow);
+    if stranger_runs && allow.is_empty() {
+        bail!(text::OPEN_TO_STRANGERS.with(&[channel, name, channel]));
+    }
+    Ok(())
+}
 
 async fn build_agent(
     config: &Config,

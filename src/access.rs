@@ -86,7 +86,8 @@ impl Capability {
 /// The authenticated sender of a turn, as its channel identified them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Actor {
-    /// `cli`, `web`, `qq:<openid>` or `mail:<address>`.
+    /// `cli`, `web`, `qq:<openid>`, `feishu:<open_id>`, `zulip:<email>` or
+    /// `mail:<address>`.
     pub id: String,
     pub owner: bool,
     pub capabilities: BTreeSet<Capability>,
@@ -142,7 +143,8 @@ pub fn current() -> Option<Actor> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AccessConfig {
-    /// Senders treated like the terminal: `qq:<openid>` or `mail:<address>`.
+    /// Senders treated like the terminal: `qq:<openid>`, `feishu:<open_id>`,
+    /// `zulip:<email>` or `mail:<address>`.
     pub owners: Vec<String>,
     /// What any other sender may do.
     pub guest: Vec<Capability>,

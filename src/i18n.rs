@@ -161,16 +161,19 @@ pub mod chat {
         "你的消息已加入当前这一轮，但给它的回应没能生成：{}",
     );
 
-    pub const QQ_APPROVAL: Tr = tr(
+    pub const APPROVAL_ASK: Tr = tr(
         "Allow {}?\n{}\n\nReply \"yes\" to allow or \"no\" to decline (5 minutes).",
         "允许 {}？\n{}\n\n回复“是”允许，回复“否”拒绝（5 分钟内有效）。",
     );
-    pub const QQ_APPROVAL_CARD: Tr = tr(
+    pub const APPROVAL_CARD: Tr = tr(
         "**Allow {}?**\n```\n{}\n```\nTap a button, or reply \"yes\" or \"no\" (5 minutes).",
         "**允许 {}？**\n```\n{}\n```\n点下面的按钮，或回复“是”“否”（5 分钟内有效）。",
     );
-    pub const QQ_ALLOW: Tr = tr("Allow", "批准");
-    pub const QQ_DECLINE: Tr = tr("Decline", "拒绝");
+    pub const APPROVAL_ALLOW: Tr = tr("Allow", "批准");
+    pub const APPROVAL_DECLINE: Tr = tr("Decline", "拒绝");
+    pub const APPROVAL_ALLOWED: Tr = tr("Allowed.", "已批准。");
+    pub const APPROVAL_DECLINED: Tr = tr("Declined.", "已拒绝。");
+    pub const APPROVAL_GONE: Tr = tr("This request is no longer waiting.", "这个请求已经失效了。");
     pub const QQ_BUTTONS_UNSUPPORTED: Tr = tr(
         "This QQ version cannot show buttons; reply \"yes\" or \"no\".",
         "当前 QQ 版本不支持按钮，请回复“是”或“否”。",
@@ -199,10 +202,13 @@ pub mod chat {
         STOP_NOT_ALLOWED,
         FOLLOW_UP_QUEUED,
         ACK_FAILED,
-        QQ_APPROVAL,
-        QQ_APPROVAL_CARD,
-        QQ_ALLOW,
-        QQ_DECLINE,
+        APPROVAL_ASK,
+        APPROVAL_CARD,
+        APPROVAL_ALLOW,
+        APPROVAL_DECLINE,
+        APPROVAL_ALLOWED,
+        APPROVAL_DECLINED,
+        APPROVAL_GONE,
         QQ_BUTTONS_UNSUPPORTED,
     ];
 }

@@ -226,7 +226,8 @@ impl Moment {
 
 /// The owner's conversation that `section` (`heartbeat`, `life`) reaches
 /// out in, and the owner it acts as: `session`, or by default the private
-/// QQ chat of the first `qq:` owner, else the local `main` session (seen in
+/// chat of the first owner on a chat app (`qq:`, `feishu:`, `zulip:`),
+/// else the local `main` session (seen in
 /// the terminal and the Web UI). Refuses anyone who is not an owner, since
 /// the turn uses their permissions unasked.
 pub fn owner_chat(
@@ -239,12 +240,12 @@ pub fn owner_chat(
         None => access
             .owners
             .iter()
-            .find_map(|o| o.strip_prefix("qq:"))
-            .map_or_else(|| "main".to_owned(), |id| format!("qq:c2c:{id}")),
+            .find_map(|o| crate::chat::private_chat(o))
+            .unwrap_or_else(|| "main".to_owned()),
     };
     let actor = match sender(&session) {
         Some(sender) => access.resolve(&sender, &session),
-        None if session.starts_with("qq:group:") => {
+        None if crate::chat::is_chat_app(&session) => {
             bail!("{section}: {session} is a group; use a private chat")
         }
         None => Actor::owner(crate::access::CLI),
@@ -255,10 +256,11 @@ pub fn owner_chat(
     Ok((session, actor))
 }
 
-/// Who writes in a channel session: `qq:<openid>` or `mail:<address>`.
+/// Who writes in a private channel session: `qq:<openid>`,
+/// `feishu:<open_id>`, `zulip:<email>` or `mail:<address>`.
 pub fn sender(session: &str) -> Option<String> {
-    if let Some(id) = session.strip_prefix("qq:c2c:") {
-        return Some(format!("qq:{id}"));
+    if let Some(sender) = crate::chat::private_sender(session) {
+        return Some(sender);
     }
     session.starts_with("mail:").then(|| session.to_owned())
 }

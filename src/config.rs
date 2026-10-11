@@ -23,6 +23,8 @@ pub struct Config {
     pub tools: ToolsConfig,
     pub gateway: GatewayConfig,
     pub qq: QqConfig,
+    pub feishu: FeishuConfig,
+    pub zulip: ZulipConfig,
     pub mail: MailConfig,
     pub search: SearchConfig,
     pub browser: BrowserConfig,
@@ -369,6 +371,83 @@ impl QqConfig {
         std::env::var("QQ_APP_SECRET")
             .ok()
             .or_else(|| self.app_secret.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FeishuConfig {
+    pub enabled: bool,
+    pub app_id: String,
+    /// Prefer `FEISHU_APP_SECRET`; a secret here is stored in plain text.
+    pub app_secret: Option<String>,
+    /// Sender open_ids (`ou_…`) or group chat_ids (`oc_…`) that may talk
+    /// to the bot; empty allows everyone.
+    pub allow: Vec<String>,
+    /// `https://open.feishu.cn`, or `https://open.larksuite.com` for Lark.
+    pub api_base: String,
+    /// As `qq.split_replies`.
+    pub split_replies: bool,
+}
+
+impl Default for FeishuConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_id: String::new(),
+            app_secret: None,
+            allow: Vec::new(),
+            api_base: "https://open.feishu.cn".into(),
+            split_replies: true,
+        }
+    }
+}
+
+impl FeishuConfig {
+    pub fn app_secret(&self) -> Option<String> {
+        std::env::var("FEISHU_APP_SECRET")
+            .ok()
+            .or_else(|| self.app_secret.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ZulipConfig {
+    pub enabled: bool,
+    /// The organization's address, e.g. `https://example.zulipchat.com`.
+    pub site: String,
+    /// The bot's email, shown on its settings page.
+    pub email: String,
+    /// Prefer `ZULIP_API_KEY`; a key here is stored in plain text.
+    pub api_key: Option<String>,
+    /// Sender emails or channel (stream) names that may talk to the bot;
+    /// empty allows everyone in the organization.
+    pub allow: Vec<String>,
+    /// As `qq.split_replies`.
+    pub split_replies: bool,
+}
+
+impl Default for ZulipConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            site: String::new(),
+            email: String::new(),
+            api_key: None,
+            allow: Vec::new(),
+            split_replies: true,
+        }
+    }
+}
+
+impl ZulipConfig {
+    pub fn api_key(&self) -> Option<String> {
+        std::env::var("ZULIP_API_KEY")
+            .ok()
+            .or_else(|| self.api_key.clone())
             .filter(|s| !s.trim().is_empty())
     }
 }
@@ -730,6 +809,11 @@ impl Default for AgentConfig {
 }
 
 impl Config {
+    /// Whether any channel that strangers can write to is on.
+    pub fn any_channel(&self) -> bool {
+        self.qq.enabled || self.feishu.enabled || self.zulip.enabled || self.mail.enabled
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => {

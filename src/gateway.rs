@@ -874,7 +874,7 @@ async fn connection<M: Model + 'static, T: Tools + 'static>(
 
 /// Sessions owned by an external channel rather than the terminal or Web UI.
 fn is_channel_session(name: &str) -> bool {
-    name.starts_with("qq:") || name.starts_with("mail:")
+    crate::chat::is_channel_session(name)
 }
 
 pub(crate) fn validate_session(name: &str) -> Result<(), String> {

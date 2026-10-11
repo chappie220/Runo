@@ -424,6 +424,130 @@ const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: tr("Feishu / Lark bot", "飞书机器人"),
+        fields: &[
+            Field {
+                path: &["feishu", "enabled"],
+                label: tr("Enabled", "启用"),
+                help: tr(
+                    "Connects to Feishu over the long connection when `serve` runs; no public address needed. In the developer console: add the bot capability, the im:message permissions, and subscribe to im.message.receive_v1 and the card.action.trigger callback with the long connection.",
+                    "运行 `serve` 时通过长连接接入飞书，不需要公网地址。在开发者后台：添加机器人能力和 im:message 相关权限，事件与回调都选“长连接”，订阅 im.message.receive_v1 事件和 card.action.trigger 回调。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["feishu", "app_id"],
+                label: tr("App ID", "App ID"),
+                help: tr(
+                    "cli_… from the app's credentials page (open.feishu.cn).",
+                    "应用凭证页里的 cli_…（open.feishu.cn）。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["feishu", "app_secret"],
+                label: tr("App Secret", "App Secret"),
+                help: tr(
+                    "FEISHU_APP_SECRET wins when set.",
+                    "设了 FEISHU_APP_SECRET 时以环境变量为准。",
+                ),
+                kind: Kind::Secret {
+                    env: "FEISHU_APP_SECRET",
+                    generate: false,
+                },
+            },
+            Field {
+                path: &["feishu", "allow"],
+                label: tr("Allowed senders or groups", "允许的用户或群"),
+                help: tr(
+                    "Comma-separated open_ids (ou_…) or group chat_ids (oc_…); empty lets everyone in the tenant chat. The log prints each sender.",
+                    "用逗号分隔的 open_id（ou_…）或群 chat_id（oc_…）；留空则企业里所有人都能聊天。日志里会打印每个发送者。",
+                ),
+                kind: Kind::List,
+            },
+            Field {
+                path: &["feishu", "api_base"],
+                label: tr("Server", "服务器"),
+                help: tr(
+                    "https://open.feishu.cn, or https://open.larksuite.com for Lark.",
+                    "https://open.feishu.cn；国际版 Lark 用 https://open.larksuite.com。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["feishu", "split_replies"],
+                label: tr("Split chatty replies", "闲聊回复分条发送"),
+                help: tr(
+                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                ),
+                kind: Kind::Bool,
+            },
+        ],
+    },
+    Section {
+        title: tr("Zulip bot", "Zulip 机器人"),
+        fields: &[
+            Field {
+                path: &["zulip", "enabled"],
+                label: tr("Enabled", "启用"),
+                help: tr(
+                    "Polls Zulip for messages when `serve` runs. Create a Generic bot under Personal settings → Bots.",
+                    "运行 `serve` 时从 Zulip 拉取消息。在 个人设置 → 机器人 里创建一个 Generic 机器人。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["zulip", "site"],
+                label: tr("Organization URL", "组织地址"),
+                help: tr(
+                    "e.g. https://example.zulipchat.com",
+                    "例如 https://example.zulipchat.com",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["zulip", "email"],
+                label: tr("Bot email", "机器人邮箱"),
+                help: tr(
+                    "Shown on the bot's settings, e.g. claw-bot@example.zulipchat.com.",
+                    "机器人设置里显示的邮箱，例如 claw-bot@example.zulipchat.com。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["zulip", "api_key"],
+                label: tr("API key", "API key"),
+                help: tr(
+                    "ZULIP_API_KEY wins when set.",
+                    "设了 ZULIP_API_KEY 时以环境变量为准。",
+                ),
+                kind: Kind::Secret {
+                    env: "ZULIP_API_KEY",
+                    generate: false,
+                },
+            },
+            Field {
+                path: &["zulip", "allow"],
+                label: tr("Allowed senders or channels", "允许的用户或频道"),
+                help: tr(
+                    "Comma-separated sender emails or channel names; empty lets everyone in the organization chat. In channels the bot answers only when @-mentioned.",
+                    "用逗号分隔的发送者邮箱或频道名；留空则组织里所有人都能聊天。在频道里只有 @ 机器人才会回复。",
+                ),
+                kind: Kind::List,
+            },
+            Field {
+                path: &["zulip", "split_replies"],
+                label: tr("Split chatty replies", "闲聊回复分条发送"),
+                help: tr(
+                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                ),
+                kind: Kind::Bool,
+            },
+        ],
+    },
+    Section {
         title: tr("Email", "邮件"),
         fields: &[
             Field {
@@ -717,8 +841,8 @@ const SECTIONS: &[Section] = &[
             path: &["access", "owners"],
             label: tr("Owners", "Owner"),
             help: tr(
-                "Comma-separated qq:<openid> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
-                "用逗号分隔的 qq:<openid> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
+                "Comma-separated qq:<openid>, feishu:<open_id>, zulip:<email> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
+                "用逗号分隔的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
             ),
             kind: Kind::List,
         }],
@@ -838,8 +962,8 @@ const SECTIONS: &[Section] = &[
                 path: &["heartbeat", "session"],
                 label: tr("Where it reaches out", "主动消息发到哪里"),
                 help: tr(
-                    "A session such as qq:c2c:<openid>. Empty: your private QQ chat (the first qq: owner under Access), else the local main session.",
-                    "会话名，例如 qq:c2c:<openid>。留空：你的 QQ 私聊（权限里第一个 qq: owner），没有则发到本地 main 会话。",
+                    "A session such as qq:c2c:<openid>, feishu:dm:<open_id> or zulip:dm:<email>. Empty: your private chat with the first qq:, feishu: or zulip: owner under Access, else the local main session.",
+                    "会话名，例如 qq:c2c:<openid>、feishu:dm:<open_id> 或 zulip:dm:<邮箱>。留空：发到权限里第一个 qq:、feishu: 或 zulip: owner 的私聊，没有则发到本地 main 会话。",
                 ),
                 kind: Kind::Text,
             },
@@ -1799,14 +1923,14 @@ fn edit_section<R: BufRead, W: Write>(
 }
 
 /// The settings a person may change by asking in chat (the `settings`
-/// tool): the companion section, QQ reply splitting and the language.
+/// tool): the companion section, chat reply splitting and the language.
 /// Keys, permissions and access stay with the editor.
 fn chat_settable() -> impl Iterator<Item = &'static Field> {
     let companion = SECTIONS.last().map_or(&[][..], |s| s.fields);
     let elsewhere = SECTIONS
         .iter()
         .flat_map(|s| s.fields)
-        .filter(|f| matches!(f.path, ["qq", "split_replies"] | ["language"]));
+        .filter(|f| matches!(f.path, [_, "split_replies"] | ["language"]));
     companion.iter().chain(elsewhere)
 }
 
@@ -2260,7 +2384,7 @@ mod tests {
         let out = drive_in(
             Lang::Zh,
             &path,
-            "5\n?\n是\n\n\n\n\n99\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
+            "5\n?\n是\n\n\n\n\n99\n8\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
         );
         assert!(out.contains("2) 模型与上下文"), "{out}");
         assert!(out.contains("s) 保存并退出"), "{out}");

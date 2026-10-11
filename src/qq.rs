@@ -3,22 +3,22 @@
 //! Private chats (C2C) and group @-mentions each map to one session:
 //! `qq:c2c:<user_openid>` and `qq:group:<group_openid>`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent::{Model, Tools};
 use crate::attachments::Upload;
+use crate::chat::{Approvals, Seen, reply_or_error, reply_parts, shorten, split, typing_pause};
 use crate::config::QqConfig;
-use crate::gateway::{APPROVAL_TIMEOUT, Gateway, Notifier};
+use crate::gateway::{Gateway, Notifier};
 use crate::tools::{Approver, with_approver};
 
 /// GROUP_AND_C2C_EVENT: private messages and group @-mentions.
@@ -28,13 +28,6 @@ const CHUNK_CHARS: usize = 1500;
 /// Passive replies allowed per user message (private chat, group).
 const C2C_REPLIES: usize = 4;
 const GROUP_REPLIES: usize = 5;
-const SEEN_CAPACITY: usize = 1000;
-/// Longest reply that is split into several messages; longer ones are
-/// answers to read, not chat.
-const CHAT_CHARS: usize = 600;
-/// Messages one chatty reply becomes at most, keeping to QQ's passive
-/// replies (an approval card may have used one).
-const CHAT_PARTS: usize = 3;
 
 /// Longest tool summary shown in an approval card.
 const SUMMARY_CHARS: usize = 1000;
@@ -82,21 +75,8 @@ pub struct QqBot {
     config: QqConfig,
     secret: String,
     token: tokio::sync::Mutex<Option<(String, Instant)>>,
-    seen: Mutex<(HashSet<String>, VecDeque<String>)>,
-    /// Approvals waiting for a yes or no, by session. A session runs one
-    /// turn at a time, and a turn calls its tools one by one, so one per
-    /// session is enough.
-    approvals: Mutex<HashMap<String, Pending>>,
-    next_approval: AtomicU64,
-}
-
-/// An approval request waiting for its answer.
-struct Pending {
-    /// Numbers the request's buttons, so a stale card cannot answer a newer one.
-    id: u64,
-    /// The only sender whose answer counts.
-    sender: String,
-    answer: oneshot::Sender<bool>,
+    seen: Seen,
+    approvals: Approvals,
 }
 
 /// An incoming message the agent should answer.
@@ -156,9 +136,8 @@ impl QqBot {
             config,
             secret,
             token: tokio::sync::Mutex::new(None),
-            seen: Mutex::new((HashSet::new(), VecDeque::new())),
-            approvals: Mutex::new(HashMap::new()),
-            next_approval: AtomicU64::new(1),
+            seen: Seen::default(),
+            approvals: Approvals::default(),
         }))
     }
 
@@ -315,17 +294,7 @@ impl QqBot {
 
     /// QQ may push an event more than once; remember recent message ids.
     fn first_sight(&self, id: &str) -> bool {
-        let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
-        if !seen.0.insert(id.to_owned()) {
-            return false;
-        }
-        seen.1.push_back(id.to_owned());
-        if seen.1.len() > SEEN_CAPACITY
-            && let Some(old) = seen.1.pop_front()
-        {
-            seen.0.remove(&old);
-        }
-        true
+        self.seen.first(id)
     }
 
     /// Hands a yes or no to the approval waiting in this session, if the
@@ -333,20 +302,8 @@ impl QqBot {
     /// A button's answer names its request; one for a request that is no
     /// longer waiting is dropped rather than sent to the agent.
     fn answer_approval(&self, incoming: &Incoming) -> bool {
-        let Some((allow, id)) = parse_answer(&incoming.text) else {
-            return false;
-        };
-        let mut approvals = self.approvals.lock().unwrap_or_else(|p| p.into_inner());
-        let session = incoming.target.session();
-        let matches = approvals.get(&session).is_some_and(|pending| {
-            pending.sender == incoming.sender && id.is_none_or(|id| id == pending.id)
-        });
-        if !matches {
-            return id.is_some();
-        }
-        let pending = approvals.remove(&session).expect("checked above");
-        let _ = pending.answer.send(allow);
-        true
+        self.approvals
+            .answer(&incoming.target.session(), &incoming.sender, &incoming.text)
     }
 
     /// Asks with Allow/Decline buttons; bots without markdown or keyboard
@@ -377,7 +334,7 @@ impl QqBot {
         };
         if let Err(err) = sent {
             eprintln!("qq: approval buttons refused ({err:#}); asking in text");
-            let prompt = crate::i18n::chat::QQ_APPROVAL.with(&[tool, summary]);
+            let prompt = crate::i18n::chat::APPROVAL_ASK.with(&[tool, summary]);
             self.send_from(target, &prompt, Some(reply_to), seq).await?;
         }
         Ok(())
@@ -391,74 +348,14 @@ impl QqBot {
     }
 }
 
-/// A short chatty reply as the messages it is sent in, one per paragraph
-/// up to `CHAT_PARTS` (the last takes the rest). Anything with code, a
-/// table or more length than chat stays one message.
-fn chat_parts(text: &str) -> Vec<String> {
-    let text = text.trim();
-    let structured = text.contains("```") || text.lines().any(|l| l.trim_start().starts_with('|'));
-    if structured || text.chars().count() > CHAT_CHARS {
-        return vec![text.to_owned()];
-    }
-    let paragraphs: Vec<&str> = text
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-    if paragraphs.len() < 2 {
-        return vec![text.to_owned()];
-    }
-    let mut parts: Vec<String> = paragraphs
-        .iter()
-        .take(CHAT_PARTS - 1)
-        .map(|p| (*p).to_owned())
-        .collect();
-    let rest = &paragraphs[parts.len()..];
-    if !rest.is_empty() {
-        parts.push(rest.join("\n\n"));
-    }
-    parts
-}
-
-/// The pause before sending `next`, as if typing it.
-fn typing_pause(next: &str) -> Duration {
-    let chars = next.chars().count() as u64;
-    Duration::from_millis((500 + 40 * chars).min(2500))
-}
-
-/// A reply to an approval request: whether it allows, and the request
-/// number a button adds (`批准 #3`); typed replies carry none.
-fn parse_answer(text: &str) -> Option<(bool, Option<u64>)> {
-    let text = text.trim();
-    let (word, id) = match text.rsplit_once('#') {
-        Some((word, id)) => (word, Some(id.trim().parse().ok()?)),
-        None => (text, None),
-    };
-    let word = word
-        .trim()
-        .trim_end_matches(['.', '!', '。', '！'])
-        .to_lowercase();
-    let allow = match word.as_str() {
-        "y" | "yes" | "ok" | "allow" | "是" | "好" | "可以" | "同意" | "允许" | "批准" => {
-            true
-        }
-        "n" | "no" | "deny" | "decline" | "否" | "不" | "不行" | "不同意" | "拒绝" | "不允许" => {
-            false
-        }
-        _ => return None,
-    };
-    Some((allow, id))
-}
-
 /// A markdown message with Allow/Decline buttons. Each button sends its
 /// label and the request number as the user's own message, which
 /// `answer_approval` takes like a typed reply.
 fn approval_card(id: u64, tool: &str, summary: &str) -> Value {
-    use crate::i18n::chat::{QQ_ALLOW, QQ_APPROVAL_CARD, QQ_BUTTONS_UNSUPPORTED, QQ_DECLINE};
-    let mut shown: String = summary.chars().take(SUMMARY_CHARS).collect();
-    if shown.len() < summary.len() {
-        shown.push('…');
-    }
+    use crate::i18n::chat::{
+        APPROVAL_ALLOW, APPROVAL_CARD, APPROVAL_DECLINE, QQ_BUTTONS_UNSUPPORTED,
+    };
+    let shown = shorten(summary, SUMMARY_CHARS);
     // Keeps the summary inside its code block.
     let shown = shown.replace("```", "'''");
     let button = |n: u8, label: &str, style: u8| {
@@ -476,10 +373,10 @@ fn approval_card(id: u64, tool: &str, summary: &str) -> Value {
     };
     json!({
         "msg_type": 2,
-        "markdown": { "content": QQ_APPROVAL_CARD.with(&[tool, &shown]) },
+        "markdown": { "content": APPROVAL_CARD.with(&[tool, &shown]) },
         "keyboard": { "content": { "rows": [{ "buttons": [
-            button(1, QQ_ALLOW.now(), 1),
-            button(2, QQ_DECLINE.now(), 0),
+            button(1, APPROVAL_ALLOW.now(), 1),
+            button(2, APPROVAL_DECLINE.now(), 0),
         ] }] } }
     })
 }
@@ -506,41 +403,12 @@ impl Approver for QqApprover {
             );
             return false;
         }
-        let (tx, rx) = oneshot::channel();
-        let id = self.bot.next_approval.fetch_add(1, Ordering::Relaxed);
-        self.bot
-            .approvals
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
-                session.clone(),
-                Pending {
-                    id,
-                    sender: self.sender.clone(),
-                    answer: tx,
-                },
-            );
+        let (id, answer) = self.bot.approvals.open(&session, &self.sender);
         let asked = self
             .bot
             .ask_approval(&self.target, id, tool, summary, &self.reply_to, &self.seq)
             .await;
-        let allowed = match asked {
-            Ok(()) => matches!(
-                tokio::time::timeout(APPROVAL_TIMEOUT, rx).await,
-                Ok(Ok(true))
-            ),
-            Err(err) => {
-                eprintln!("qq: cannot ask for approval in {session}: {err:#}");
-                false
-            }
-        };
-        // Unanswered: nobody may answer it later.
-        self.bot
-            .approvals
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&session);
-        allowed
+        self.bot.approvals.wait(&session, asked, answer).await
     }
 }
 
@@ -548,27 +416,6 @@ fn describe(body: &Value) -> String {
     body.get("message")
         .and_then(Value::as_str)
         .map_or_else(|| body.to_string(), str::to_owned)
-}
-
-/// Splits on character boundaries, preferring line breaks.
-fn split(text: &str, max_chars: usize) -> Vec<String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return vec![crate::i18n::chat::EMPTY.now().into()];
-    }
-    let mut chunks = Vec::new();
-    let mut rest: Vec<char> = text.chars().collect();
-    while rest.len() > max_chars {
-        let window = &rest[..max_chars];
-        let cut = window
-            .iter()
-            .rposition(|c| *c == '\n')
-            .filter(|i| *i > max_chars / 2)
-            .map_or(max_chars, |i| i + 1);
-        chunks.push(rest.drain(..cut).collect::<String>().trim_end().to_owned());
-    }
-    chunks.push(rest.into_iter().collect());
-    chunks
 }
 
 fn parse_incoming(event: &str, d: &Value) -> Option<Incoming> {
@@ -872,20 +719,13 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
             seq: seq.clone(),
         });
         let turn = gateway.chat_unattended_with(actor, &session, &text, &uploads);
-        let reply = match with_approver(approver, turn).await {
-            Ok(text) => text,
-            Err(err) => crate::i18n::chat::FAILED.with(&[&format!("{err:#}")]),
-        };
+        let reply = reply_or_error(with_approver(approver, turn).await);
         // A message that joined a running turn is answered when it goes in.
         if reply.is_empty() {
             return;
         }
         let split = crate::live::read(|c| c.qq.split_replies).unwrap_or(bot.config.split_replies);
-        let parts = if split {
-            chat_parts(&reply)
-        } else {
-            vec![reply]
-        };
+        let parts = reply_parts(reply, split);
         for (index, part) in parts.iter().enumerate() {
             if index > 0 {
                 tokio::time::sleep(typing_pause(part)).await;
@@ -905,9 +745,11 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
 mod tests {
     use super::*;
     use crate::agent::Agent;
+    use crate::chat::{chat_parts, parse_answer};
     use crate::config::AgentConfig;
     use crate::llm::{ChatMessage, Completion, ToolCall, ToolSpec};
     use crate::store::Store;
+    use std::sync::Mutex;
 
     struct Echo;
 
@@ -1191,10 +1033,10 @@ mod tests {
         approver: QqApprover,
         summary: &'static str,
     ) -> tokio::task::JoinHandle<bool> {
-        let before = bot.next_approval.load(Ordering::Relaxed);
+        let session = approver.target.session();
         let asked = tokio::spawn(async move { approver.approve("shell", summary).await });
         let deadline = Instant::now() + Duration::from_secs(10);
-        while bot.next_approval.load(Ordering::Relaxed) == before && Instant::now() < deadline {
+        while !bot.approvals.waiting(&session) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         asked

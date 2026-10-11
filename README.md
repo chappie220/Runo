@@ -14,6 +14,7 @@ Single-binary Rust rewrite of OpenClaw. No plugins: every feature is built in.
 | Gateway HTTP/WebSocket + Web UI | phase 4 ✅ |
 | Scheduled tasks / heartbeat, Gateway service (OpenRC) | phase 5 ✅ |
 | QQ channel (official QQ Bot API) | phase 6 ✅ |
+| Feishu / Lark and Zulip bots | ✅ |
 | Email channel (IMAP in, SMTP out) | ✅ |
 | Identity setup on first start, web search | ✅ |
 | Browser, using the one installed on the host | ✅ |
@@ -671,7 +672,7 @@ silence leaves no trace and costs only the model call.
 ```toml
 [heartbeat]
 enabled = true
-# session = "qq:c2c:<openid>"   # default: the private QQ chat of the first qq: owner
+# session = "qq:c2c:<openid>"   # default: the private chat of the first qq:, feishu: or zulip: owner
 every_minutes = 120
 quiet_hours = "23:00-08:00"    # local time; empty for none
 max_per_day = 3
@@ -782,7 +783,7 @@ and `uninstall` of a system service go through sudo/doas, as does
 
 The system service runs under `supervise-daemon` with automatic restart and
 state in the account's `~/.openclaw-rs`; anyone can ask for its `status`. `OPENROUTER_API_KEY`, `OPENCLAW_RS_TOKEN`,
-`QQ_APP_SECRET`, `MAIL_PASSWORD` and `TYPESAFE_API_KEY` from the installing
+`QQ_APP_SECRET`, `FEISHU_APP_SECRET`, `ZULIP_API_KEY`, `MAIL_PASSWORD` and `TYPESAFE_API_KEY` from the installing
 shell are copied into the service's `conf.d` file (mode 0600). User services
 need `XDG_RUNTIME_DIR` set (elogind or pam_env). A background process started
 without OpenRC stops on its own `gateway stop` and does not come back after a
@@ -899,6 +900,68 @@ A short chatty reply of several paragraphs (no code or tables, up to 600
 characters) goes out as up to three messages, a moment apart, the way people
 text; `split_replies = false` sends every reply as one.
 
+## Feishu / Lark
+
+1. On the [Feishu Open Platform](https://open.feishu.cn) (Lark:
+   open.larksuite.com) create a custom app, add the **bot** capability, and
+   note the App ID (`cli_…`) and App Secret.
+2. Permissions: `im:message` (read and send messages, including
+   `im:message.p2p_msg:readonly` and `im:message.group_at_msg:readonly`) and
+   `im:resource` for images and files.
+3. Under 事件与回调 (Events & callbacks), choose **长连接 / long connection**
+   for both events and callbacks. It needs no public address, like QQ's
+   WebSocket. Subscribe to the event `im.message.receive_v1` and the callback
+   `card.action.trigger` (for the approval buttons). Publish a version.
+4. Configure and restart `serve`:
+
+```toml
+[feishu]
+enabled = true
+app_id = "cli_xxxxxxxx"
+# app_secret = "..."               # prefer FEISHU_APP_SECRET
+allow = []                         # open_ids (ou_…) or group chat_ids (oc_…)
+# api_base = "https://open.larksuite.com"   # for Lark
+```
+
+Each private chat is `feishu:dm:<open_id>` and each group
+`feishu:group:<chat_id>`; in groups the bot answers only when @-mentioned, and
+quotes the message it answers. Replies go out as rich text with markdown
+(plain text where that is refused). Images, files, voice messages and the
+pictures in rich-text posts reach the agent as attachments. An owner
+(`feishu:<open_id>` in `access.owners`) is asked for `ask` tools with a card
+with **批准 / 拒绝** buttons; replying `是` or `否` works too. Everyone else
+is declined at once, as on QQ. The log prints each sender's open_id.
+
+## Zulip
+
+1. In Zulip, **Personal settings → Bots → Add a new bot**, type **Generic
+   bot**. Note its email and API key, and subscribe it to the channels where it
+   should listen.
+2. Configure and restart `serve`:
+
+```toml
+[zulip]
+enabled = true
+site = "https://example.zulipchat.com"
+email = "claw-bot@example.zulipchat.com"
+# api_key = "..."                  # prefer ZULIP_API_KEY
+allow = []                         # sender emails or channel names
+```
+
+The bot long-polls Zulip's event queue, so it also needs no public address.
+Direct messages are `zulip:dm:<email>`, group direct messages
+`zulip:group:<user ids>`, and each channel topic
+`zulip:stream:<channel id>:<topic>`. Direct messages to the bot alone are
+always answered; group DMs and channels only when the bot is @-mentioned, and
+the reply goes to the same topic. Files linked from `/user_uploads/` are
+attached. Zulip has no buttons for bots, so an owner (`zulip:<email>`) answers
+`ask` tools by replying `是`/`yes` or `否`/`no` (in a channel, no @ needed).
+
+Both channels split chatty replies like QQ (`split_replies`), send scheduled
+job results and heartbeats to their sessions, and are checked by `doctor`.
+The heartbeat and inner life reach the first owner on QQ, Feishu or Zulip
+(in the order of `access.owners`) unless `session` says otherwise.
+
 ## Email
 
 The bot is a mail client of a third-party provider: it reads over IMAP (993)
@@ -1002,13 +1065,13 @@ not offered (or is talked into it) is still refused:
 - The terminal (`chat`, `ask`) and the Web UI (which needs the gateway token
   unless it only listens on loopback) act as the **owner**: every tool, subject
   to the `[tools]` settings.
-- QQ and email senders are **guests** unless listed in `access.owners`. A guest
+- QQ, Feishu, Zulip and email senders are **guests** unless listed in `access.owners`. A guest
   only gets `access.guest` (by default `web_search` and `web_fetch`): no shell, no files,
   no memory, no scheduled jobs and no identity changes.
 
 ```toml
 [access]
-owners = ["qq:<your openid>", "mail:me@example.com"]
+owners = ["qq:<your openid>", "feishu:<your open_id>", "zulip:me@example.com", "mail:me@example.com"]
 guest = ["web_search", "web_fetch"] # what any other sender may use
 [access.grants]                      # more for named senders, sessions or channels
 "qq:<friend openid>" = ["memory", "cron"]
