@@ -152,6 +152,10 @@ one running with `gateway.web = "off"`.
   when idle or `/quit` leaves.
 - ↑/↓ bring back earlier messages; the mouse wheel, PgUp/PgDn and
   Shift+↑/↓ scroll. The window takes the mouse, so hold Shift to select text.
+- Every changed row is redrawn whole, with the cursor placed after each
+  wide character, so Chinese text stays clean on terminals that draw it
+  differently (SSH apps on phones and tablets often do). If the screen still
+  looks off, Ctrl+L repaints it.
 - The bottom right shows how full the context is: an estimate of the next
   model call (system prompt, tools, summary, history), corrected by the
   provider's token counts, against `agent.context_tokens`. `/compact` folds
