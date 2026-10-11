@@ -595,6 +595,33 @@ impl<M: Model, T: Tools> Agent<M, T> {
         self.summarizer.as_ref().unwrap_or(&self.model)
     }
 
+    /// Roughly how many tokens the next model call for `session` sends
+    /// (system prompt, tools, summary and the history not yet summarized),
+    /// scaled by how far estimates were from the provider's counts, and the
+    /// budget it has to fit in. Over the budget, the next call summarizes.
+    pub fn context_use(&self, session: &str) -> Result<(usize, usize)> {
+        let session_id = self.store.session_id(session)?;
+        let ctx = self.store.context(session_id)?;
+        let ratio = ctx.token_ratio.unwrap_or(1.0).clamp(MIN_RATIO, MAX_RATIO);
+        let identity = self.store.identity()?;
+        let mut system =
+            identity::system_prompt(&self.config.system_prompt, identity.as_ref(), true);
+        if let Some(extra) = self.tools.prompt() {
+            system.push_str("\n\n");
+            system.push_str(&extra);
+        }
+        let tools = serde_json::to_string(&self.tools.specs())?;
+        let history: Vec<ChatMessage> = ctx.messages.into_iter().map(|(_, m)| m).collect();
+        let estimated = context::estimate(&system)
+            + context::estimate(&tools)
+            + ctx.summary.as_deref().map_or(0, context::estimate)
+            + context::estimate_messages(&history);
+        Ok((
+            (estimated as f64 * ratio) as usize,
+            self.config.context_tokens,
+        ))
+    }
+
     /// Folds every message still in the window into the summary, so the
     /// next turn starts with just the summary. Answers `/compact`.
     async fn compact(&self, session: &str, session_id: i64) -> Result<String> {

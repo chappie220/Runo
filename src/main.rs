@@ -584,7 +584,11 @@ async fn run(cli: Cli) -> Result<()> {
                 bail!(text::TUI_NEEDS_TERMINAL.now());
             }
             let agent = build_agent(&config, &state, store).await?;
-            tui::run(&agent, session, config.model.model.clone(), &state).await
+            let skills = config
+                .skills
+                .enabled
+                .then(|| skills::Skills::new(&agent.config.workspace, &config.skills));
+            tui::run(&agent, session, config.model.model.clone(), &state, skills).await
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);

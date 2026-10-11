@@ -122,8 +122,15 @@ one running with `gateway.web = "off"`.
 - Esc or Ctrl+C stops the running reply; Ctrl+D on an empty line, Ctrl+C
   when idle or `/quit` leaves.
 - ↑/↓ bring back earlier messages, PgUp/PgDn and Shift+↑/↓ scroll.
+- The top right shows how full the context is: an estimate of the next
+  model call (system prompt, tools, summary, history), corrected by the
+  provider's token counts, against `agent.context_tokens`. `/compact` folds
+  the conversation into a summary when it gets full.
+- Type `@` for the list of ready skills (↑/↓, Tab or Enter picks, Esc
+  closes). A message naming `@skill` asks the agent to load that skill
+  before it starts; `/skills` lists every skill with its state.
 - Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
-  `/clear`, `/identity …`, `/help`.
+  `/skills`, `/compact`, `/clear`, `/identity …`, `/help`.
 
 It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over

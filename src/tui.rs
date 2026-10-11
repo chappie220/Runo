@@ -29,6 +29,7 @@ use crate::agent::{Agent, AgentEvent, Cancel, Model, Tools};
 use crate::attachments::Upload;
 use crate::i18n::{Lang, Tr, tr};
 use crate::llm::Role;
+use crate::skills::Skills;
 use crate::tools::{Approver, with_approver};
 
 const HINTS: Tr = tr(
@@ -41,8 +42,8 @@ const QUEUED: Tr = tr("{} waiting", "{} 条待发送");
 const FILES: Tr = tr("files: {}", "附件：{}");
 const YOU: Tr = tr("You", "你");
 const HELP: Tr = tr(
-    "Commands:\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /identity …      show or approve the identity, as in chat\n  /quit            leave\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn or Shift+↑/↓ scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.",
-    "命令：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /identity …      查看或批准身份，和 chat 一样\n  /quit            退出\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn 或 Shift+↑/↓ 滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。",
+    "Commands:\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /quit            leave\nThe top right shows how full the context is. Type @ for the skill list (↑/↓, Tab or Enter picks, Esc closes).\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn or Shift+↑/↓ scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.",
+    "命令：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /quit            退出\n右上角显示上下文用了多少。输入 @ 弹出 skill 列表（↑/↓ 选择，Tab 或回车确认，Esc 关闭）。\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn 或 Shift+↑/↓ 滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。",
 );
 const SWITCHED: Tr = tr("Session: {}", "会话：{}");
 const ATTACHED: Tr = tr(
@@ -61,6 +62,16 @@ const QUIT_AGAIN: Tr = tr(
     "A reply is running: press Ctrl+D again to stop it and quit.",
     "回复还在进行：再按一次 Ctrl+D 停止并退出。",
 );
+const CONTEXT: Tr = tr("context ~{} / {} ({}%)", "上下文 ~{} / {}（{}%）");
+const SKILLS_OFF: Tr = tr(
+    "Skills are off (skills.enabled in openclaw-rs config).",
+    "Skills 已关闭（在 openclaw-rs config 里打开 skills.enabled）。",
+);
+const NO_SKILLS: Tr = tr(
+    "No skills yet: openclaw-rs skills install <source>, or ask the agent to save one.",
+    "还没有 skill：用 openclaw-rs skills install <来源> 安装，或者让智能体保存一个。",
+);
+const NO_MATCH: Tr = tr("no skill matches", "没有匹配的 skill");
 const FIRST_START_NOTE: Tr = tr(
     "First start: the agent has no identity yet and will ask who it should be.",
     "首次启动：智能体还没有身份，会先问你它该是谁。",
@@ -84,7 +95,26 @@ const ALL: &[Tr] = &[
     DENIED,
     QUIT_AGAIN,
     FIRST_START_NOTE,
+    CONTEXT,
+    SKILLS_OFF,
+    NO_SKILLS,
+    NO_MATCH,
 ];
+
+/// Added to a message that names skills with @, for the model.
+const SKILL_HINT: &str = "(Skills to use: {}. Load each with the skill tool before you start.)";
+/// Skills shown at once in the @ list.
+const MAX_SUGGESTIONS: usize = 8;
+
+/// The @ list under the cursor: skills whose name matches what follows @.
+#[derive(Debug)]
+struct Completion {
+    /// Index of the @ in the input.
+    start: usize,
+    /// Name and description.
+    items: Vec<(String, String)>,
+    selected: usize,
+}
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 /// Lines of input shown before the box scrolls.
@@ -256,6 +286,15 @@ struct App {
     quit_armed: bool,
     /// `/quit`: leave once the running reply, if any, has stopped.
     quit: bool,
+    /// `None` when skills are off.
+    skills: Option<Skills>,
+    /// Ready skills (name, description), read when an @ list opens.
+    known_skills: Vec<(String, String)>,
+    completion: Option<Completion>,
+    /// The @ whose list was closed with Esc; it stays closed.
+    dismissed: Option<usize>,
+    /// Estimated tokens of the next call, and the budget.
+    context: Option<(usize, usize)>,
 }
 
 impl App {
@@ -278,7 +317,117 @@ impl App {
             spinner: 0,
             quit_armed: false,
             quit: false,
+            skills: None,
+            known_skills: Vec::new(),
+            completion: None,
+            dismissed: None,
+            context: None,
         }
+    }
+
+    /// The `@word` the cursor is in or right after: where its @ is, and the
+    /// text typed after it.
+    fn mention_at_cursor(&self) -> Option<(usize, String)> {
+        let text = &self.input.text;
+        let mut start = self.input.cursor;
+        while start > 0 && !text[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        (text.get(start) == Some(&'@'))
+            .then(|| (start, text[start + 1..self.input.cursor].iter().collect()))
+    }
+
+    /// Opens, narrows or closes the @ list after the input changed.
+    fn refresh_completion(&mut self) {
+        let Some((start, query)) = self.mention_at_cursor() else {
+            self.completion = None;
+            self.dismissed = None;
+            return;
+        };
+        if self.dismissed == Some(start) {
+            return;
+        }
+        if self.completion.as_ref().is_none_or(|c| c.start != start) {
+            self.known_skills = self
+                .skills
+                .as_ref()
+                .map(|s| {
+                    s.ready()
+                        .into_iter()
+                        .map(|s| (s.name, s.description))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        let query = query.to_lowercase();
+        // Names that start with the query first, then any that contain it.
+        let mut items: Vec<(String, String)> = self
+            .known_skills
+            .iter()
+            .filter(|(name, _)| name.to_lowercase().starts_with(&query))
+            .chain(self.known_skills.iter().filter(|(name, _)| {
+                let name = name.to_lowercase();
+                !name.starts_with(&query) && name.contains(&query)
+            }))
+            .take(MAX_SUGGESTIONS)
+            .cloned()
+            .collect();
+        if items.is_empty() {
+            let why = match &self.skills {
+                None => SKILLS_OFF,
+                Some(_) if self.known_skills.is_empty() => NO_SKILLS,
+                Some(_) => NO_MATCH,
+            };
+            items.push((String::new(), why.get(self.lang).to_owned()));
+        }
+        let selected = self
+            .completion
+            .as_ref()
+            .map_or(0, |c| c.selected.min(items.len() - 1));
+        self.completion = Some(Completion {
+            start,
+            items,
+            selected,
+        });
+    }
+
+    /// Puts the highlighted skill in place of the `@word`.
+    fn accept_completion(&mut self) {
+        let Some(c) = self.completion.take() else {
+            return;
+        };
+        let Some((name, _)) = c.items.get(c.selected).filter(|(n, _)| !n.is_empty()) else {
+            self.dismissed = Some(c.start);
+            return;
+        };
+        let insert: Vec<char> = format!("@{name} ").chars().collect();
+        let end = self.input.cursor;
+        self.input.text.splice(c.start..end, insert.iter().copied());
+        self.input.cursor = c.start + insert.len();
+    }
+
+    /// Ready skills named with @ in `text`.
+    fn mentioned_skills(&self, text: &str) -> Vec<String> {
+        let Some(skills) = &self.skills else {
+            return Vec::new();
+        };
+        let ready = skills.ready();
+        let mut names: Vec<String> = Vec::new();
+        for word in text.split_whitespace() {
+            let Some(name) = word.strip_prefix('@') else {
+                continue;
+            };
+            let name =
+                name.trim_end_matches(|c: char| c.is_ascii_punctuation() && c != '-' && c != '_');
+            if ready.iter().any(|s| s.name == name) && !names.iter().any(|n| n == name) {
+                names.push(name.to_owned());
+            }
+        }
+        names
+    }
+
+    fn update_context<M: Model, T: Tools>(&mut self, agent: &Agent<M, T>) {
+        self.context = agent.context_use(&self.session).ok();
     }
 
     fn note(&mut self, text: impl Into<String>) {
@@ -331,6 +480,44 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return Action::None;
         }
+        if self.approval.is_none()
+            && let Some(c) = &mut self.completion
+        {
+            let plain = !key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
+            match key.code {
+                KeyCode::Up => {
+                    c.selected = c.selected.checked_sub(1).unwrap_or(c.items.len() - 1);
+                    return Action::None;
+                }
+                KeyCode::Down => {
+                    c.selected = (c.selected + 1) % c.items.len();
+                    return Action::None;
+                }
+                KeyCode::Tab => {
+                    self.accept_completion();
+                    return Action::None;
+                }
+                KeyCode::Enter if plain => {
+                    self.accept_completion();
+                    return Action::None;
+                }
+                KeyCode::Esc => {
+                    self.dismissed = Some(c.start);
+                    self.completion = None;
+                    return Action::None;
+                }
+                _ => {}
+            }
+        }
+        let action = self.edit(key);
+        self.refresh_completion();
+        action
+    }
+
+    /// Keys while no @ list is open.
+    fn edit(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -446,7 +633,7 @@ impl App {
         if !trimmed.is_empty() && self.sent.last().map(String::as_str) != Some(trimmed) {
             self.sent.push(trimmed.to_owned());
         }
-        if trimmed.starts_with('/') && !trimmed.starts_with("/identity") {
+        if trimmed.starts_with('/') && !trimmed.starts_with("/identity") && trimmed != "/compact" {
             self.command(agent, trimmed);
             return None;
         }
@@ -458,6 +645,16 @@ impl App {
             return None;
         }
         self.entries.push(Entry::User(text.trim_end().to_owned()));
+        let skills = self.mentioned_skills(&text);
+        let text = if skills.is_empty() {
+            text
+        } else {
+            format!(
+                "{}\n\n{}",
+                text.trim_end(),
+                SKILL_HINT.replace("{}", &skills.join(", "))
+            )
+        };
         Some(Outgoing {
             text,
             files: std::mem::take(&mut self.files),
@@ -483,6 +680,28 @@ impl App {
                 let name = chrono::Local::now().format("tui-%Y%m%d-%H%M%S").to_string();
                 self.switch(agent, name);
             }
+            "/skills" => match &self.skills {
+                None => self.note(SKILLS_OFF.get(self.lang)),
+                Some(skills) => {
+                    let all = skills.scan();
+                    if all.is_empty() {
+                        self.note(NO_SKILLS.get(self.lang));
+                    } else {
+                        let rows: Vec<String> = all
+                            .iter()
+                            .map(|s| {
+                                format!(
+                                    "@{}  {} [{}]",
+                                    s.name,
+                                    one_line(&s.description, 80),
+                                    s.status()
+                                )
+                            })
+                            .collect();
+                        self.note(rows.join("\n"));
+                    }
+                }
+            },
             "/sessions" => match agent.store.sessions() {
                 Ok(list) if list.is_empty() => self.note(NO_SESSIONS.get(self.lang)),
                 Ok(list) => {
@@ -508,6 +727,7 @@ impl App {
         }
         self.session = session;
         self.entries = load_history(agent, &self.session);
+        self.update_context(agent);
         self.note(SWITCHED.fill(self.lang, &[&self.session]));
     }
 
@@ -537,7 +757,26 @@ impl App {
                 Style::new().fg(Color::DarkGray),
             ),
         ]);
-        frame.render_widget(Paragraph::new(title), header);
+        let meter = self.context.map(|(used, budget)| {
+            let percent = used * 100 / budget.max(1);
+            let color = match percent {
+                0..60 => Color::Green,
+                60..85 => Color::Yellow,
+                _ => Color::Red,
+            };
+            let text = CONTEXT.fill(
+                self.lang,
+                &[&kilo(used), &kilo(budget), &percent.to_string()],
+            );
+            Span::styled(format!("{text} "), Style::new().fg(color))
+        });
+        let meter_width = meter.as_ref().map_or(0, |m| m.width() as u16);
+        let [left, right] =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(meter_width)]).areas(header);
+        frame.render_widget(Paragraph::new(title), left);
+        if let Some(meter) = meter {
+            frame.render_widget(Paragraph::new(Line::from(meter)), right);
+        }
 
         let width = usize::from(body.width.max(10));
         let lines = self.lines(width);
@@ -611,7 +850,51 @@ impl App {
 
         if let Some((tool, summary, _)) = &self.approval {
             self.draw_approval(frame, area, tool, summary);
+        } else if let Some(c) = &self.completion {
+            Self::draw_completion(frame, body, input, c);
         }
+    }
+
+    /// The @ list, just above the input box.
+    fn draw_completion(frame: &mut Frame, body: Rect, input: Rect, c: &Completion) {
+        let height = (c.items.len() as u16 + 2).min(body.height);
+        let width = body.width.min(80);
+        let popup = Rect::new(input.x, input.y.saturating_sub(height), width, height);
+        let inner = usize::from(width.saturating_sub(4));
+        let name_width = c
+            .items
+            .iter()
+            .map(|(n, _)| n.chars().count() + 1)
+            .max()
+            .unwrap_or(0)
+            .min(inner / 2);
+        let lines: Vec<Line> = c
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, (name, description))| {
+                let label = if name.is_empty() {
+                    String::new()
+                } else {
+                    format!("@{name}")
+                };
+                let pad = " ".repeat(name_width.saturating_sub(label.chars().count()) + 1);
+                let text = one_line(&format!("{label}{pad}{description}"), inner);
+                let style = if name.is_empty() {
+                    Style::new().fg(Color::DarkGray)
+                } else if i == c.selected {
+                    Style::new().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::new()
+                };
+                Line::styled(text, style)
+            })
+            .collect();
+        let block = Block::bordered()
+            .border_style(Style::new().fg(Color::Cyan))
+            .title(" skills · Tab ");
+        frame.render_widget(Clear, popup);
+        frame.render_widget(Paragraph::new(lines).block(block), popup);
     }
 
     fn draw_approval(&self, frame: &mut Frame, area: Rect, tool: &str, summary: &str) {
@@ -697,6 +980,17 @@ impl App {
             previous = Some(entry);
         }
         out
+    }
+}
+
+/// 12345 → "12.3k".
+fn kilo(n: usize) -> String {
+    if n >= 10_000 {
+        format!("{}k", n / 1000)
+    } else if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
     }
 }
 
@@ -869,6 +1163,7 @@ pub async fn run<M: Model, T: Tools>(
     session: String,
     model: String,
     state: &Path,
+    skills: Option<Skills>,
 ) -> Result<()> {
     let lang = crate::i18n::current();
     let identity = agent.store.identity()?;
@@ -880,7 +1175,9 @@ pub async fn run<M: Model, T: Tools>(
         },
     );
     let mut app = App::new(lang, name, model, session);
+    app.skills = skills;
     app.entries = load_history(agent, &app.session);
+    app.update_context(agent);
     if identity.is_none() {
         app.note(FIRST_START_NOTE.get(lang));
     }
@@ -906,6 +1203,7 @@ pub async fn run<M: Model, T: Tools>(
                     for c in text.chars() {
                         app.input.insert(if c == '\r' { '\n' } else { c });
                     }
+                    app.refresh_completion();
                     Step::Redraw
                 }
                 Some(Ok(_)) => Step::Redraw,
@@ -959,6 +1257,7 @@ pub async fn run<M: Model, T: Tools>(
                     }
                 }
                 app.finished(result);
+                app.update_context(agent);
                 if let Some(message) = app.queue.pop_front() {
                     cancel = Cancel::default();
                     turn = Some(start_turn(
@@ -1151,6 +1450,93 @@ mod tests {
         assert_eq!(cursor, (2, 2));
         input.cursor = 2;
         assert_eq!(input.layout(4).1, (1, 0));
+    }
+
+    fn with_skills(names: &[&str]) -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        for name in names {
+            let file = dir.path().join("skills").join(name).join("SKILL.md");
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(
+                &file,
+                format!("---\nname: {name}\ndescription: Does {name} things\n---\nSteps.\n"),
+            )
+            .unwrap();
+        }
+        let mut app = app();
+        app.skills = Some(Skills::new(
+            dir.path(),
+            &crate::config::SkillsConfig::default(),
+        ));
+        (dir, app)
+    }
+
+    #[test]
+    fn at_lists_skills_and_tab_completes_one() {
+        let (_dir, mut app) = with_skills(&["weather", "web-research", "deploy"]);
+        typed(&mut app, "look up @");
+        let c = app.completion.as_ref().expect("the list opens on @");
+        let names: Vec<&str> = c.items.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["deploy", "weather", "web-research"]);
+        typed(&mut app, "we");
+        let names: Vec<&str> = app
+            .completion
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(names, ["weather", "web-research"]);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.input.text.iter().collect::<String>(),
+            "look up @web-research "
+        );
+        assert!(app.completion.is_none());
+        // Esc closes the list for that @ only; Enter still sends.
+        typed(&mut app, "@x");
+        assert!(app.completion.is_some());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        typed(&mut app, "y");
+        assert!(app.completion.is_none());
+        assert_eq!(
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE),
+            Action::Send
+        );
+        // An email address is not a mention.
+        typed(&mut app, " me@we");
+        assert!(app.completion.is_none());
+        assert_eq!(
+            app.mentioned_skills("use @weather, then @deploy and @nope @weather"),
+            ["weather", "deploy"]
+        );
+    }
+
+    #[test]
+    fn the_at_list_says_why_it_is_empty() {
+        let mut app = app();
+        typed(&mut app, "@");
+        let c = app.completion.as_ref().unwrap();
+        assert_eq!(c.items[0].1, SKILLS_OFF.get(Lang::En));
+        // Enter on the note sends nothing in and closes it.
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.completion.is_none());
+        assert_eq!(app.input.text.iter().collect::<String>(), "@");
+        let (_dir, mut app) = with_skills(&[]);
+        typed(&mut app, "@");
+        assert_eq!(
+            app.completion.as_ref().unwrap().items[0].1,
+            NO_SKILLS.get(Lang::En)
+        );
+    }
+
+    #[test]
+    fn shows_token_counts_short() {
+        assert_eq!(kilo(950), "950");
+        assert_eq!(kilo(12_345), "12k");
+        assert_eq!(kilo(1_234), "1.2k");
     }
 
     #[test]
