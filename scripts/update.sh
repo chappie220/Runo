@@ -1,7 +1,7 @@
 #!/bin/sh
 # Updates openclaw-rs to the latest release: the same as install.sh --update
 # (checksum checked, the previous binary kept as openclaw-rs.old, a running
-# OpenRC service restarted when run as root).
+# Gateway restarted when this account may).
 #
 #   curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/update.sh | doas sh
 #   sh update.sh --version 0.2.0      # a given release, also to go back

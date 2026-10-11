@@ -30,6 +30,7 @@ mod setup;
 mod skills;
 mod store;
 mod tools;
+mod tui;
 mod update;
 mod usage;
 mod voice;
@@ -78,13 +79,22 @@ enum Command {
         attach: Vec<PathBuf>,
         message: Vec<String>,
     },
+    /// Full-screen chat in the terminal.
+    Tui {
+        #[arg(short, long, default_value = "main")]
+        session: String,
+    },
     /// Run the Gateway: Web UI and WebSocket API.
     Serve {
         /// Listen address (default: gateway.bind, 127.0.0.1:18789).
         #[arg(long)]
         bind: Option<String>,
+        /// ui: Web UI and API; api: WebSocket API only; off: no HTTP (default: gateway.web).
+        #[arg(long, value_enum)]
+        web: Option<config::WebMode>,
     },
-    /// Install or remove the OpenRC system service (run as root).
+    /// Run the Gateway in the background: install, start, stop, status.
+    #[command(visible_alias = "gateway")]
     Service {
         #[command(subcommand)]
         action: ServiceAction,
@@ -171,14 +181,22 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ServiceAction {
-    /// Write /etc/init.d/openclaw-rs, enable it, and start it.
+    /// Install the service (OpenRC system or user service) and start it.
     Install {
-        /// Account the Gateway runs as; its home holds the state.
-        #[arg(long, default_value = "root")]
-        user: String,
+        /// Account the Gateway runs as (root only; default root); its home holds the state.
+        #[arg(long)]
+        user: Option<String>,
     },
     /// Stop and remove the service; state is kept.
     Uninstall,
+    /// Start the Gateway in the background.
+    Start,
+    /// Stop the Gateway.
+    Stop,
+    /// Stop and start the Gateway.
+    Restart,
+    /// Say how the Gateway runs and whether it is running.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -358,8 +376,20 @@ async fn run(cli: Cli) -> Result<()> {
     }
     if let Command::Service { action } = &cli.command {
         return match action {
-            ServiceAction::Install { user } => service::install(user),
+            ServiceAction::Install { user } => {
+                service::install(user.as_deref(), cli.config.as_deref())
+            }
             ServiceAction::Uninstall => service::uninstall(),
+            ServiceAction::Start => service::start(cli.config.as_deref()),
+            ServiceAction::Stop => service::stop(),
+            ServiceAction::Restart => service::restart(cli.config.as_deref()),
+            ServiceAction::Status => {
+                // As rc-service: 3 when stopped, for scripts.
+                if !service::status()? {
+                    std::process::exit(3);
+                }
+                Ok(())
+            }
         };
     }
     let state = config::state_dir()?;
@@ -397,17 +427,17 @@ async fn run(cli: Cli) -> Result<()> {
         return update::run(&config.update, check, rollback, &config.gateway.bind).await;
     }
     if let Command::Init = cli.command {
-        onboard::run(&config_path, i18n::current()).await?;
+        onboard::run(&config_path, i18n::current(), true).await?;
         return Ok(());
     }
     let mut config = Config::load(&config_path)?;
     // A first run in a terminal is set up on the spot instead of failing.
     if matches!(
         cli.command,
-        Command::Chat { .. } | Command::Ask { .. } | Command::Serve { .. }
+        Command::Chat { .. } | Command::Tui { .. } | Command::Ask { .. } | Command::Serve { .. }
     ) && onboard::needed(&config)
         && onboard::interactive()
-        && let Some(lang) = onboard::run(&config_path, i18n::current()).await?
+        && let Some(lang) = onboard::run(&config_path, i18n::current(), false).await?
     {
         i18n::set(lang);
         config = Config::load(&config_path)?;
@@ -478,7 +508,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Completions { .. } | Command::Skills { .. } => {
             unreachable!("handled before state is opened")
         }
-        Command::Serve { bind } => {
+        Command::Serve { bind, web } => {
             if store.identity()?.is_none() {
                 eprintln!("{}", text::FIRST_START.now());
             }
@@ -521,7 +551,7 @@ async fn run(cli: Cli) -> Result<()> {
             tokio::spawn(gateway.clone().run_scheduler());
             let idle = gateway.clone();
             tokio::spawn(update::watch(config.update.clone(), move || idle.idle()));
-            gateway::serve(gateway, &bind).await
+            gateway::serve(gateway, &bind, web.unwrap_or(config.gateway.web)).await
         }
         Command::Sessions { action } => sessions(&store, action.unwrap_or(SessionsAction::List)),
         Command::Usage { days } => {
@@ -548,6 +578,13 @@ async fn run(cli: Cli) -> Result<()> {
                 .collect::<Result<Vec<_>>>()?;
             let agent = build_agent(&config, &state, store).await?;
             turn(&agent, &session, &message, &uploads).await
+        }
+        Command::Tui { session } => {
+            if !onboard::interactive() {
+                bail!(text::TUI_NEEDS_TERMINAL.now());
+            }
+            let agent = build_agent(&config, &state, store).await?;
+            tui::run(&agent, session, config.model.model.clone(), &state).await
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);
@@ -688,7 +725,7 @@ async fn build_agent(config: &Config, state: &Path, store: Store) -> Result<CliA
 }
 
 /// A file named on the command line, to send with a message.
-fn read_upload(path: &Path) -> Result<attachments::Upload> {
+pub(crate) fn read_upload(path: &Path) -> Result<attachments::Upload> {
     let data = std::fs::read(path)
         .with_context(|| text::CANNOT_READ.with(&[&path.display().to_string()]))?;
     let name = path

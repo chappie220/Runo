@@ -43,8 +43,8 @@ const EXISTS: Tr = tr(
     "{} 里已经有配置或数据；加 --force 替换（现有文件会被移到一旁，不会删除）",
 );
 const RUNNING: Tr = tr(
-    "a Gateway is running at {}: stop it first (doas rc-service openclaw-rs stop)",
-    "{} 上有正在运行的 Gateway：请先停止（doas rc-service openclaw-rs stop）",
+    "a Gateway is running at {}: stop it first (openclaw-rs gateway stop)",
+    "{} 上有正在运行的 Gateway：请先停止（openclaw-rs gateway stop）",
 );
 const NOT_A_BACKUP: Tr = tr(
     "{} is not an openclaw-rs backup (no {})",

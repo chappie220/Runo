@@ -12,7 +12,7 @@ Single-binary Rust rewrite of OpenClaw. No plugins: every feature is built in.
 | Tools: shell and files, with approval | phase 2 ✅ |
 | Long-term memory search (SQLite FTS5) | phase 3 ✅ |
 | Gateway HTTP/WebSocket + Web UI | phase 4 ✅ |
-| Scheduled tasks / heartbeat, OpenRC service | phase 5 ✅ |
+| Scheduled tasks / heartbeat, Gateway service (OpenRC) | phase 5 ✅ |
 | QQ channel (official QQ Bot API) | phase 6 ✅ |
 | Email channel (IMAP in, SMTP out) | ✅ |
 | Identity setup on first start, web search | ✅ |
@@ -43,12 +43,14 @@ release's `SHA256SUMS` and that it runs, and installs it to
 ```sh
 curl -fsSL .../install.sh | sh -s -- --dir ~/bin        # somewhere else
 curl -fsSL .../install.sh | doas sh -s -- --version 0.2.0
-curl -fsSL .../install.sh | doas sh -s -- --service pi  # also the OpenRC service
+curl -fsSL .../install.sh | doas sh -s -- --service pi  # also the Gateway service
+curl -fsSL .../install.sh | sh -s -- --service "$USER"  # as yourself, no root
 ```
 
 `--service pi` installs the service right away when `pi` already has a
 config, and otherwise prints the two commands to run (`init` as `pi`, then
-`service install`). In a checkout, run `sh scripts/install.sh --help`.
+`gateway install`). Without root it can only name your own account, and the
+Gateway runs as you (see [Gateway service](#gateway-service)). In a checkout, run `sh scripts/install.sh --help`.
 
 ## Build for Raspberry Pi (Alpine, aarch64)
 
@@ -73,19 +75,23 @@ cargo build --release
 ./target/release/openclaw-rs chat
 ```
 
-`init` asks four things and saves `<state dir>/config.toml` (mode 0600):
+`init` asks five things and saves `<state dir>/config.toml` (mode 0600).
+In a terminal every menu is picked with ↑/↓ and Enter (Esc goes back);
+piped input still takes typed numbers:
 
 1. the language (中文 or English);
 2. your OpenRouter API key (from https://openrouter.ai/keys), checked with
    OpenRouter before it is kept; `OPENROUTER_API_KEY`, when set, is used
    and checked instead;
 3. the main model: search OpenRouter's live model list by name or maker
-   and pick a number. Each line shows the context size, the price per
+   and pick one. Each line shows the context size, the price per
    million tokens and 🖼 for models that see images. Only models that can
    call tools are listed, since the agent needs them; any other id can be
    typed in full;
 4. if that model cannot see images, whether to pick an image model for
-   pictures people send and browser screenshots (`agent.vision_model`).
+   pictures people send and browser screenshots (`agent.vision_model`);
+5. whether to start the Gateway (Web UI, QQ, email) in the background now,
+   as with `openclaw-rs gateway install` (see [Gateway service](#gateway-service)).
 
 It also says whether a browser was found. There is no default model and
 nothing is picked for you. Running `chat`, `ask` or `serve` in a terminal
@@ -97,10 +103,31 @@ Run it again any time to change these; everything else is in
 ```sh
 ./target/release/openclaw-rs ask "hello"
 ./target/release/openclaw-rs chat --session work
+./target/release/openclaw-rs tui              # full-screen chat, see below
 ./target/release/openclaw-rs sessions
 ./target/release/openclaw-rs memory add "Prefers answers in Chinese"
 ./target/release/openclaw-rs memory search chinese
 ```
+
+## Terminal UI
+
+`openclaw-rs tui [--session NAME]` is a full-screen chat. Like `chat`, the
+agent runs in that process, so it needs no Gateway and works over SSH next to
+one running with `gateway.web = "off"`.
+
+- Replies stream in; each tool call shows as a line that turns ✓ when done.
+- An `ask` tool opens a prompt in the window: `y` allows, `n` or Esc denies.
+- Enter sends, Alt+Enter (or Ctrl+J) adds a line, pasted text goes in as is.
+  Messages sent while a reply runs wait and go after it.
+- Esc or Ctrl+C stops the running reply; Ctrl+D on an empty line, Ctrl+C
+  when idle or `/quit` leaves.
+- ↑/↓ bring back earlier messages, PgUp/PgDn and Shift+↑/↓ scroll.
+- Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
+  `/clear`, `/identity …`, `/help`.
+
+It opens with the session's last 200 messages. Anything printed on stderr
+meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over
+the screen.
 
 ## Configuration
 
@@ -108,8 +135,11 @@ Run it again any time to change these; everything else is in
 
 `openclaw-rs config` edits `<state dir>/config.toml` interactively, section by
 section (model and context, tools, gateway, QQ, email, web search, browser, access).
-Each field shows the value in effect; Enter keeps it, `-` resets it to the
-default, `?` explains it. Secrets are typed without echo and the prompt says
+Sections and fields are picked with ↑/↓ and Enter, Esc goes back; each field
+shows the value in effect and its help. Choices and yes/no fields are menus
+(with "Default" to reset); for typed fields Enter keeps the value and `-`
+resets it. Without a terminal (piped input) it walks every field of a
+section instead: Enter keeps, `-` resets, `?` explains. Secrets are typed without echo and the prompt says
 when an environment variable overrides them; `+` generates a Gateway token.
 Comments and keys the editor does not know are kept, every change is checked
 before it is accepted, and the file is saved with mode 0600. It also opens a
@@ -212,7 +242,14 @@ declined. Without a token the Gateway only binds to loopback.
 [gateway]
 bind = "127.0.0.1:18789"
 # token = "..."   # prefer OPENCLAW_RS_TOKEN
+web = "ui"         # "api": WebSocket API only; "off": no HTTP at all
 ```
+
+Without the Web UI: `web = "api"` keeps only `/ws` and `/health` (for other
+clients) and answers `/` with 404; `web = "off"` opens no port at all, and
+`serve` only runs QQ, email and scheduled jobs until Ctrl-C or SIGTERM. Chat
+on such a host with `openclaw-rs tui`. `serve --web off` does the same for
+one run.
 
 ## Images and files
 
@@ -554,19 +591,42 @@ openclaw-rs cron remove heartbeat
 The model can also create, list and remove jobs (`cron_add`, `cron_list`,
 `cron_remove`); a job it creates runs in the conversation that asked for it.
 
-## OpenRC service
+## Gateway service
+
+`openclaw-rs gateway` (or `openclaw-rs service`, the same command) runs the
+Gateway in the background:
+
+```sh
+openclaw-rs gateway install     # set it up and start it
+openclaw-rs gateway status      # how it runs, whether it runs (exit 3 when stopped)
+openclaw-rs gateway stop
+openclaw-rs gateway start
+openclaw-rs gateway restart     # e.g. after `openclaw-rs config`
+openclaw-rs gateway uninstall   # keeps state and logs
+```
+
+How it runs depends on who asks and what the host has:
+
+| | runs as | log | starts at boot |
+|---|---|---|---|
+| root, OpenRC | `--user` account (default root): `/etc/init.d/openclaw-rs` | `/var/log/openclaw-rs.log` | yes |
+| not root, OpenRC ≥ 0.60 with user services | you: `~/.config/rc/init.d/openclaw-rs`, `rc-service --user` | `~/.openclaw-rs/gateway.log` | with your OpenRC session (pam_openrc) |
+| not root otherwise, or no OpenRC | you: a background process, pid in `~/.openclaw-rs/gateway.pid` | `~/.openclaw-rs/gateway.log` | no |
 
 ```sh
 export OPENROUTER_API_KEY=sk-or-... OPENCLAW_RS_TOKEN=...
-doas openclaw-rs service install --user pi   # or sudo -E
-rc-service openclaw-rs status
-tail -f /var/log/openclaw-rs.log
-doas openclaw-rs service uninstall           # keeps state and logs
+doas openclaw-rs gateway install --user pi   # system service for pi (or sudo -E)
 ```
 
-The service runs as the given account with state in its `~/.openclaw-rs`,
-under `supervise-daemon` with automatic restart. `OPENROUTER_API_KEY`, `OPENCLAW_RS_TOKEN`, `QQ_APP_SECRET`, `MAIL_PASSWORD` and
-`TYPESAFE_API_KEY` from the installing shell are copied into `/etc/conf.d/openclaw-rs` (mode 0600).
+The system service runs under `supervise-daemon` with automatic restart and
+state in the account's `~/.openclaw-rs`; only root can start or stop it, but
+anyone can ask for its `status`. `OPENROUTER_API_KEY`, `OPENCLAW_RS_TOKEN`,
+`QQ_APP_SECRET`, `MAIL_PASSWORD` and `TYPESAFE_API_KEY` from the installing
+shell are copied into the service's `conf.d` file (mode 0600). User services
+need `XDG_RUNTIME_DIR` set (elogind or pam_env). A background process started
+without OpenRC stops on its own `gateway stop` and does not come back after a
+reboot; `start` reports at once when it exits right away (a bad config, a busy
+port) with the end of its log.
 
 ## Updates
 

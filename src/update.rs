@@ -64,8 +64,8 @@ const UPDATED: Tr = tr(
 );
 const RESTARTED: Tr = tr("Restarted the service.", "已重启服务。");
 const RESTART_HINT: Tr = tr(
-    "A Gateway is running: restart it to use the new version (doas rc-service openclaw-rs restart).",
-    "Gateway 正在运行：重启后才会用上新版本（doas rc-service openclaw-rs restart）。",
+    "A Gateway is running: restart it to use the new version (openclaw-rs service restart, with doas for the system service).",
+    "Gateway 正在运行：重启后才会用上新版本（openclaw-rs service restart；系统服务需要 doas）。",
 );
 const ROLLED_BACK: Tr = tr(
     "Rolled back: {} is the previous binary again ({}).",
@@ -377,26 +377,12 @@ pub async fn run(
     Ok(())
 }
 
-/// Restarts the OpenRC service when this is root and it is running;
-/// otherwise says to restart a running Gateway.
+/// Restarts a running service this account may control; otherwise says to
+/// restart a running Gateway.
 fn restart_service(bind: &str) {
-    // SAFETY: geteuid has no preconditions.
-    let root = unsafe { libc::geteuid() } == 0;
-    let service_running = || {
-        std::process::Command::new("rc-service")
-            .args(["openclaw-rs", "status"])
-            .output()
-            .is_ok_and(|o| o.status.success())
-    };
-    if root && Path::new("/etc/init.d/openclaw-rs").exists() && service_running() {
-        let restarted = std::process::Command::new("rc-service")
-            .args(["openclaw-rs", "restart"])
-            .status()
-            .is_ok_and(|s| s.success());
-        if restarted {
-            println!("{}", RESTARTED.now());
-            return;
-        }
+    if crate::service::restart_if_running() {
+        println!("{}", RESTARTED.now());
+        return;
     }
     if crate::backup::ensure_stopped(bind).is_err() {
         println!("{}", RESTART_HINT.now());

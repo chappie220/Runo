@@ -48,8 +48,8 @@ const NO_CHANGES: Tr = tr("No changes.", "没有改动。");
 const NOT_SAVED: Tr = tr("Quit without saving.", "已退出，未保存。");
 const SAVED: Tr = tr("Saved {}.", "已保存 {}。");
 const RESTART: Tr = tr(
-    "Restart a running `serve` (rc-service openclaw-rs restart) to apply it.",
-    "如果 `serve` 正在运行，重启后生效（rc-service openclaw-rs restart）。",
+    "Restart a running Gateway (openclaw-rs service restart) to apply it.",
+    "如果 Gateway 正在运行，重启后生效（openclaw-rs service restart）。",
 );
 const RESULT_INVALID: Tr = tr(
     "not saved: the result does not load: {}",
@@ -290,6 +290,15 @@ const SECTIONS: &[Section] = &[
                     env: "OPENCLAW_RS_TOKEN",
                     generate: true,
                 },
+            },
+            Field {
+                path: &["gateway", "web"],
+                label: tr("Web UI", "Web UI"),
+                help: tr(
+                    "ui: Web UI and WebSocket API; api: only the API (for other clients); off: no HTTP at all, QQ, email and scheduled jobs only. Chat in the terminal with openclaw-rs tui.",
+                    "ui：Web UI 和 WebSocket API；api：只有 API（给其他客户端用）；off：完全不开 HTTP，只运行 QQ、邮件和定时任务。在终端里聊天用 openclaw-rs tui。",
+                ),
+                kind: Kind::Choice(&["ui", "api", "off"]),
             },
         ],
     },
@@ -636,8 +645,51 @@ pub struct Term<R, W> {
     pub(crate) out: W,
     /// Turn echo off while a secret is typed; only for a real terminal.
     pub(crate) hide_secrets: bool,
+    /// Menus are picked with the arrow keys instead of typed numbers.
+    pub(crate) arrows: bool,
+    /// Input and output are the process's terminal, switched to raw mode
+    /// while a menu is open; otherwise keys are read from `input` (tests).
+    pub(crate) raw: bool,
     pub(crate) lang: Lang,
 }
+
+/// What a menu ended with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Picked {
+    Item(usize),
+    /// Esc or q: go back without picking.
+    Back,
+    /// End of input or Ctrl-C.
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Key {
+    Up,
+    Down,
+    Home,
+    End,
+    Enter,
+    Back,
+    Digit(usize),
+    Other,
+    Eof,
+}
+
+const KEYS_HINT: Tr = tr(
+    "↑/↓ move · Enter picks · Esc goes back",
+    "↑/↓ 移动 · 回车选择 · Esc 返回",
+);
+const YES: Tr = tr("Yes", "是");
+const NO: Tr = tr("No", "否");
+const BACK: Tr = tr("← Back", "← 返回");
+const RESET: Tr = tr("↺ Default", "↺ 恢复默认");
+const UNSAVED: Tr = tr("There are unsaved changes.", "有未保存的改动。");
+const KEEP_EDITING: Tr = tr("Keep editing", "继续编辑");
+const TYPE_HOW: Tr = tr(
+    "Enter keeps the value, - resets it to the default.",
+    "回车保持不变，- 恢复默认值。",
+);
 
 impl<R: BufRead, W: Write> Term<R, W> {
     /// One trimmed line, or `None` at end of input.
@@ -670,6 +722,294 @@ impl<R: BufRead, W: Write> Term<R, W> {
         let line = text.fill(self.lang, args);
         self.say(&line)
     }
+
+    /// One byte of input. On the raw terminal, `follow_up` waits only
+    /// briefly, to tell a lone Esc from the start of an arrow key.
+    fn byte(&mut self, follow_up: bool) -> Result<Option<u8>> {
+        if !self.raw {
+            let buf = self.input.fill_buf()?;
+            let Some(&b) = buf.first() else {
+                return Ok(None);
+            };
+            self.input.consume(1);
+            return Ok(Some(b));
+        }
+        if follow_up {
+            let mut fd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one valid pollfd.
+            if unsafe { libc::poll(&mut fd, 1, 50) } <= 0 {
+                return Ok(None);
+            }
+        }
+        let mut b = 0u8;
+        // SAFETY: reads at most one byte into `b`.
+        let n = unsafe { libc::read(libc::STDIN_FILENO, (&raw mut b).cast(), 1) };
+        Ok((n == 1).then_some(b))
+    }
+
+    fn key(&mut self) -> Result<Key> {
+        let Some(b) = self.byte(false)? else {
+            return Ok(Key::Eof);
+        };
+        Ok(match b {
+            b'\r' | b'\n' => Key::Enter,
+            // Ctrl-C, Ctrl-D: raw mode turns them into bytes.
+            0x03 | 0x04 => Key::Eof,
+            b'k' => Key::Up,
+            b'j' => Key::Down,
+            b'q' => Key::Back,
+            b'1'..=b'9' => Key::Digit(usize::from(b - b'0')),
+            0x1b => match self.byte(true)? {
+                Some(b'[' | b'O') => match self.byte(true)? {
+                    Some(b'A') => Key::Up,
+                    Some(b'B') => Key::Down,
+                    Some(b'H') => Key::Home,
+                    Some(b'F') => Key::End,
+                    // Home and End as ESC [ 1 ~ and ESC [ 4 ~.
+                    Some(n @ (b'1' | b'4' | b'7' | b'8')) => {
+                        self.byte(true)?;
+                        if matches!(n, b'1' | b'7') {
+                            Key::Home
+                        } else {
+                            Key::End
+                        }
+                    }
+                    _ => Key::Other,
+                },
+                _ => Key::Back,
+            },
+            _ => Key::Other,
+        })
+    }
+
+    /// A menu: ↑/↓ (or j/k, or a digit) move, Enter picks, Esc goes back.
+    /// `help` gives a line shown under the highlighted item. The menu is
+    /// erased when it ends, leaving `title › item` for a pick.
+    pub(crate) fn select(
+        &mut self,
+        title: &str,
+        items: &[String],
+        start: usize,
+        help: &dyn Fn(usize) -> Option<String>,
+    ) -> Result<Picked> {
+        if items.is_empty() {
+            return Ok(Picked::Back);
+        }
+        let _raw = self.raw.then(RawMode::new);
+        let (cols, rows) = if self.raw { terminal_size() } else { (80, 24) };
+        let width = cols.saturating_sub(1).max(20);
+        let height = items.len().min(rows.saturating_sub(6).max(5));
+        let mut cur = start.min(items.len() - 1);
+        let mut top = 0;
+        let mut drawn = 0;
+        write!(self.out, "\x1b[?25l")?;
+        let picked = loop {
+            top = top.min(cur).max((cur + 1).saturating_sub(height));
+            let mut lines: Vec<String> = wrap(title, width)
+                .into_iter()
+                .map(|l| format!("\x1b[1m{l}\x1b[0m"))
+                .collect();
+            for (i, item) in items.iter().enumerate().skip(top).take(height) {
+                let text = truncate(item, width.saturating_sub(4));
+                lines.push(if i == cur {
+                    format!("\x1b[36;1m❯ {text}\x1b[0m")
+                } else {
+                    format!("  {text}")
+                });
+            }
+            if items.len() > height {
+                lines.push(format!("\x1b[2m  ({}/{})\x1b[0m", cur + 1, items.len()));
+            }
+            if let Some(text) = help(cur) {
+                for line in wrap(&text, width.saturating_sub(2)) {
+                    lines.push(format!("\x1b[2m  {line}\x1b[0m"));
+                }
+            }
+            lines.push(format!("\x1b[2m{}\x1b[0m", KEYS_HINT.get(self.lang)));
+            self.erase(drawn)?;
+            for line in &lines {
+                write!(self.out, "{line}\r\n")?;
+            }
+            self.out.flush()?;
+            drawn = lines.len();
+            match self.key()? {
+                Key::Up => cur = cur.checked_sub(1).unwrap_or(items.len() - 1),
+                Key::Down => cur = (cur + 1) % items.len(),
+                Key::Home => cur = 0,
+                Key::End => cur = items.len() - 1,
+                Key::Digit(n) if n <= items.len() => cur = n - 1,
+                Key::Enter => break Picked::Item(cur),
+                Key::Back => break Picked::Back,
+                Key::Eof => break Picked::End,
+                Key::Digit(_) | Key::Other => {}
+            }
+        };
+        self.erase(drawn)?;
+        if let Picked::Item(i) = picked {
+            let line = truncate(&format!("{title} › {}", items[i]), width);
+            write!(self.out, "{line}\r\n")?;
+        }
+        write!(self.out, "\x1b[?25h")?;
+        self.out.flush()?;
+        Ok(picked)
+    }
+
+    /// Clears the `lines` just written above the cursor.
+    fn erase(&mut self, lines: usize) -> Result<()> {
+        if lines > 0 {
+            write!(self.out, "\x1b[{lines}A\r\x1b[J")?;
+        }
+        Ok(())
+    }
+
+    /// A yes/no question. `question` may end in a typed hint such as
+    /// "[Y/n]: ", which the menu leaves out. `None` when input ended.
+    pub(crate) fn confirm(&mut self, question: &str, default_yes: bool) -> Result<Option<bool>> {
+        if !self.arrows {
+            let Some(answer) = self.ask(question)? else {
+                return Ok(None);
+            };
+            let answer = answer.to_lowercase();
+            return Ok(Some(if default_yes {
+                !matches!(answer.as_str(), "n" | "no" | "否" | "不")
+            } else {
+                matches!(answer.as_str(), "y" | "yes" | "是" | "要")
+            }));
+        }
+        let title = question
+            .rsplit_once('[')
+            .map_or(question, |(q, _)| q)
+            .trim_end();
+        let items = [YES.get(self.lang).to_owned(), NO.get(self.lang).to_owned()];
+        Ok(
+            match self.select(title, &items, usize::from(!default_yes), &|_| None)? {
+                Picked::Item(i) => Some(i == 0),
+                Picked::Back => Some(false),
+                Picked::End => None,
+            },
+        )
+    }
+}
+
+/// Raw input (no line editing, echo or signals) on stdin until dropped.
+struct RawMode(Option<libc::termios>);
+
+impl RawMode {
+    fn new() -> Self {
+        // SAFETY: termios is plain data; tcgetattr fills it or fails.
+        unsafe {
+            let mut term: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut term) != 0 {
+                return Self(None);
+            }
+            let saved = term;
+            term.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+            term.c_cc[libc::VMIN] = 1;
+            term.c_cc[libc::VTIME] = 0;
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &term);
+            Self(Some(saved))
+        }
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        if let Some(saved) = &self.0 {
+            // SAFETY: restores the attributes read in `new`.
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, saved);
+            }
+        }
+    }
+}
+
+/// Columns and rows of the terminal on stdout.
+fn terminal_size() -> (usize, usize) {
+    // SAFETY: winsize is plain data; the ioctl fills it or fails.
+    unsafe {
+        let mut size: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) == 0 && size.ws_col > 0 {
+            (usize::from(size.ws_col), usize::from(size.ws_row.max(10)))
+        } else {
+            (80, 24)
+        }
+    }
+}
+
+/// Columns a character takes: 2 for CJK and emoji, else 1.
+fn char_width(c: char) -> usize {
+    match u32::from(c) {
+        0x1100..=0x115F
+        | 0x2E80..=0x303E
+        | 0x3041..=0x33FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xA000..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1FAFF
+        | 0x20000..=0x3FFFD => 2,
+        0xFE00..=0xFE0F | 0x200B..=0x200F => 0,
+        _ => 1,
+    }
+}
+
+pub(crate) fn text_width(text: &str) -> usize {
+    text.chars().map(char_width).sum()
+}
+
+/// `text` cut to `width` columns, ending in … when cut.
+fn truncate(text: &str, width: usize) -> String {
+    if text_width(text) <= width {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = char_width(c);
+        if used + w + 1 > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+/// `text` broken into lines of at most `width` columns, at spaces when it can.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.lines() {
+        let mut line = String::new();
+        let mut used = 0;
+        for c in paragraph.chars() {
+            let w = char_width(c);
+            if used + w > width {
+                // Back to the last space, when the line has one.
+                match line.rfind(' ').filter(|&i| i > 0) {
+                    Some(i) => {
+                        let rest = line.split_off(i + 1);
+                        lines.push(line.trim_end().to_owned());
+                        line = rest;
+                    }
+                    None => lines.push(std::mem::take(&mut line)),
+                }
+                used = text_width(&line);
+            }
+            line.push(c);
+            used += w;
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 /// Disables terminal echo on stdin until dropped.
@@ -706,10 +1046,14 @@ impl Drop for EchoOff {
 pub fn terminal(lang: Lang) -> Term<std::io::StdinLock<'static>, std::io::Stdout> {
     // SAFETY: isatty has no preconditions.
     let hide = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+    // SAFETY: as above.
+    let tty = hide && unsafe { libc::isatty(libc::STDOUT_FILENO) } == 1;
     Term {
         input: std::io::stdin().lock(),
         out: std::io::stdout(),
         hide_secrets: hide,
+        arrows: tty,
+        raw: tty,
         lang,
     }
 }
@@ -740,6 +1084,9 @@ pub fn edit<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<
         term.tell(BROKEN, &[&format!("{err:#}")])?;
     }
     let original = doc.to_string();
+    if term.arrows {
+        return edit_with_arrows(path, doc, &original, term);
+    }
     term.tell(EDITING, &[&path.display().to_string()])?;
     term.tell(HOW, &[])?;
     loop {
@@ -769,6 +1116,187 @@ pub fn edit<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<
             },
         }
     }
+}
+
+/// The menus picked with the arrow keys: sections, then fields.
+fn edit_with_arrows<R: BufRead, W: Write>(
+    path: &Path,
+    mut doc: DocumentMut,
+    original: &str,
+    term: &mut Term<R, W>,
+) -> Result<()> {
+    let title = EDITING.fill(term.lang, &[&path.display().to_string()]);
+    let mut cur = 0;
+    loop {
+        let mut items: Vec<String> = SECTIONS
+            .iter()
+            .map(|s| s.title.get(term.lang).to_owned())
+            .collect();
+        items.push(SAVE.get(term.lang).into());
+        items.push(QUIT.get(term.lang).into());
+        let changed = doc.to_string() != original;
+        let shown = if changed {
+            format!("{title} · {}", UNSAVED.get(term.lang))
+        } else {
+            title.clone()
+        };
+        match term.select(&shown, &items, cur, &|_| None)? {
+            Picked::Item(i) if i < SECTIONS.len() => {
+                cur = i;
+                if !section_with_arrows(&mut doc, &SECTIONS[i], term)? {
+                    return finish(path, &doc, original, term, false);
+                }
+            }
+            Picked::Item(i) => {
+                return finish(path, &doc, original, term, i == SECTIONS.len());
+            }
+            Picked::Back if changed => {
+                let choices = [
+                    SAVE.get(term.lang).to_owned(),
+                    QUIT.get(term.lang).to_owned(),
+                    KEEP_EDITING.get(term.lang).to_owned(),
+                ];
+                match term.select(UNSAVED.get(term.lang), &choices, 0, &|_| None)? {
+                    Picked::Item(0) => return finish(path, &doc, original, term, true),
+                    Picked::Item(1) | Picked::End => {
+                        return finish(path, &doc, original, term, false);
+                    }
+                    _ => {}
+                }
+            }
+            Picked::Back | Picked::End => return finish(path, &doc, original, term, false),
+        }
+    }
+}
+
+/// A section's fields with their values; Enter edits one. `false` when
+/// input ended.
+fn section_with_arrows<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    section: &'static Section,
+    term: &mut Term<R, W>,
+) -> Result<bool> {
+    let lang = term.lang;
+    let title = format!("[{}]", section.title.get(lang));
+    let label_width = section
+        .fields
+        .iter()
+        .map(|f| text_width(f.label.get(lang)))
+        .max()
+        .unwrap_or(0);
+    let mut cur = 0;
+    loop {
+        let mut items: Vec<String> = section
+            .fields
+            .iter()
+            .map(|f| {
+                let label = f.label.get(lang);
+                let pad = " ".repeat(label_width - text_width(label));
+                format!("{label}{pad}  {}", describe(doc, f, lang))
+            })
+            .collect();
+        items.push(BACK.get(lang).into());
+        let help = |i: usize| section.fields.get(i).map(|f| f.help.get(lang).to_owned());
+        match term.select(&title, &items, cur, &help)? {
+            Picked::Item(i) if i < section.fields.len() => {
+                if !field_with_arrows(doc, &section.fields[i], term)? {
+                    return Ok(false);
+                }
+                cur = i;
+            }
+            Picked::Item(_) | Picked::Back => return Ok(true),
+            Picked::End => return Ok(false),
+        }
+    }
+}
+
+/// Edits one field: a menu for choices and yes/no, typed text otherwise.
+fn field_with_arrows<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    field: &Field,
+    term: &mut Term<R, W>,
+) -> Result<bool> {
+    let lang = term.lang;
+    let label = field.label.get(lang);
+    let current = describe(doc, field, lang);
+    let menu: Option<(Vec<String>, Vec<Value>)> = match field.kind {
+        Kind::Choice(choices) => Some((
+            choices.iter().map(|c| (*c).to_owned()).collect(),
+            choices.iter().map(|c| Value::from(*c)).collect(),
+        )),
+        Kind::Bool => Some((
+            vec![YES.get(lang).into(), NO.get(lang).into()],
+            vec![Value::from(true), Value::from(false)],
+        )),
+        _ => None,
+    };
+    if let Some((mut items, values)) = menu {
+        let start = values
+            .iter()
+            .position(|v| v.to_string().trim().trim_matches('"') == current)
+            .unwrap_or(0);
+        items.push(RESET.get(lang).into());
+        let help = |_| Some(field.help.get(lang).to_owned());
+        match term.select(&format!("{label} [{current}]"), &items, start, &help)? {
+            Picked::Item(i) => {
+                change(doc, field.path, values.get(i).cloned(), term)?;
+            }
+            Picked::Back => {}
+            Picked::End => return Ok(false),
+        }
+        return Ok(true);
+    }
+    term.say(&format!("  {}", field.help.get(lang)))?;
+    term.say(&format!("  {}", TYPE_HOW.get(lang)))?;
+    let prompt = format!("{label} [{current}]: ");
+    loop {
+        let input = match field.kind {
+            Kind::Secret { .. } => term.secret(&prompt)?,
+            _ => term.ask(&prompt)?,
+        };
+        let Some(input) = input else {
+            return Ok(false);
+        };
+        let value = match input.as_str() {
+            "" => return Ok(true),
+            "-" => None,
+            text => match value_for(field.kind, text, lang) {
+                Ok(value) => Some(value),
+                Err(err) => {
+                    term.say(&format!("  {err:#}"))?;
+                    continue;
+                }
+            },
+        };
+        if change(doc, field.path, value, term)? {
+            return Ok(true);
+        }
+    }
+}
+
+/// Sets (or with `None` resets) a value, undoing it when the file would no
+/// longer load. `false`, with the reason said, when it was undone.
+fn change<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    path: &[&str],
+    value: Option<Value>,
+    term: &mut Term<R, W>,
+) -> Result<bool> {
+    let before = doc.clone();
+    let reset = value.is_none();
+    match value {
+        Some(value) => set(doc, path, value),
+        None => remove(doc, path),
+    }
+    if let Err(err) = parse(doc) {
+        *doc = before;
+        term.tell(
+            if reset { CANNOT_RESET } else { NOT_ACCEPTED },
+            &[&format!("{err:#}")],
+        )?;
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn finish<R: BufRead, W: Write>(
@@ -867,11 +1395,7 @@ fn edit_section<R: BufRead, W: Write>(
                 continue;
             }
             "-" => {
-                let before = doc.clone();
-                remove(doc, field.path);
-                if let Err(err) = parse(doc) {
-                    *doc = before;
-                    term.tell(CANNOT_RESET, &[&format!("{err:#}")])?;
+                if !change(doc, field.path, None, term)? {
                     continue;
                 }
             }
@@ -883,11 +1407,7 @@ fn edit_section<R: BufRead, W: Write>(
                         continue;
                     }
                 };
-                let before = doc.clone();
-                set(doc, field.path, value);
-                if let Err(err) = parse(doc) {
-                    *doc = before;
-                    term.tell(NOT_ACCEPTED, &[&format!("{err:#}")])?;
+                if !change(doc, field.path, Some(value), term)? {
                     continue;
                 }
             }
@@ -1039,6 +1559,8 @@ mod tests {
             input: script.as_bytes(),
             out: Vec::new(),
             hide_secrets: false,
+            arrows: false,
+            raw: false,
             lang,
         };
         edit(path, &mut term).unwrap();
@@ -1107,7 +1629,7 @@ mod tests {
     fn generates_a_token_and_sets_nested_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        drive(&path, "4\n\n+\n3\n\n\n\n\nopenrouter\ns\n");
+        drive(&path, "4\n\n+\n\n3\n\n\n\n\nopenrouter\ns\n");
         let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let token = config.gateway.token.unwrap();
         assert_eq!(token.len(), 48);
@@ -1179,6 +1701,14 @@ mod tests {
             FROM_ENV,
             IN_FILE,
             NOT_SET,
+            KEYS_HINT,
+            YES,
+            NO,
+            BACK,
+            RESET,
+            UNSAVED,
+            KEEP_EDITING,
+            TYPE_HOW,
         ];
         for section in SECTIONS {
             texts.push(section.title);
@@ -1188,6 +1718,91 @@ mod tests {
         }
         crate::i18n::assert_complete(&texts);
         assert_eq!(SAVED.fill(Lang::Zh, &["a.toml"]), "已保存 a.toml。");
+    }
+
+    fn keys(script: &str) -> Term<&[u8], Vec<u8>> {
+        Term {
+            input: script.as_bytes(),
+            out: Vec::new(),
+            hide_secrets: false,
+            arrows: true,
+            raw: false,
+            lang: Lang::En,
+        }
+    }
+
+    #[test]
+    fn menus_move_with_arrows_and_wrap_around() {
+        let items: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let pick = |script: &str| keys(script).select("T", &items, 0, &|_| None).unwrap();
+        assert_eq!(pick("\x1b[B\r"), Picked::Item(1));
+        assert_eq!(pick("\x1b[B\x1b[B\x1b[B\r"), Picked::Item(0));
+        assert_eq!(pick("\x1b[A\r"), Picked::Item(2));
+        assert_eq!(pick("jjk\r"), Picked::Item(1));
+        assert_eq!(pick("\x1b[F\x1b[H\r"), Picked::Item(0));
+        assert_eq!(pick("3\r"), Picked::Item(2));
+        assert_eq!(pick("9x\r"), Picked::Item(0));
+        assert_eq!(pick("q"), Picked::Back);
+        assert_eq!(pick("\x1b\x1b"), Picked::Back);
+        assert_eq!(pick(""), Picked::End);
+        assert_eq!(pick("\x03"), Picked::End);
+        let mut term = keys("j\r");
+        let help = |i: usize| Some(format!("help for {i}"));
+        term.select("Title", &items, 0, &help).unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(
+            out.contains("help for 0") && out.contains("help for 1"),
+            "{out}"
+        );
+        assert!(out.ends_with("Title › b\r\n\x1b[?25h"), "{out:?}");
+        let mut term = keys("j\r");
+        assert_eq!(term.confirm("Go on? [Y/n]: ", true).unwrap(), Some(false));
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(out.contains("Go on? › No"), "{out:?}");
+    }
+
+    #[test]
+    fn wraps_and_cuts_by_display_width() {
+        assert_eq!(text_width("中文ab"), 6);
+        assert_eq!(truncate("abcdef", 4), "abc…");
+        assert_eq!(truncate("中文中文", 5), "中文…");
+        assert_eq!(wrap("one two three", 8), ["one two", "three"]);
+        assert_eq!(wrap("中文中文中文", 4), ["中文", "中文", "中文"]);
+    }
+
+    #[test]
+    fn edits_with_arrow_menus() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Tools (3): shell → allow (1). Back. Gateway (4): bind typed, token
+        // generated. Back. End, up: "Save and exit".
+        let script = "3\r\r1\rq4\r\r127.0.0.1:1\nj\r+\nq\x1b[F\x1b[A\r";
+        let mut term = keys(script);
+        edit(&path, &mut term).unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(out.contains("Saved"), "{out}");
+        assert!(out.contains("Shell commands [ask] › allow"), "{out}");
+        let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config.tools.shell, crate::config::Permission::Allow);
+        assert_eq!(config.gateway.bind, "127.0.0.1:1");
+        assert_eq!(config.gateway.token.unwrap().len(), 48);
+    }
+
+    #[test]
+    fn going_back_with_changes_asks_to_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Language: zh; back to the main menu; back again: "Save and exit".
+        let mut term = keys("1\r\r2\rqq\r");
+        edit(&path, &mut term).unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(out.contains("There are unsaved changes."), "{out}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("language = \"zh\""), "{text}");
+        // Quitting from that question saves nothing.
+        let other = dir.path().join("other.toml");
+        edit(&other, &mut keys("1\r\r2\rqqj\r")).unwrap();
+        assert!(!other.exists());
     }
 
     #[test]

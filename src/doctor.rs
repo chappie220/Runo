@@ -321,12 +321,12 @@ const NO_OWNERS: Tr = tr(
 );
 const ACCESS_OK: Tr = tr("owners: {}", "owner：{}");
 const SERVICE_INSTALLED: Tr = tr(
-    "installed; log: /var/log/openclaw-rs.log. It runs as its own account with that account's config, which may not be this one",
-    "已安装；日志：/var/log/openclaw-rs.log。服务以自己的账户运行，用的是那个账户的配置，不一定是这一份",
+    "{}. A system service runs as its own account with that account's config, which may not be this one",
+    "{}。系统服务以自己的账户运行，用的是那个账户的配置，不一定是这一份",
 );
 const SERVICE_MISSING: Tr = tr(
-    "not installed (doas openclaw-rs service install --user <account>)",
-    "未安装（doas openclaw-rs service install --user <账户>）",
+    "not installed: openclaw-rs service install (or service start to run it now)",
+    "未安装：openclaw-rs service install（或用 service start 立即运行）",
 );
 const SUMMARY_OK: Tr = tr("All good: no problems found.", "一切正常：没有发现问题。");
 const SUMMARY: Tr = tr("{} problem(s), {} warning(s).", "{} 个问题，{} 个警告。");
@@ -589,10 +589,9 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
     report.add(update_findings(&config, offline).await);
 
     report.section(S_SERVICE);
-    report.add([if Path::new("/etc/init.d/openclaw-rs").exists() {
-        ok(SERVICE_INSTALLED.now())
-    } else {
-        info(SERVICE_MISSING.now())
+    report.add([match crate::service::describe() {
+        Some(how) => ok(SERVICE_INSTALLED.with(&[&how])),
+        None => info(SERVICE_MISSING.now()),
     }]);
 
     Ok(finish(&report))

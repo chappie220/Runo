@@ -21,6 +21,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::access::{self, AccessConfig, Actor};
 use crate::agent::{Agent, AgentEvent, Cancel, Model, Tools};
 use crate::attachments::Upload;
+use crate::config::WebMode;
 use crate::guide::{self, FollowUp, Guide, Guided, Inbox};
 use crate::i18n::chat;
 use crate::llm::Role;
@@ -353,9 +354,22 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         }
     }
 
-    pub fn router(self: &Shared<M, T>) -> Router {
-        Router::new()
-            .route("/", get(|| async { Html(INDEX_HTML) }))
+    pub fn router(self: &Shared<M, T>, web: WebMode) -> Router {
+        let router = Router::new();
+        let router = if web == WebMode::Ui {
+            router.route("/", get(|| async { Html(INDEX_HTML) }))
+        } else {
+            router.route(
+                "/",
+                get(|| async {
+                    (
+                        StatusCode::NOT_FOUND,
+                        "The Web UI is off (gateway.web = \"api\"); the WebSocket API is at /ws.",
+                    )
+                }),
+            )
+        };
+        router
             .route("/health", get(|| async { "ok" }))
             .route("/ws", get(ws_upgrade::<M, T>))
             .with_state(self.clone())
@@ -586,11 +600,21 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
     }
 }
 
-/// Refuses an unauthenticated listener that other hosts can reach.
+/// Refuses an unauthenticated listener that other hosts can reach. With
+/// `WebMode::Off` nothing listens: it waits for Ctrl-C or SIGTERM while the
+/// channels and the scheduler run.
 pub async fn serve<M: Model + 'static, T: Tools + 'static>(
     gateway: Shared<M, T>,
     bind: &str,
+    web: WebMode,
 ) -> Result<()> {
+    if web == WebMode::Off {
+        eprintln!(
+            "gateway running without HTTP (gateway.web = \"off\"): QQ, email and scheduled jobs only"
+        );
+        shutdown().await;
+        return Ok(());
+    }
     let addr: SocketAddr = bind
         .parse()
         .with_context(|| format!("invalid gateway.bind {bind:?}"))?;
@@ -603,19 +627,37 @@ pub async fn serve<M: Model + 'static, T: Tools + 'static>(
         .await
         .with_context(|| format!("cannot listen on {addr}"))?;
     eprintln!(
-        "gateway listening on http://{addr}{}",
+        "gateway listening on {}{}",
+        match web {
+            WebMode::Ui => format!("http://{addr}"),
+            _ => format!("ws://{addr}/ws (Web UI off)"),
+        },
         if gateway.token.is_some() {
             " (token required)"
         } else {
             ""
         }
     );
-    axum::serve(listener, gateway.router())
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+    axum::serve(listener, gateway.router(web))
+        .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())
+}
+
+/// Ctrl-C, or SIGTERM from a supervisor or `service stop`.
+async fn shutdown() {
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut term) => {
+                term.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = term => {}
+    }
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -793,7 +835,7 @@ fn is_channel_session(name: &str) -> bool {
     name.starts_with("qq:") || name.starts_with("mail:")
 }
 
-fn validate_session(name: &str) -> Result<(), String> {
+pub(crate) fn validate_session(name: &str) -> Result<(), String> {
     let count = name.chars().count();
     if count == 0 || count > MAX_SESSION_NAME || name.chars().any(char::is_control) {
         return Err(format!(
