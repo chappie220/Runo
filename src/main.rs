@@ -30,6 +30,7 @@ mod mcp;
 mod memory;
 mod onboard;
 mod qq;
+mod reasoning;
 mod review;
 mod search;
 mod service;
@@ -146,6 +147,9 @@ enum Command {
         /// Forget the sign-in.
         #[arg(long, conflicts_with = "import")]
         logout: bool,
+        /// Sign in with a code entered in a browser on any device.
+        #[arg(long, conflicts_with_all = ["import", "status", "logout"])]
+        device: bool,
     },
     /// Install the latest release from GitHub, or go back to the previous binary.
     Update {
@@ -457,6 +461,7 @@ async fn run(cli: Cli) -> Result<()> {
         import,
         status,
         logout,
+        device,
     } = &cli.command
     {
         let action = match import {
@@ -465,6 +470,7 @@ async fn run(cli: Cli) -> Result<()> {
             Some(path) => {
                 chatgpt::Action::Import(path.clone().unwrap_or_else(chatgpt::codex_auth_file))
             }
+            None if *device => chatgpt::Action::Device,
             None => chatgpt::Action::Login,
         };
         return chatgpt::run(action, &config_path, &state).await;
@@ -588,7 +594,18 @@ async fn run(cli: Cli) -> Result<()> {
                 gateway.add_notifier(bot.clone());
                 tokio::spawn(zulip::run(bot, gateway.clone()));
             }
-            if config.any_channel() && config.access.owners.is_empty() {
+            let unowned: Vec<&str> = [
+                ("qq", config.qq.enabled),
+                ("feishu", config.feishu.enabled),
+                ("zulip", config.zulip.enabled),
+            ]
+            .into_iter()
+            .filter(|(app, on)| *on && config.access.unowned(app))
+            .map(|(app, _)| app)
+            .collect();
+            if config.access.first_chat_owner && !unowned.is_empty() {
+                eprintln!("{}", text::CLAIMABLE.with(&[&unowned.join(", ")]));
+            } else if config.any_channel() && config.access.owners.is_empty() {
                 eprintln!(
                     "{}",
                     text::NO_OWNERS.with(&[&format!("{:?}", config.access.guest)])
@@ -864,7 +881,8 @@ async fn build_agent(
         .then(|| voice::Transcriber::new(&side, config.agent.audio_model.as_deref(), &api_key))
         .transpose()?;
     Ok(Agent {
-        model: llm::Client::new(&config.model, api_key)?,
+        model: llm::Client::new(&config.model, api_key)?
+            .with_reasoning(reasoning::effort(config, state).await),
         summarizer,
         vision,
         voice,

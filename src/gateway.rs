@@ -170,7 +170,11 @@ pub struct Gateway<M: Model, T: Tools> {
     notifiers: Mutex<Vec<Arc<dyn Notifier>>>,
     agent: Arc<Agent<M, T>>,
     token: Option<String>,
-    access: AccessConfig,
+    /// Who may do what, unless the live settings say (they do once loaded
+    /// from a file, so a claimed owner is saved there).
+    access: Mutex<AccessConfig>,
+    /// One claim of ownership at a time.
+    claiming: Mutex<()>,
     updates: broadcast::Sender<ServerMsg>,
     /// One turn per session at a time; later sends queue behind it.
     session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -240,7 +244,8 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         Arc::new(Self {
             agent,
             token,
-            access,
+            access: Mutex::new(access),
+            claiming: Mutex::new(()),
             updates: broadcast::channel(64).0,
             notifiers: Mutex::new(Vec::new()),
             session_locks: Mutex::new(HashMap::new()),
@@ -414,9 +419,48 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         }
     }
 
-    /// The actor for a sender a channel authenticated as `sender`.
+    fn access(&self) -> AccessConfig {
+        crate::live::read(|c| c.access.clone()).unwrap_or_else(|| {
+            self.access
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        })
+    }
+
+    /// The actor for a sender a channel authenticated as `sender`. With
+    /// `access.first_chat_owner`, the first person to write privately on a
+    /// chat app without an owner becomes its owner, saved to config.toml.
     pub fn actor(&self, sender: &str, session: &str) -> Actor {
-        self.access.resolve(sender, session)
+        let access = self.access();
+        if !access.claimable(sender, session) {
+            return access.resolve(sender, session);
+        }
+        let _one = self.claiming.lock().unwrap_or_else(|p| p.into_inner());
+        // Someone else may have claimed it meanwhile.
+        let mut access = self.access();
+        if access.claimable(sender, session) {
+            let saved = match crate::live::path() {
+                Some(path) => crate::setup::add_owner(&path, sender)
+                    .and_then(|()| crate::live::reload())
+                    .map(|()| self.access()),
+                None => {
+                    let mut own = self.access.lock().unwrap_or_else(|p| p.into_inner());
+                    own.owners.push(sender.to_owned());
+                    Ok(own.clone())
+                }
+            };
+            match saved {
+                Ok(now) => {
+                    eprintln!(
+                        "access: {sender} wrote first and is now an owner (access.first_chat_owner)"
+                    );
+                    access = now;
+                }
+                Err(err) => eprintln!("access: cannot make {sender} an owner: {err:#}"),
+            }
+        }
+        access.resolve(sender, session)
     }
 
     /// Runs a turn with nobody to approve tools, queued behind other turns of the session.
@@ -1120,6 +1164,46 @@ mod tests {
             on_text("working");
             std::future::pending().await
         }
+    }
+
+    #[tokio::test]
+    async fn the_first_private_chat_on_an_app_claims_it_when_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let tools = crate::tools::BuiltinTools::new(
+            dir.path().to_owned(),
+            crate::config::ToolsConfig::default(),
+            store.clone(),
+        )
+        .unwrap();
+        let agent = Arc::new(Agent {
+            model: Hang,
+            summarizer: None,
+            vision: None,
+            voice: None,
+            tools,
+            store,
+            config: crate::config::AgentConfig::default(),
+        });
+        let access: AccessConfig =
+            toml::from_str("owners = [\"zulip:z@example.org\"]\nfirst_chat_owner = true").unwrap();
+        let gateway = Gateway::new(agent, None, access);
+        // A group message claims nothing, the first private chat does.
+        assert!(!gateway.actor("qq:EVE", "qq:group:G").owner);
+        assert!(gateway.actor("qq:ALICE", "qq:c2c:ALICE").owner);
+        assert!(gateway.actor("qq:ALICE", "qq:group:G").owner);
+        assert!(!gateway.actor("qq:BOB", "qq:c2c:BOB").owner);
+        // Each app has its own owner; Zulip had one already.
+        assert!(gateway.actor("feishu:ou_b", "feishu:dm:ou_b").owner);
+        assert!(
+            !gateway
+                .actor("zulip:y@example.org", "zulip:dm:y@example.org")
+                .owner
+        );
+        assert_eq!(
+            gateway.access().owners,
+            ["zulip:z@example.org", "qq:ALICE", "feishu:ou_b"]
+        );
     }
 
     #[tokio::test]

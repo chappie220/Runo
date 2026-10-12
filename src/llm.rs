@@ -224,6 +224,8 @@ struct Request<'a> {
     tools: &'a [ToolSpec],
     stream: bool,
     stream_options: StreamOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -339,6 +341,16 @@ fn retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504 | 529)
 }
 
+/// Where a ChatGPT model is called: the Codex backend, unless `base_url`
+/// points elsewhere (tests, a proxy).
+pub(crate) fn chatgpt_base(config: &ModelConfig) -> &str {
+    if config.base_url.trim_end_matches('/') == DEFAULT_BASE_URL {
+        crate::chatgpt::ENDPOINT
+    } else {
+        config.base_url.as_str()
+    }
+}
+
 impl Client {
     pub fn new(config: &ModelConfig, api_key: String) -> Result<Self> {
         let http = reqwest::Client::builder()
@@ -377,9 +389,7 @@ impl Client {
         };
         let base_url = match config.provider {
             // The default base URL is OpenRouter's; ChatGPT has its own.
-            Provider::Chatgpt if config.base_url.trim_end_matches('/') == DEFAULT_BASE_URL => {
-                crate::chatgpt::ENDPOINT
-            }
+            Provider::Chatgpt => chatgpt_base(config),
             _ => config.base_url.as_str(),
         };
         Ok(Self {
@@ -392,8 +402,14 @@ impl Client {
             max_retries: config.max_retries,
             retry_base: Duration::from_secs(1),
             chatgpt,
-            reasoning_effort: config.reasoning_effort.clone(),
+            reasoning_effort: None,
         })
+    }
+
+    /// Thinks at `effort` (`low`, …); `None` leaves it to the model.
+    pub fn with_reasoning(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort;
+        self
     }
 
     /// A ChatGPT client signed in through `auth`, for tests.
@@ -428,6 +444,10 @@ impl Client {
                 stream_options: StreamOptions {
                     include_usage: true,
                 },
+                reasoning: self
+                    .reasoning_effort
+                    .as_deref()
+                    .map(|effort| serde_json::json!({ "effort": effort })),
             })?
         };
         self.send(&body, on_text).await

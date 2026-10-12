@@ -43,6 +43,13 @@ enum Kind {
         env: &'static str,
         generate: bool,
     },
+    /// Signs in to ChatGPT, in a browser or with a device code, then sets
+    /// the provider at `path` to it.
+    SignIn {
+        device: bool,
+    },
+    /// Removes one chat app's owner from the list at `path`.
+    Revoke,
 }
 
 const BROKEN: Tr = tr(
@@ -57,6 +64,7 @@ const HOW: Tr = tr(
 const SAVE: Tr = tr("Save and exit", "保存并退出");
 const QUIT: Tr = tr("Quit without saving", "不保存退出");
 const PICK_MENU: Tr = tr("Pick a number, s or q.", "请输入编号、s 或 q。");
+const BACK_PROMPT: Tr = tr("Number, Enter goes back: ", "输入编号，回车返回：");
 const NO_CHANGES: Tr = tr("No changes.", "没有改动。");
 const NOT_SAVED: Tr = tr("Quit without saving.", "已退出，未保存。");
 const SAVED: Tr = tr("Saved {}.", "已保存 {}。");
@@ -100,6 +108,28 @@ const NONE: Tr = tr("none", "无");
 const FROM_ENV: Tr = tr("from ${}", "来自 ${}");
 const IN_FILE: Tr = tr("set in this file", "已在本文件中设置");
 const NOT_SET: Tr = tr("not set", "未设置");
+const NOT_SIGNED_IN: Tr = tr("not signed in", "未登录");
+const NO_SIGN_IN: Tr = tr(
+    "Signing in is not possible here; run `openclaw-rs login`.",
+    "这里无法登录，请运行 `openclaw-rs login`。",
+);
+const SIGN_IN_FAILED: Tr = tr("Could not sign in: {}", "登录失败：{}");
+const USE_SIGN_IN: Tr = tr("Use this sign-in: {}", "使用当前登录：{}");
+const SIGN_IN_AGAIN: Tr = tr("Sign in again", "重新登录");
+const ON_CHATGPT: Tr = tr(
+    "The model runs on your ChatGPT subscription once saved: model.provider = \"chatgpt\", model.model = \"{}\".",
+    "保存后模型使用你的 ChatGPT 订阅：model.provider = \"chatgpt\"，model.model = \"{}\"。",
+);
+const NO_CHAT_OWNERS: Tr = tr(
+    "No chat app (QQ, Feishu, Zulip) has an owner.",
+    "QQ、飞书、Zulip 都还没有所有者。",
+);
+const REVOKED: Tr = tr("Revoked {}.", "已撤销 {}。");
+const REVOKE_TITLE: Tr = tr("Revoke which owner?", "撤销哪个所有者？");
+const REVOKE_WHICH: Tr = tr(
+    "Revoke which? A number or id, Enter for none: ",
+    "撤销哪一个？输入编号或 id，回车跳过：",
+);
 
 struct Field {
     path: &'static [&'static str],
@@ -113,886 +143,979 @@ struct Section {
     fields: &'static [Field],
 }
 
+/// A first-level menu entry: related sections, e.g. the chat apps.
+struct Group {
+    title: Tr,
+    sections: &'static [Section],
+}
+
+/// Every section, in menu order.
+fn sections() -> impl Iterator<Item = &'static Section> {
+    GROUPS.iter().flat_map(|g| g.sections)
+}
+
 const PERMISSION: &[&str] = &["allow", "ask", "deny"];
 const DECIDERS: &[&str] = &["off", "openrouter", "openrouter-chat", "typesafe"];
 const SECURITY: &[&str] = &["tls", "starttls", "none"];
 
-const SECTIONS: &[Section] = &[
-    Section {
+const GROUPS: &[Group] = &[
+    Group {
         title: tr("Language", "语言"),
-        fields: &[Field {
-            path: &["language"],
-            label: tr("Language", "语言"),
-            help: tr(
-                "Language of CLI output, this editor and the program's own chat replies (/compact, /identity, errors). Reset (-) to follow the system locale. The Web UI follows the browser and has its own switch.",
-                "CLI 输出、本编辑器和程序自己的聊天回复（/compact、/identity、错误提示）的语言。输入 - 恢复为跟随系统语言。Web UI 跟随浏览器语言，并有自己的切换按钮。",
-            ),
-            kind: Kind::Choice(&["en", "zh"]),
+        sections: &[Section {
+            title: tr("Language", "语言"),
+            fields: &[Field {
+                path: &["language"],
+                label: tr("Language", "语言"),
+                help: tr(
+                    "Language of CLI output, this editor and the program's own chat replies (/compact, /identity, errors). Reset (-) to follow the system locale. The Web UI follows the browser and has its own switch.",
+                    "CLI 输出、本编辑器和程序自己的聊天回复（/compact、/identity、错误提示）的语言。输入 - 恢复为跟随系统语言。Web UI 跟随浏览器语言，并有自己的切换按钮。",
+                ),
+                kind: Kind::Choice(&["en", "zh"]),
+            }],
         }],
     },
-    Section {
-        title: tr("Model and context", "模型与上下文"),
-        fields: &[
-            Field {
-                path: &["model", "model"],
-                label: tr("Model", "模型"),
-                help: tr(
-                    "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5; with chatgpt, a model your plan offers in Codex, e.g. gpt-5 or gpt-5-codex.",
-                    "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5；用 chatgpt 时填你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex。",
-                ),
-                kind: Kind::Model(Need::Tools),
+    Group {
+        title: tr("Model", "模型"),
+        sections: &[
+            Section {
+                title: tr("Provider and sign-in", "模型提供方与登录"),
+                fields: &[
+                    Field {
+                        path: &["model", "provider"],
+                        label: tr("Provider", "模型提供方"),
+                        help: tr(
+                            "openrouter: an OpenRouter key; chatgpt: your ChatGPT plan, signed in below (which also sets this).",
+                            "openrouter：用 OpenRouter key；chatgpt：用你的 ChatGPT 订阅，用下面的登录（登录时会自动设好这一项）。",
+                        ),
+                        kind: Kind::Choice(&["openrouter", "chatgpt"]),
+                    },
+                    Field {
+                        path: &["model", "api_key"],
+                        label: tr("OpenRouter API key", "OpenRouter API key"),
+                        help: tr(
+                            "Stored in plain text in config.toml (mode 0600); OPENROUTER_API_KEY wins when set.",
+                            "以明文存在 config.toml（权限 0600）；设了 OPENROUTER_API_KEY 时以环境变量为准。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "OPENROUTER_API_KEY",
+                            generate: false,
+                        },
+                    },
+                    Field {
+                        path: &["model", "provider"],
+                        label: tr("Sign in to ChatGPT (browser)", "登录 ChatGPT（浏览器）"),
+                        help: tr(
+                            "Signs in with your ChatGPT account in a browser (as `openclaw-rs login`) and switches the model to your subscription.",
+                            "在浏览器里用你的 ChatGPT 账号登录（和 `openclaw-rs login` 一样），并把模型切换到你的订阅。",
+                        ),
+                        kind: Kind::SignIn { device: false },
+                    },
+                    Field {
+                        path: &["model", "provider"],
+                        label: tr("Sign in to ChatGPT (device code)", "登录 ChatGPT（设备码）"),
+                        help: tr(
+                            "Shows a code to enter at auth.openai.com/codex/device in a browser on any device, a phone too, so nothing has to reach this machine (as `openclaw-rs login --device`); then switches the model to your subscription.",
+                            "显示一个码，在任意设备（手机也行）的浏览器里打开 auth.openai.com/codex/device 输入即可，不需要访问这台机器（和 `openclaw-rs login --device` 一样）；然后把模型切换到你的订阅。",
+                        ),
+                        kind: Kind::SignIn { device: true },
+                    },
+                    Field {
+                        path: &["model", "model"],
+                        label: tr("Model", "模型"),
+                        help: tr(
+                            "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5; with chatgpt, a model your plan offers in Codex, e.g. gpt-5 or gpt-5-codex.",
+                            "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5；用 chatgpt 时填你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex。",
+                        ),
+                        kind: Kind::Model(Need::Tools),
+                    },
+                    Field {
+                        path: &["model", "reasoning_effort"],
+                        label: tr("Thinking level", "思考档位"),
+                        help: tr(
+                            "How hard the model thinks before answering. auto (the default) reads the levels the model supports and takes the lowest from low up; off sends nothing and leaves it to the model; or pick a level.",
+                            "模型回答前思考的程度。auto（默认）读取模型支持的档位，自动选从 low 起最低的一档；off 不发送，交给模型自己决定；也可以指定一档。",
+                        ),
+                        kind: Kind::Choice(&[
+                            "auto", "off", "none", "minimal", "low", "medium", "high", "xhigh",
+                            "max",
+                        ]),
+                    },
+                    Field {
+                        path: &["model", "fallbacks"],
+                        label: tr("Fallback models", "备用模型"),
+                        help: tr(
+                            "Comma-separated; OpenRouter tries them in order when the model fails.",
+                            "用逗号分隔；主模型失败时 OpenRouter 按顺序尝试。",
+                        ),
+                        kind: Kind::List,
+                    },
+                ],
             },
-            Field {
-                path: &["model", "api_key"],
-                label: tr("OpenRouter API key", "OpenRouter API key"),
-                help: tr(
-                    "Stored in plain text in config.toml (mode 0600); OPENROUTER_API_KEY wins when set.",
-                    "以明文存在 config.toml（权限 0600）；设了 OPENROUTER_API_KEY 时以环境变量为准。",
-                ),
-                kind: Kind::Secret {
-                    env: "OPENROUTER_API_KEY",
-                    generate: false,
-                },
+            Section {
+                title: tr("Context and model calls", "上下文与模型调用"),
+                fields: &[
+                    Field {
+                        path: &["model", "max_retries"],
+                        label: tr("Retries on transient errors", "临时错误重试次数"),
+                        help: tr(
+                            "Connection errors, HTTP 408/429/5xx, and streams that fail before any text.",
+                            "连接错误、HTTP 408/429/5xx，以及还没输出文字就失败的流。",
+                        ),
+                        kind: Kind::Int,
+                    },
+                    Field {
+                        path: &["model", "prompt_cache"],
+                        label: tr("Prompt cache breakpoints", "Prompt 缓存标记"),
+                        help: tr(
+                            "auto: for anthropic/ and google/ models; on: always (e.g. openrouter/auto routing to Claude); off: never.",
+                            "auto：只对 anthropic/ 和 google/ 模型加；on：总是加（例如 openrouter/auto 会路由到 Claude 时）；off：不加。",
+                        ),
+                        kind: Kind::Choice(&["auto", "on", "off"]),
+                    },
+                    Field {
+                        path: &["agent", "context_tokens"],
+                        label: tr("Context budget", "上下文预算"),
+                        help: tr(
+                            "Per model call: system prompt, tools, summary and history. auto takes it from the model's window on OpenRouter (checked weekly), leaving room for the answer; or a count such as 128k or 1m, below the model's window.",
+                            "每次调用模型的总预算：系统提示、工具、摘要和历史。auto 从 OpenRouter 上模型的窗口自动获取（每周检查一次）并给回答留出空间；也可以写 128k、1m 这样的数，要小于模型的窗口。",
+                        ),
+                        kind: Kind::Tokens,
+                    },
+                    Field {
+                        path: &["agent", "summary_model"],
+                        label: tr("Summary model", "摘要模型"),
+                        help: tr(
+                            "Model that writes the context summary, e.g. a cheaper one. Reset (-) to use the main model.",
+                            "写上下文摘要的模型，例如更便宜的模型。输入 - 恢复为主模型。",
+                        ),
+                        kind: Kind::Model(Need::Text),
+                    },
+                    Field {
+                        path: &["agent", "vision_model"],
+                        label: tr("Image model", "图片模型"),
+                        help: tr(
+                            "Model for messages with images (files people send, browser screenshots). Reset (-) to use the main model; set it when the main model has no image input.",
+                            "处理带图片消息（用户发来的图片、浏览器截图）的模型。输入 - 恢复为主模型；主模型不支持图片输入时需要设置。",
+                        ),
+                        kind: Kind::Model(Need::Images),
+                    },
+                    Field {
+                        path: &["agent", "audio_model"],
+                        label: tr("Audio model", "音频模型"),
+                        help: tr(
+                            "Model that transcribes voice messages (email, Web UI, QQ when QQ sends no transcript). Reset (-) to use the main model; set it when the main model has no audio input.",
+                            "把语音消息转成文字的模型（邮件、Web UI，以及 QQ 没给识别结果时）。输入 - 恢复为主模型；主模型不支持音频输入时需要设置。",
+                        ),
+                        kind: Kind::Model(Need::Audio),
+                    },
+                    Field {
+                        path: &["agent", "recall_limit"],
+                        label: tr("Memories recalled per message", "每条消息自动召回的记忆数"),
+                        help: tr(
+                            "Saved memories that share words with a message are shown to the model with it. 0 turns this off.",
+                            "与消息有相同词语的已保存记忆，会随消息一起交给模型。设为 0 关闭。",
+                        ),
+                        kind: Kind::Int,
+                    },
+                    Field {
+                        path: &["agent", "max_steps"],
+                        label: tr("Max model calls per turn", "每轮最多调用模型次数"),
+                        help: tr("Stops a runaway tool loop.", "防止工具调用无限循环。"),
+                        kind: Kind::Int,
+                    },
+                ],
             },
-            Field {
-                path: &["model", "fallbacks"],
-                label: tr("Fallback models", "备用模型"),
-                help: tr(
-                    "Comma-separated; OpenRouter tries them in order when the model fails.",
-                    "用逗号分隔；主模型失败时 OpenRouter 按顺序尝试。",
-                ),
-                kind: Kind::List,
-            },
-            Field {
-                path: &["model", "max_retries"],
-                label: tr("Retries on transient errors", "临时错误重试次数"),
-                help: tr(
-                    "Connection errors, HTTP 408/429/5xx, and streams that fail before any text.",
-                    "连接错误、HTTP 408/429/5xx，以及还没输出文字就失败的流。",
-                ),
-                kind: Kind::Int,
-            },
-            Field {
-                path: &["model", "prompt_cache"],
-                label: tr("Prompt cache breakpoints", "Prompt 缓存标记"),
-                help: tr(
-                    "auto: for anthropic/ and google/ models; on: always (e.g. openrouter/auto routing to Claude); off: never.",
-                    "auto：只对 anthropic/ 和 google/ 模型加；on：总是加（例如 openrouter/auto 会路由到 Claude 时）；off：不加。",
-                ),
-                kind: Kind::Choice(&["auto", "on", "off"]),
-            },
-            Field {
-                path: &["agent", "context_tokens"],
-                label: tr("Context budget", "上下文预算"),
-                help: tr(
-                    "Per model call: system prompt, tools, summary and history. auto takes it from the model's window on OpenRouter (checked weekly), leaving room for the answer; or a count such as 128k or 1m, below the model's window.",
-                    "每次调用模型的总预算：系统提示、工具、摘要和历史。auto 从 OpenRouter 上模型的窗口自动获取（每周检查一次）并给回答留出空间；也可以写 128k、1m 这样的数，要小于模型的窗口。",
-                ),
-                kind: Kind::Tokens,
-            },
-            Field {
-                path: &["agent", "summary_model"],
-                label: tr("Summary model", "摘要模型"),
-                help: tr(
-                    "Model that writes the context summary, e.g. a cheaper one. Reset (-) to use the main model.",
-                    "写上下文摘要的模型，例如更便宜的模型。输入 - 恢复为主模型。",
-                ),
-                kind: Kind::Model(Need::Text),
-            },
-            Field {
-                path: &["agent", "vision_model"],
-                label: tr("Image model", "图片模型"),
-                help: tr(
-                    "Model for messages with images (files people send, browser screenshots). Reset (-) to use the main model; set it when the main model has no image input.",
-                    "处理带图片消息（用户发来的图片、浏览器截图）的模型。输入 - 恢复为主模型；主模型不支持图片输入时需要设置。",
-                ),
-                kind: Kind::Model(Need::Images),
-            },
-            Field {
-                path: &["agent", "audio_model"],
-                label: tr("Audio model", "音频模型"),
-                help: tr(
-                    "Model that transcribes voice messages (email, Web UI, QQ when QQ sends no transcript). Reset (-) to use the main model; set it when the main model has no audio input.",
-                    "把语音消息转成文字的模型（邮件、Web UI，以及 QQ 没给识别结果时）。输入 - 恢复为主模型；主模型不支持音频输入时需要设置。",
-                ),
-                kind: Kind::Model(Need::Audio),
-            },
-            Field {
-                path: &["agent", "recall_limit"],
-                label: tr("Memories recalled per message", "每条消息自动召回的记忆数"),
-                help: tr(
-                    "Saved memories that share words with a message are shown to the model with it. 0 turns this off.",
-                    "与消息有相同词语的已保存记忆，会随消息一起交给模型。设为 0 关闭。",
-                ),
-                kind: Kind::Int,
-            },
-            Field {
-                path: &["agent", "max_steps"],
-                label: tr("Max model calls per turn", "每轮最多调用模型次数"),
-                help: tr("Stops a runaway tool loop.", "防止工具调用无限循环。"),
-                kind: Kind::Int,
-            },
-            Field {
-                path: &["guide", "enabled"],
-                label: tr("Add messages to a running turn", "对话中插入补充消息"),
-                help: tr(
-                    "Messages sent while a turn runs join it at a good moment instead of waiting; see README \"Guided conversation\".",
-                    "回复进行中发来的消息会在合适的时机加入当前这一轮，而不是排队等待；见 README 的 \"Guided conversation\"。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["guide", "provider"],
-                label: tr("Model that picks the moment", "判断插入时机的模型"),
-                help: tr(
-                    "openrouter: TypeSafe's Jev decision model with your OpenRouter key; off: insert at the next step.",
-                    "openrouter：通过 OpenRouter 密钥使用 TypeSafe 的 Jev 决策模型；off：在下一步直接插入。",
-                ),
-                kind: Kind::Decider {
-                    model: &["guide", "model"],
-                    base_url: &["guide", "base_url"],
-                },
-            },
-            Field {
-                path: &["guide", "model"],
-                label: tr("Its model id", "它的模型 id"),
-                help: tr(
-                    "Reset (-) for the provider's default, shown on the line above.",
-                    "输入 - 使用该服务的默认模型，即上一行显示的那个。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["model", "provider"],
-                label: tr("Provider", "模型提供方"),
-                help: tr(
-                    "openrouter: an OpenRouter key; chatgpt: your ChatGPT plan, signed in with `openclaw-rs login` (which also sets this).",
-                    "openrouter：用 OpenRouter key；chatgpt：用你的 ChatGPT 订阅，先运行 `openclaw-rs login` 登录（登录时会自动设好这一项）。",
-                ),
-                kind: Kind::Choice(&["openrouter", "chatgpt"]),
-            },
-            Field {
-                path: &["model", "reasoning_effort"],
-                label: tr("Reasoning effort (ChatGPT)", "推理强度（ChatGPT）"),
-                help: tr(
-                    "chatgpt only: how hard the model thinks before answering; reset (-) leaves it to the model.",
-                    "只对 chatgpt 有效：模型回答前思考的程度；输入 - 交给模型自己决定。",
-                ),
-                kind: Kind::Choice(&["minimal", "low", "medium", "high"]),
-            },
-        ],
-    },
-    Section {
-        title: tr("Tools", "工具"),
-        fields: &[
-            Field {
-                path: &["tools", "shell"],
-                label: tr("Shell commands", "Shell 命令"),
-                help: tr(
-                    "allow: run without asking; ask: a person approves each one; deny: no shell tool.",
-                    "allow：直接运行；ask：每条都要人批准；deny：不提供 shell 工具。",
-                ),
-                kind: Kind::Choice(PERMISSION),
-            },
-            Field {
-                path: &["tools", "write"],
-                label: tr("File writes and edits", "写入和修改文件"),
-                help: tr(
-                    "Reads are always allowed inside the workspace.",
-                    "工作目录内的读取总是允许。",
-                ),
-                kind: Kind::Choice(PERMISSION),
-            },
-            Field {
-                path: &["tools", "identity"],
-                label: tr("Identity changes", "修改身份"),
-                help: tr(
-                    "deny removes identity_set; otherwise every draft needs a person's approval.",
-                    "deny 会去掉 identity_set；否则每份草稿都要人批准。",
-                ),
-                kind: Kind::Choice(PERMISSION),
-            },
-            Field {
-                path: &["tools", "mail"],
-                label: tr("Sending email", "发送邮件"),
-                help: tr(
-                    "send_mail, when email is set up. Recipients also follow the email mode; deny removes the tool.",
-                    "send_mail，需要先设置邮件。收件人还要符合邮件模式；deny 会去掉这个工具。",
-                ),
-                kind: Kind::Choice(PERMISSION),
-            },
-            Field {
-                path: &["tools", "workspace"],
-                label: tr("Workspace directory", "工作目录"),
-                help: tr(
-                    "Where files and shell commands run. Reset (-) for <state dir>/workspace.",
-                    "文件和 shell 命令所在目录。输入 - 恢复为 <状态目录>/workspace。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["tools", "review", "provider"],
-                label: tr("Shell command auto-review", "Shell 命令自动审查"),
-                help: tr(
-                    "A model rates each `ask` command; see README \"Command auto-review\".",
-                    "由模型给每条需要批准的命令打分；见 README 的 \"Command auto-review\"。",
-                ),
-                kind: Kind::Decider {
-                    model: &["tools", "review", "model"],
-                    base_url: &["tools", "review", "base_url"],
-                },
-            },
-            Field {
-                path: &["tools", "review", "model"],
-                label: tr("Its model id", "它的模型 id"),
-                help: tr(
-                    "Reset (-) for the provider's default, shown on the line above.",
-                    "输入 - 使用该服务的默认模型，即上一行显示的那个。",
-                ),
-                kind: Kind::Text,
+            Section {
+                title: tr("Messages during a reply", "回复中插入消息"),
+                fields: &[
+                    Field {
+                        path: &["guide", "enabled"],
+                        label: tr("Add messages to a running turn", "对话中插入补充消息"),
+                        help: tr(
+                            "Messages sent while a turn runs join it at a good moment instead of waiting; see README \"Guided conversation\".",
+                            "回复进行中发来的消息会在合适的时机加入当前这一轮，而不是排队等待；见 README 的 \"Guided conversation\"。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["guide", "provider"],
+                        label: tr("Model that picks the moment", "判断插入时机的模型"),
+                        help: tr(
+                            "openrouter: TypeSafe's Jev decision model with your OpenRouter key; off: insert at the next step.",
+                            "openrouter：通过 OpenRouter 密钥使用 TypeSafe 的 Jev 决策模型；off：在下一步直接插入。",
+                        ),
+                        kind: Kind::Decider {
+                            model: &["guide", "model"],
+                            base_url: &["guide", "base_url"],
+                        },
+                    },
+                    Field {
+                        path: &["guide", "model"],
+                        label: tr("Its model id", "它的模型 id"),
+                        help: tr(
+                            "Reset (-) for the provider's default, shown on the line above.",
+                            "输入 - 使用该服务的默认模型，即上一行显示的那个。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                ],
             },
         ],
     },
-    Section {
-        title: tr("Gateway and Web UI", "Gateway 与 Web UI"),
-        fields: &[
-            Field {
-                path: &["gateway", "bind"],
-                label: tr("Listen address", "监听地址"),
-                help: tr(
-                    "e.g. 127.0.0.1:18789, or 0.0.0.0:18789 for the LAN (needs a token).",
-                    "例如 127.0.0.1:18789；局域网访问用 0.0.0.0:18789（需要 token）。",
-                ),
-                kind: Kind::Text,
+    Group {
+        title: tr("Chat apps and email", "聊天平台与邮件"),
+        sections: &[
+            Section {
+                title: tr("QQ bot", "QQ 机器人"),
+                fields: &[
+                    Field {
+                        path: &["qq", "enabled"],
+                        label: tr("Enabled", "启用"),
+                        help: tr(
+                            "Connects to QQ over WebSocket when `serve` runs.",
+                            "运行 `serve` 时通过 WebSocket 连接 QQ。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["qq", "app_id"],
+                        label: tr("AppID", "AppID"),
+                        help: tr(
+                            "From the QQ Open Platform (q.qq.com).",
+                            "在 QQ 开放平台（q.qq.com）获取。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["qq", "app_secret"],
+                        label: tr("AppSecret", "AppSecret"),
+                        help: tr(
+                            "QQ_APP_SECRET wins when set.",
+                            "设了 QQ_APP_SECRET 时以环境变量为准。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "QQ_APP_SECRET",
+                            generate: false,
+                        },
+                    },
+                    Field {
+                        path: &["qq", "allow"],
+                        label: tr("Allowed openids", "允许的 openid"),
+                        help: tr(
+                            "Comma-separated user or group openids; empty lets everyone chat. The log prints each sender's openid.",
+                            "用逗号分隔的用户或群 openid；留空则所有人都能聊天。日志里会打印每个发送者的 openid。",
+                        ),
+                        kind: Kind::List,
+                    },
+                    Field {
+                        path: &["qq", "split_replies"],
+                        label: tr("Split chatty replies", "闲聊回复分条发送"),
+                        help: tr(
+                            "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                            "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                ],
             },
-            Field {
-                path: &["gateway", "token"],
-                label: tr("Access token", "访问 token"),
-                help: tr(
-                    "Required unless bound to loopback; OPENCLAW_RS_TOKEN wins when set. Type + to generate one.",
-                    "不是只监听本机时必须设置；设了 OPENCLAW_RS_TOKEN 时以环境变量为准。输入 + 自动生成。",
-                ),
-                kind: Kind::Secret {
-                    env: "OPENCLAW_RS_TOKEN",
-                    generate: true,
-                },
+            Section {
+                title: tr("Feishu / Lark bot", "飞书机器人"),
+                fields: &[
+                    Field {
+                        path: &["feishu", "enabled"],
+                        label: tr("Enabled", "启用"),
+                        help: tr(
+                            "Connects to Feishu over the long connection when `serve` runs; no public address needed. In the developer console: add the bot capability, the im:message permissions, and subscribe to im.message.receive_v1 and the card.action.trigger callback with the long connection.",
+                            "运行 `serve` 时通过长连接接入飞书，不需要公网地址。在开发者后台：添加机器人能力和 im:message 相关权限，事件与回调都选“长连接”，订阅 im.message.receive_v1 事件和 card.action.trigger 回调。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["feishu", "app_id"],
+                        label: tr("App ID", "App ID"),
+                        help: tr(
+                            "cli_… from the app's credentials page (open.feishu.cn).",
+                            "应用凭证页里的 cli_…（open.feishu.cn）。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["feishu", "app_secret"],
+                        label: tr("App Secret", "App Secret"),
+                        help: tr(
+                            "FEISHU_APP_SECRET wins when set.",
+                            "设了 FEISHU_APP_SECRET 时以环境变量为准。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "FEISHU_APP_SECRET",
+                            generate: false,
+                        },
+                    },
+                    Field {
+                        path: &["feishu", "allow"],
+                        label: tr("Allowed senders or groups", "允许的用户或群"),
+                        help: tr(
+                            "Comma-separated open_ids (ou_…) or group chat_ids (oc_…); empty lets everyone in the tenant chat. The log prints each sender.",
+                            "用逗号分隔的 open_id（ou_…）或群 chat_id（oc_…）；留空则企业里所有人都能聊天。日志里会打印每个发送者。",
+                        ),
+                        kind: Kind::List,
+                    },
+                    Field {
+                        path: &["feishu", "api_base"],
+                        label: tr("Server", "服务器"),
+                        help: tr(
+                            "https://open.feishu.cn, or https://open.larksuite.com for Lark.",
+                            "https://open.feishu.cn；国际版 Lark 用 https://open.larksuite.com。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["feishu", "split_replies"],
+                        label: tr("Split chatty replies", "闲聊回复分条发送"),
+                        help: tr(
+                            "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                            "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                ],
             },
-            Field {
-                path: &["gateway", "web"],
-                label: tr("Web UI", "Web UI"),
-                help: tr(
-                    "ui: Web UI and WebSocket API; api: only the API (for other clients); off: no HTTP at all, QQ, email and scheduled jobs only. Chat in the terminal with openclaw-rs tui.",
-                    "ui：Web UI 和 WebSocket API；api：只有 API（给其他客户端用）；off：完全不开 HTTP，只运行 QQ、邮件和定时任务。在终端里聊天用 openclaw-rs tui。",
-                ),
-                kind: Kind::Choice(&["ui", "api", "off"]),
+            Section {
+                title: tr("Zulip bot", "Zulip 机器人"),
+                fields: &[
+                    Field {
+                        path: &["zulip", "enabled"],
+                        label: tr("Enabled", "启用"),
+                        help: tr(
+                            "Polls Zulip for messages when `serve` runs. Create a Generic bot under Personal settings → Bots.",
+                            "运行 `serve` 时从 Zulip 拉取消息。在 个人设置 → 机器人 里创建一个 Generic 机器人。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["zulip", "site"],
+                        label: tr("Organization URL", "组织地址"),
+                        help: tr(
+                            "e.g. https://example.zulipchat.com",
+                            "例如 https://example.zulipchat.com",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["zulip", "email"],
+                        label: tr("Bot email", "机器人邮箱"),
+                        help: tr(
+                            "Shown on the bot's settings, e.g. claw-bot@example.zulipchat.com.",
+                            "机器人设置里显示的邮箱，例如 claw-bot@example.zulipchat.com。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["zulip", "api_key"],
+                        label: tr("API key", "API key"),
+                        help: tr(
+                            "ZULIP_API_KEY wins when set.",
+                            "设了 ZULIP_API_KEY 时以环境变量为准。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "ZULIP_API_KEY",
+                            generate: false,
+                        },
+                    },
+                    Field {
+                        path: &["zulip", "allow"],
+                        label: tr("Allowed senders or channels", "允许的用户或频道"),
+                        help: tr(
+                            "Comma-separated sender emails or channel names; empty lets everyone in the organization chat. In channels the bot answers only when @-mentioned.",
+                            "用逗号分隔的发送者邮箱或频道名；留空则组织里所有人都能聊天。在频道里只有 @ 机器人才会回复。",
+                        ),
+                        kind: Kind::List,
+                    },
+                    Field {
+                        path: &["zulip", "split_replies"],
+                        label: tr("Split chatty replies", "闲聊回复分条发送"),
+                        help: tr(
+                            "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                            "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                ],
             },
-        ],
-    },
-    Section {
-        title: tr("QQ bot", "QQ 机器人"),
-        fields: &[
-            Field {
-                path: &["qq", "enabled"],
-                label: tr("Enabled", "启用"),
-                help: tr(
-                    "Connects to QQ over WebSocket when `serve` runs.",
-                    "运行 `serve` 时通过 WebSocket 连接 QQ。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["qq", "app_id"],
-                label: tr("AppID", "AppID"),
-                help: tr(
-                    "From the QQ Open Platform (q.qq.com).",
-                    "在 QQ 开放平台（q.qq.com）获取。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["qq", "app_secret"],
-                label: tr("AppSecret", "AppSecret"),
-                help: tr(
-                    "QQ_APP_SECRET wins when set.",
-                    "设了 QQ_APP_SECRET 时以环境变量为准。",
-                ),
-                kind: Kind::Secret {
-                    env: "QQ_APP_SECRET",
-                    generate: false,
-                },
-            },
-            Field {
-                path: &["qq", "allow"],
-                label: tr("Allowed openids", "允许的 openid"),
-                help: tr(
-                    "Comma-separated user or group openids; empty lets everyone chat. The log prints each sender's openid.",
-                    "用逗号分隔的用户或群 openid；留空则所有人都能聊天。日志里会打印每个发送者的 openid。",
-                ),
-                kind: Kind::List,
-            },
-            Field {
-                path: &["qq", "split_replies"],
-                label: tr("Split chatty replies", "闲聊回复分条发送"),
-                help: tr(
-                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
-                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
-                ),
-                kind: Kind::Bool,
-            },
-        ],
-    },
-    Section {
-        title: tr("Feishu / Lark bot", "飞书机器人"),
-        fields: &[
-            Field {
-                path: &["feishu", "enabled"],
-                label: tr("Enabled", "启用"),
-                help: tr(
-                    "Connects to Feishu over the long connection when `serve` runs; no public address needed. In the developer console: add the bot capability, the im:message permissions, and subscribe to im.message.receive_v1 and the card.action.trigger callback with the long connection.",
-                    "运行 `serve` 时通过长连接接入飞书，不需要公网地址。在开发者后台：添加机器人能力和 im:message 相关权限，事件与回调都选“长连接”，订阅 im.message.receive_v1 事件和 card.action.trigger 回调。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["feishu", "app_id"],
-                label: tr("App ID", "App ID"),
-                help: tr(
-                    "cli_… from the app's credentials page (open.feishu.cn).",
-                    "应用凭证页里的 cli_…（open.feishu.cn）。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["feishu", "app_secret"],
-                label: tr("App Secret", "App Secret"),
-                help: tr(
-                    "FEISHU_APP_SECRET wins when set.",
-                    "设了 FEISHU_APP_SECRET 时以环境变量为准。",
-                ),
-                kind: Kind::Secret {
-                    env: "FEISHU_APP_SECRET",
-                    generate: false,
-                },
-            },
-            Field {
-                path: &["feishu", "allow"],
-                label: tr("Allowed senders or groups", "允许的用户或群"),
-                help: tr(
-                    "Comma-separated open_ids (ou_…) or group chat_ids (oc_…); empty lets everyone in the tenant chat. The log prints each sender.",
-                    "用逗号分隔的 open_id（ou_…）或群 chat_id（oc_…）；留空则企业里所有人都能聊天。日志里会打印每个发送者。",
-                ),
-                kind: Kind::List,
-            },
-            Field {
-                path: &["feishu", "api_base"],
-                label: tr("Server", "服务器"),
-                help: tr(
-                    "https://open.feishu.cn, or https://open.larksuite.com for Lark.",
-                    "https://open.feishu.cn；国际版 Lark 用 https://open.larksuite.com。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["feishu", "split_replies"],
-                label: tr("Split chatty replies", "闲聊回复分条发送"),
-                help: tr(
-                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
-                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
-                ),
-                kind: Kind::Bool,
-            },
-        ],
-    },
-    Section {
-        title: tr("Zulip bot", "Zulip 机器人"),
-        fields: &[
-            Field {
-                path: &["zulip", "enabled"],
-                label: tr("Enabled", "启用"),
-                help: tr(
-                    "Polls Zulip for messages when `serve` runs. Create a Generic bot under Personal settings → Bots.",
-                    "运行 `serve` 时从 Zulip 拉取消息。在 个人设置 → 机器人 里创建一个 Generic 机器人。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["zulip", "site"],
-                label: tr("Organization URL", "组织地址"),
-                help: tr(
-                    "e.g. https://example.zulipchat.com",
-                    "例如 https://example.zulipchat.com",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["zulip", "email"],
-                label: tr("Bot email", "机器人邮箱"),
-                help: tr(
-                    "Shown on the bot's settings, e.g. claw-bot@example.zulipchat.com.",
-                    "机器人设置里显示的邮箱，例如 claw-bot@example.zulipchat.com。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["zulip", "api_key"],
-                label: tr("API key", "API key"),
-                help: tr(
-                    "ZULIP_API_KEY wins when set.",
-                    "设了 ZULIP_API_KEY 时以环境变量为准。",
-                ),
-                kind: Kind::Secret {
-                    env: "ZULIP_API_KEY",
-                    generate: false,
-                },
-            },
-            Field {
-                path: &["zulip", "allow"],
-                label: tr("Allowed senders or channels", "允许的用户或频道"),
-                help: tr(
-                    "Comma-separated sender emails or channel names; empty lets everyone in the organization chat. In channels the bot answers only when @-mentioned.",
-                    "用逗号分隔的发送者邮箱或频道名；留空则组织里所有人都能聊天。在频道里只有 @ 机器人才会回复。",
-                ),
-                kind: Kind::List,
-            },
-            Field {
-                path: &["zulip", "split_replies"],
-                label: tr("Split chatty replies", "闲聊回复分条发送"),
-                help: tr(
-                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
-                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
-                ),
-                kind: Kind::Bool,
-            },
-        ],
-    },
-    Section {
-        title: tr("Email", "邮件"),
-        fields: &[
-            Field {
-                path: &["mail", "enabled"],
-                label: tr("Enabled", "启用"),
-                help: tr(
-                    "Polls IMAP and answers by SMTP when `serve` runs.",
-                    "运行 `serve` 时轮询 IMAP，并通过 SMTP 回复。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["mail", "mode"],
-                label: tr("Mode", "模式"),
-                help: tr(
-                    "allow: read and answer only allowed senders. receive: read mail from anyone, send only to allowed addresses. open: read from and answer anyone (anyone can spend your model credits).",
-                    "allow：只读取并回复允许的发件人。receive：读取任何人的邮件，只给允许的地址发信。open：读取并回复任何人（任何人都能花你的模型额度）。",
-                ),
-                kind: Kind::Choice(&["allow", "receive", "open"]),
-            },
-            Field {
-                path: &["mail", "imap_host"],
-                label: tr("IMAP host", "IMAP 服务器"),
-                help: tr("e.g. imap.qq.com", "例如 imap.qq.com"),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["mail", "imap_port"],
-                label: tr("IMAP port", "IMAP 端口"),
-                help: tr("993 for TLS.", "TLS 用 993。"),
-                kind: Kind::Int,
-            },
-            Field {
-                path: &["mail", "imap_security"],
-                label: tr("IMAP security", "IMAP 加密方式"),
-                help: tr(
-                    "none is only accepted for loopback hosts.",
-                    "none 只能用于本机地址。",
-                ),
-                kind: Kind::Choice(SECURITY),
-            },
-            Field {
-                path: &["mail", "smtp_host"],
-                label: tr("SMTP host", "SMTP 服务器"),
-                help: tr("e.g. smtp.qq.com", "例如 smtp.qq.com"),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["mail", "smtp_port"],
-                label: tr("SMTP port", "SMTP 端口"),
-                help: tr(
-                    "465 for TLS, 587 for STARTTLS.",
-                    "TLS 用 465，STARTTLS 用 587。",
-                ),
-                kind: Kind::Int,
-            },
-            Field {
-                path: &["mail", "smtp_security"],
-                label: tr("SMTP security", "SMTP 加密方式"),
-                help: tr(
-                    "none is only accepted for loopback hosts.",
-                    "none 只能用于本机地址。",
-                ),
-                kind: Kind::Choice(SECURITY),
-            },
-            Field {
-                path: &["mail", "username"],
-                label: tr("Username", "用户名"),
-                help: tr("Usually the full address.", "通常是完整的邮箱地址。"),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["mail", "password"],
-                label: tr("Password", "密码"),
-                help: tr(
-                    "Many providers (QQ Mail, 163) need an app authorization code. MAIL_PASSWORD wins when set.",
-                    "很多邮箱（QQ 邮箱、163）要填授权码。设了 MAIL_PASSWORD 时以环境变量为准。",
-                ),
-                kind: Kind::Secret {
-                    env: "MAIL_PASSWORD",
-                    generate: false,
-                },
-            },
-            Field {
-                path: &["mail", "from"],
-                label: tr("Reply-from address", "回复的发件地址"),
-                help: tr("Reset (-) to use the username.", "输入 - 恢复为用户名。"),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["mail", "allow"],
-                label: tr("Allowed senders", "允许的发件人"),
-                help: tr(
-                    "Comma-separated addresses or @domain. Mode allow: who may email the bot (required). Mode receive: who it may send to.",
-                    "用逗号分隔的地址或 @域名。allow 模式：谁可以给机器人发邮件（必填）。receive 模式：机器人可以给谁发信。",
-                ),
-                kind: Kind::List,
+            Section {
+                title: tr("Email", "邮件"),
+                fields: &[
+                    Field {
+                        path: &["mail", "enabled"],
+                        label: tr("Enabled", "启用"),
+                        help: tr(
+                            "Polls IMAP and answers by SMTP when `serve` runs.",
+                            "运行 `serve` 时轮询 IMAP，并通过 SMTP 回复。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["mail", "mode"],
+                        label: tr("Mode", "模式"),
+                        help: tr(
+                            "allow: read and answer only allowed senders. receive: read mail from anyone, send only to allowed addresses. open: read from and answer anyone (anyone can spend your model credits).",
+                            "allow：只读取并回复允许的发件人。receive：读取任何人的邮件，只给允许的地址发信。open：读取并回复任何人（任何人都能花你的模型额度）。",
+                        ),
+                        kind: Kind::Choice(&["allow", "receive", "open"]),
+                    },
+                    Field {
+                        path: &["mail", "imap_host"],
+                        label: tr("IMAP host", "IMAP 服务器"),
+                        help: tr("e.g. imap.qq.com", "例如 imap.qq.com"),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["mail", "imap_port"],
+                        label: tr("IMAP port", "IMAP 端口"),
+                        help: tr("993 for TLS.", "TLS 用 993。"),
+                        kind: Kind::Int,
+                    },
+                    Field {
+                        path: &["mail", "imap_security"],
+                        label: tr("IMAP security", "IMAP 加密方式"),
+                        help: tr(
+                            "none is only accepted for loopback hosts.",
+                            "none 只能用于本机地址。",
+                        ),
+                        kind: Kind::Choice(SECURITY),
+                    },
+                    Field {
+                        path: &["mail", "smtp_host"],
+                        label: tr("SMTP host", "SMTP 服务器"),
+                        help: tr("e.g. smtp.qq.com", "例如 smtp.qq.com"),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["mail", "smtp_port"],
+                        label: tr("SMTP port", "SMTP 端口"),
+                        help: tr(
+                            "465 for TLS, 587 for STARTTLS.",
+                            "TLS 用 465，STARTTLS 用 587。",
+                        ),
+                        kind: Kind::Int,
+                    },
+                    Field {
+                        path: &["mail", "smtp_security"],
+                        label: tr("SMTP security", "SMTP 加密方式"),
+                        help: tr(
+                            "none is only accepted for loopback hosts.",
+                            "none 只能用于本机地址。",
+                        ),
+                        kind: Kind::Choice(SECURITY),
+                    },
+                    Field {
+                        path: &["mail", "username"],
+                        label: tr("Username", "用户名"),
+                        help: tr("Usually the full address.", "通常是完整的邮箱地址。"),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["mail", "password"],
+                        label: tr("Password", "密码"),
+                        help: tr(
+                            "Many providers (QQ Mail, 163) need an app authorization code. MAIL_PASSWORD wins when set.",
+                            "很多邮箱（QQ 邮箱、163）要填授权码。设了 MAIL_PASSWORD 时以环境变量为准。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "MAIL_PASSWORD",
+                            generate: false,
+                        },
+                    },
+                    Field {
+                        path: &["mail", "from"],
+                        label: tr("Reply-from address", "回复的发件地址"),
+                        help: tr("Reset (-) to use the username.", "输入 - 恢复为用户名。"),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["mail", "allow"],
+                        label: tr("Allowed senders", "允许的发件人"),
+                        help: tr(
+                            "Comma-separated addresses or @domain. Mode allow: who may email the bot (required). Mode receive: who it may send to.",
+                            "用逗号分隔的地址或 @域名。allow 模式：谁可以给机器人发邮件（必填）。receive 模式：机器人可以给谁发信。",
+                        ),
+                        kind: Kind::List,
+                    },
+                ],
             },
         ],
     },
-    Section {
-        title: tr("Web search", "网页搜索"),
-        fields: &[
-            Field {
-                path: &["search", "provider"],
-                label: tr("Provider", "搜索服务"),
-                help: tr(
-                    "openrouter: billed per search with the OpenRouter key (on a ChatGPT subscription without that key, ChatGPT's search is used instead); searxng: your own instance; off: no web_search tool; chatgpt: the ChatGPT subscription's own search.",
-                    "openrouter：用 OpenRouter key 按次计费（用 ChatGPT 订阅又没有这个 key 时，自动改用 ChatGPT 的搜索）；searxng：自己的实例；off：不提供 web_search 工具；chatgpt：用 ChatGPT 订阅自带的搜索。",
-                ),
-                kind: Kind::Choice(&["openrouter", "searxng", "off", "chatgpt"]),
+    Group {
+        title: tr("Tools and the web", "工具与网络"),
+        sections: &[
+            Section {
+                title: tr("Tools", "工具"),
+                fields: &[
+                    Field {
+                        path: &["tools", "shell"],
+                        label: tr("Shell commands", "Shell 命令"),
+                        help: tr(
+                            "allow: run without asking; ask: a person approves each one; deny: no shell tool.",
+                            "allow：直接运行；ask：每条都要人批准；deny：不提供 shell 工具。",
+                        ),
+                        kind: Kind::Choice(PERMISSION),
+                    },
+                    Field {
+                        path: &["tools", "write"],
+                        label: tr("File writes and edits", "写入和修改文件"),
+                        help: tr(
+                            "Reads are always allowed inside the workspace.",
+                            "工作目录内的读取总是允许。",
+                        ),
+                        kind: Kind::Choice(PERMISSION),
+                    },
+                    Field {
+                        path: &["tools", "identity"],
+                        label: tr("Identity changes", "修改身份"),
+                        help: tr(
+                            "deny removes identity_set; otherwise every draft needs a person's approval.",
+                            "deny 会去掉 identity_set；否则每份草稿都要人批准。",
+                        ),
+                        kind: Kind::Choice(PERMISSION),
+                    },
+                    Field {
+                        path: &["tools", "mail"],
+                        label: tr("Sending email", "发送邮件"),
+                        help: tr(
+                            "send_mail, when email is set up. Recipients also follow the email mode; deny removes the tool.",
+                            "send_mail，需要先设置邮件。收件人还要符合邮件模式；deny 会去掉这个工具。",
+                        ),
+                        kind: Kind::Choice(PERMISSION),
+                    },
+                    Field {
+                        path: &["tools", "workspace"],
+                        label: tr("Workspace directory", "工作目录"),
+                        help: tr(
+                            "Where files and shell commands run. Reset (-) for <state dir>/workspace.",
+                            "文件和 shell 命令所在目录。输入 - 恢复为 <状态目录>/workspace。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["tools", "review", "provider"],
+                        label: tr("Shell command auto-review", "Shell 命令自动审查"),
+                        help: tr(
+                            "A model rates each `ask` command; see README \"Command auto-review\".",
+                            "由模型给每条需要批准的命令打分；见 README 的 \"Command auto-review\"。",
+                        ),
+                        kind: Kind::Decider {
+                            model: &["tools", "review", "model"],
+                            base_url: &["tools", "review", "base_url"],
+                        },
+                    },
+                    Field {
+                        path: &["tools", "review", "model"],
+                        label: tr("Its model id", "它的模型 id"),
+                        help: tr(
+                            "Reset (-) for the provider's default, shown on the line above.",
+                            "输入 - 使用该服务的默认模型，即上一行显示的那个。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                ],
             },
-            Field {
-                path: &["search", "searxng_url"],
-                label: tr("SearXNG URL", "SearXNG 地址"),
-                help: tr(
-                    "e.g. http://127.0.0.1:8888, with the JSON format enabled.",
-                    "例如 http://127.0.0.1:8888，需要开启 JSON 格式。",
-                ),
-                kind: Kind::Text,
+            Section {
+                title: tr("Web search", "网页搜索"),
+                fields: &[
+                    Field {
+                        path: &["search", "provider"],
+                        label: tr("Provider", "搜索服务"),
+                        help: tr(
+                            "openrouter: billed per search with the OpenRouter key (on a ChatGPT subscription without that key, ChatGPT's search is used instead); searxng: your own instance; off: no web_search tool; chatgpt: the ChatGPT subscription's own search.",
+                            "openrouter：用 OpenRouter key 按次计费（用 ChatGPT 订阅又没有这个 key 时，自动改用 ChatGPT 的搜索）；searxng：自己的实例；off：不提供 web_search 工具；chatgpt：用 ChatGPT 订阅自带的搜索。",
+                        ),
+                        kind: Kind::Choice(&["openrouter", "searxng", "off", "chatgpt"]),
+                    },
+                    Field {
+                        path: &["search", "searxng_url"],
+                        label: tr("SearXNG URL", "SearXNG 地址"),
+                        help: tr(
+                            "e.g. http://127.0.0.1:8888, with the JSON format enabled.",
+                            "例如 http://127.0.0.1:8888，需要开启 JSON 格式。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["search", "model"],
+                        label: tr("Search model", "搜索模型"),
+                        help: tr(
+                            "Model that runs OpenRouter searches. Reset (-) to use the main model.",
+                            "执行 OpenRouter 搜索的模型。输入 - 恢复为主模型。",
+                        ),
+                        kind: Kind::Model(Need::Text),
+                    },
+                ],
             },
-            Field {
-                path: &["search", "model"],
-                label: tr("Search model", "搜索模型"),
-                help: tr(
-                    "Model that runs OpenRouter searches. Reset (-) to use the main model.",
-                    "执行 OpenRouter 搜索的模型。输入 - 恢复为主模型。",
-                ),
-                kind: Kind::Model(Need::Text),
+            Section {
+                title: tr("Browser", "浏览器"),
+                fields: &[
+                    Field {
+                        path: &["browser", "enabled"],
+                        label: tr("Browser tool", "浏览器工具"),
+                        help: tr(
+                            "Uses a Chromium, Chrome, Edge or Brave already installed on this host; none is bundled. Without one there is no browser tool.",
+                            "使用本机已安装的 Chromium、Chrome、Edge 或 Brave，不自带浏览器；本机没有时就不提供浏览器工具。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["browser", "executable"],
+                        label: tr("Browser path", "浏览器路径"),
+                        help: tr(
+                            "Reset (-) to use the first of chromium, chromium-browser, google-chrome, microsoft-edge, brave found on PATH.",
+                            "输入 - 恢复为自动查找 PATH 中的 chromium、chromium-browser、google-chrome、microsoft-edge、brave。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["browser", "cdp_url"],
+                        label: tr("Running browser", "已运行的浏览器"),
+                        help: tr(
+                            "DevTools address of a browser started with --remote-debugging-port, e.g. http://127.0.0.1:9222; empty starts one when needed.",
+                            "用 --remote-debugging-port 启动的浏览器的调试地址，例如 http://127.0.0.1:9222；留空则在需要时自动启动。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["browser", "headless"],
+                        label: tr("Headless", "无窗口运行"),
+                        help: tr(
+                            "n shows a window, which needs a display.",
+                            "选 n 会显示窗口，需要图形界面。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["browser", "idle_secs"],
+                        label: tr("Close when idle (s)", "空闲关闭（秒）"),
+                        help: tr(
+                            "The browser is closed after this long without use, freeing its memory.",
+                            "这么久不用就关闭浏览器，释放内存。",
+                        ),
+                        kind: Kind::Int,
+                    },
+                ],
+            },
+            Section {
+                title: tr("Reading web pages", "读取网页"),
+                fields: &[
+                    Field {
+                        path: &["fetch", "enabled"],
+                        label: tr("web_fetch tool", "web_fetch 工具"),
+                        help: tr(
+                            "Downloads a page and reads its text without a browser: fast and light. Pages that need JavaScript still need the browser.",
+                            "不用浏览器，直接下载网页读取文字，又快又省资源。需要 JavaScript 的页面仍然要用浏览器。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["fetch", "private_network"],
+                        label: tr("Local network", "局域网"),
+                        help: tr(
+                            "y lets owners read pages on this host and the local network (router, NAS). Guests never can.",
+                            "选 y 允许 owner 读取本机和局域网里的页面（路由器、NAS）。访客始终不行。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                ],
+            },
+            Section {
+                title: tr("Skills", "Skills"),
+                fields: &[Field {
+                    path: &["skills", "enabled"],
+                    label: tr("Skills", "Skills"),
+                    help: tr(
+                        "Task instructions in workspace/skills/<name>/SKILL.md that the agent loads when a request needs them. Manage them with openclaw-rs skills.",
+                        "放在 workspace/skills/<名字>/SKILL.md 里的任务说明，需要时 agent 会自动加载。用 openclaw-rs skills 管理。",
+                    ),
+                    kind: Kind::Bool,
+                }],
             },
         ],
     },
-    Section {
-        title: tr("Browser", "浏览器"),
-        fields: &[
-            Field {
-                path: &["browser", "enabled"],
-                label: tr("Browser tool", "浏览器工具"),
-                help: tr(
-                    "Uses a Chromium, Chrome, Edge or Brave already installed on this host; none is bundled. Without one there is no browser tool.",
-                    "使用本机已安装的 Chromium、Chrome、Edge 或 Brave，不自带浏览器；本机没有时就不提供浏览器工具。",
-                ),
-                kind: Kind::Bool,
+    Group {
+        title: tr("Access and spending", "权限与花费"),
+        sections: &[
+            Section {
+                title: tr("Access", "权限"),
+                fields: &[
+                    Field {
+                        path: &["access", "owners"],
+                        label: tr("Owners", "Owner"),
+                        help: tr(
+                            "Comma-separated qq:<openid>, feishu:<open_id>, zulip:<email> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
+                            "用逗号分隔的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
+                        ),
+                        kind: Kind::List,
+                    },
+                    Field {
+                        path: &["access", "first_chat_owner"],
+                        label: tr("First chat becomes owner", "第一个私聊的人成为所有者"),
+                        help: tr(
+                            "On QQ, Feishu or Zulip with no owner yet, the first person to write to the bot in a private chat becomes its owner and is added to the list above. Turn it on, write to the bot yourself, then turn it off again: until then, anyone who reaches the bot first gets every tool.",
+                            "QQ、飞书或 Zulip 上还没有所有者时，第一个私聊机器人的人会成为该平台的所有者，并加进上面的列表。建议打开后自己先给机器人发消息，然后再关掉：在那之前，谁先找到机器人谁就拿到所有工具。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["access", "owners"],
+                        label: tr("Revoke a chat owner", "撤销聊天平台的所有者"),
+                        help: tr(
+                            "Removes the owner you pick (QQ, Feishu or Zulip). With \"first chat becomes owner\" on, the next person to write privately on that app becomes its owner.",
+                            "移除你选中的所有者（QQ、飞书或 Zulip）。如果开着“第一个私聊的人成为所有者”，之后第一个私聊该平台机器人的人会成为新的所有者。",
+                        ),
+                        kind: Kind::Revoke,
+                    },
+                ],
             },
-            Field {
-                path: &["browser", "executable"],
-                label: tr("Browser path", "浏览器路径"),
-                help: tr(
-                    "Reset (-) to use the first of chromium, chromium-browser, google-chrome, microsoft-edge, brave found on PATH.",
-                    "输入 - 恢复为自动查找 PATH 中的 chromium、chromium-browser、google-chrome、microsoft-edge、brave。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["browser", "cdp_url"],
-                label: tr("Running browser", "已运行的浏览器"),
-                help: tr(
-                    "DevTools address of a browser started with --remote-debugging-port, e.g. http://127.0.0.1:9222; empty starts one when needed.",
-                    "用 --remote-debugging-port 启动的浏览器的调试地址，例如 http://127.0.0.1:9222；留空则在需要时自动启动。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["browser", "headless"],
-                label: tr("Headless", "无窗口运行"),
-                help: tr(
-                    "n shows a window, which needs a display.",
-                    "选 n 会显示窗口，需要图形界面。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["browser", "idle_secs"],
-                label: tr("Close when idle (s)", "空闲关闭（秒）"),
-                help: tr(
-                    "The browser is closed after this long without use, freeing its memory.",
-                    "这么久不用就关闭浏览器，释放内存。",
-                ),
-                kind: Kind::Int,
-            },
-        ],
-    },
-    Section {
-        title: tr("Reading web pages", "读取网页"),
-        fields: &[
-            Field {
-                path: &["fetch", "enabled"],
-                label: tr("web_fetch tool", "web_fetch 工具"),
-                help: tr(
-                    "Downloads a page and reads its text without a browser: fast and light. Pages that need JavaScript still need the browser.",
-                    "不用浏览器，直接下载网页读取文字，又快又省资源。需要 JavaScript 的页面仍然要用浏览器。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["fetch", "private_network"],
-                label: tr("Local network", "局域网"),
-                help: tr(
-                    "y lets owners read pages on this host and the local network (router, NAS). Guests never can.",
-                    "选 y 允许 owner 读取本机和局域网里的页面（路由器、NAS）。访客始终不行。",
-                ),
-                kind: Kind::Bool,
-            },
-        ],
-    },
-    Section {
-        title: tr("Spending limits", "花费上限"),
-        fields: &[
-            Field {
-                path: &["limits", "daily_usd"],
-                label: tr(
-                    "Daily limit, whole agent (USD)",
-                    "整个 agent 每日上限（美元）",
-                ),
-                help: tr(
-                    "Model calls stop for everyone, owners included, once this much was spent today. 0: no limit.",
-                    "今天花到这个数后，所有人（包括 owner）的模型调用都会停止。0 表示不限。",
-                ),
-                kind: Kind::Money,
-            },
-            Field {
-                path: &["limits", "monthly_usd"],
-                label: tr(
-                    "Monthly limit, whole agent (USD)",
-                    "整个 agent 每月上限（美元）",
-                ),
-                help: tr(
-                    "The same per calendar month. 0: no limit.",
-                    "同上，按自然月计算。0 表示不限。",
-                ),
-                kind: Kind::Money,
-            },
-            Field {
-                path: &["limits", "guest_daily_usd"],
-                label: tr("Daily limit per guest (USD)", "每个访客每日上限（美元）"),
-                help: tr(
-                    "What each QQ or email sender who is not an owner may spend a day. 0: no limit.",
-                    "每个不是 owner 的 QQ 或邮件发送者每天最多能花多少。0 表示不限。",
-                ),
-                kind: Kind::Money,
-            },
-            Field {
-                path: &["limits", "turn_usd"],
-                label: tr("Limit per turn (USD)", "每轮上限（美元）"),
-                help: tr(
-                    "Stops one reply that keeps calling tools once it cost this much. 0: no limit.",
-                    "一次回复不停调用工具、花到这个数时就停下。0 表示不限。",
-                ),
-                kind: Kind::Money,
+            Section {
+                title: tr("Spending limits", "花费上限"),
+                fields: &[
+                    Field {
+                        path: &["limits", "daily_usd"],
+                        label: tr(
+                            "Daily limit, whole agent (USD)",
+                            "整个 agent 每日上限（美元）",
+                        ),
+                        help: tr(
+                            "Model calls stop for everyone, owners included, once this much was spent today. 0: no limit.",
+                            "今天花到这个数后，所有人（包括 owner）的模型调用都会停止。0 表示不限。",
+                        ),
+                        kind: Kind::Money,
+                    },
+                    Field {
+                        path: &["limits", "monthly_usd"],
+                        label: tr(
+                            "Monthly limit, whole agent (USD)",
+                            "整个 agent 每月上限（美元）",
+                        ),
+                        help: tr(
+                            "The same per calendar month. 0: no limit.",
+                            "同上，按自然月计算。0 表示不限。",
+                        ),
+                        kind: Kind::Money,
+                    },
+                    Field {
+                        path: &["limits", "guest_daily_usd"],
+                        label: tr("Daily limit per guest (USD)", "每个访客每日上限（美元）"),
+                        help: tr(
+                            "What each QQ or email sender who is not an owner may spend a day. 0: no limit.",
+                            "每个不是 owner 的 QQ 或邮件发送者每天最多能花多少。0 表示不限。",
+                        ),
+                        kind: Kind::Money,
+                    },
+                    Field {
+                        path: &["limits", "turn_usd"],
+                        label: tr("Limit per turn (USD)", "每轮上限（美元）"),
+                        help: tr(
+                            "Stops one reply that keeps calling tools once it cost this much. 0: no limit.",
+                            "一次回复不停调用工具、花到这个数时就停下。0 表示不限。",
+                        ),
+                        kind: Kind::Money,
+                    },
+                ],
             },
         ],
     },
-    Section {
-        title: tr("Updates", "更新"),
-        fields: &[
-            Field {
-                path: &["update", "check"],
-                label: tr("Look for new versions", "检查新版本"),
-                help: tr(
-                    "The Gateway checks GitHub Releases once a day and logs a new version.",
-                    "Gateway 每天检查一次 GitHub Releases，发现新版本就写进日志。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["update", "auto"],
-                label: tr("Install updates on their own", "自动安装更新"),
-                help: tr(
-                    "The Gateway installs a new version (checksum checked, old binary kept) and restarts when no turn is running. The service account must be able to write the binary.",
-                    "Gateway 自动安装新版本（会校验 checksum，保留旧版本），并在没有对话进行时重启。服务账号需要能写入程序文件。",
-                ),
-                kind: Kind::Bool,
-            },
-        ],
-    },
-    Section {
-        title: tr("Skills", "Skills"),
-        fields: &[Field {
-            path: &["skills", "enabled"],
-            label: tr("Skills", "Skills"),
-            help: tr(
-                "Task instructions in workspace/skills/<name>/SKILL.md that the agent loads when a request needs them. Manage them with openclaw-rs skills.",
-                "放在 workspace/skills/<名字>/SKILL.md 里的任务说明，需要时 agent 会自动加载。用 openclaw-rs skills 管理。",
+    Group {
+        title: tr("Companion", "陪伴"),
+        sections: &[Section {
+            title: tr(
+                "Companion: time, heartbeat, inner life",
+                "陪伴：时间感、心跳、内心生活",
             ),
-            kind: Kind::Bool,
+            fields: &[
+                Field {
+                    path: &["agent", "time_sense"],
+                    label: tr("Time sense", "时间感"),
+                    help: tr(
+                        "Each message tells the model the local time, and how long ago you last wrote when it has been a while.",
+                        "每条消息都告诉模型当前本地时间，隔了一段时间再聊时还会告诉它你上次说话是多久以前。",
+                    ),
+                    kind: Kind::Bool,
+                },
+                Field {
+                    path: &["heartbeat", "enabled"],
+                    label: tr("Heartbeat: reach out on its own", "心跳：主动找你"),
+                    help: tr(
+                        "Every so often it may message you on its own when it has something worth saying. Needs the Gateway (service) running.",
+                        "每隔一段时间，如果它觉得有值得说的话，会主动给你发消息。需要 Gateway（后台服务）在运行。",
+                    ),
+                    kind: Kind::Bool,
+                },
+                Field {
+                    path: &["heartbeat", "every_minutes"],
+                    label: tr("Heartbeat interval (minutes)", "心跳间隔（分钟）"),
+                    help: tr(
+                        "How often it considers reaching out.",
+                        "多久考虑一次要不要主动找你。",
+                    ),
+                    kind: Kind::Int,
+                },
+                Field {
+                    path: &["heartbeat", "quiet_hours"],
+                    label: tr("Quiet hours", "免打扰时段"),
+                    help: tr(
+                        "Local time HH:MM-HH:MM with no heartbeat; may cross midnight. Empty: none.",
+                        "本地时间 HH:MM-HH:MM，期间不主动找你，可以跨午夜。留空表示没有。",
+                    ),
+                    kind: Kind::Text,
+                },
+                Field {
+                    path: &["heartbeat", "max_per_day"],
+                    label: tr("Messages it starts per day", "每天最多主动消息数"),
+                    help: tr(
+                        "At most this many a day; one more when you answered the last one quickly.",
+                        "一天里最多主动发几条；你很快回复了上一条时，当天可以多一条。",
+                    ),
+                    kind: Kind::Int,
+                },
+                Field {
+                    path: &["heartbeat", "prompt"],
+                    label: tr("What to keep an eye on", "让它多留意什么"),
+                    help: tr(
+                        "Optional words added to each heartbeat, e.g. \"Ask how my running is going now and then.\"",
+                        "可选，每次心跳都会带上的话，例如“偶尔问问我跑步的情况”。",
+                    ),
+                    kind: Kind::Text,
+                },
+                Field {
+                    path: &["life", "enabled"],
+                    label: tr("Inner life", "内心生活"),
+                    help: tr(
+                        "A nightly diary, mood and notes about you, carried into your conversations, plus good-morning and good-night messages. Needs the Gateway running.",
+                        "每晚写日记、记下心情和关于你的事，并带进你们的对话；还有早安和晚安消息。需要 Gateway 在运行。",
+                    ),
+                    kind: Kind::Bool,
+                },
+                Field {
+                    path: &["life", "reflect_at"],
+                    label: tr("Nightly reflection at", "每晚反思时间"),
+                    help: tr("Local time HH:MM.", "本地时间 HH:MM。"),
+                    kind: Kind::Text,
+                },
+                Field {
+                    path: &["life", "morning"],
+                    label: tr("Good-morning at", "早安时间"),
+                    help: tr(
+                        "Local time HH:MM; empty for none.",
+                        "本地时间 HH:MM；留空表示不发。",
+                    ),
+                    kind: Kind::Text,
+                },
+                Field {
+                    path: &["life", "evening"],
+                    label: tr("Good-night at", "晚安时间"),
+                    help: tr(
+                        "Local time HH:MM; empty for none.",
+                        "本地时间 HH:MM；留空表示不发。",
+                    ),
+                    kind: Kind::Text,
+                },
+                Field {
+                    path: &["life", "city"],
+                    label: tr("City for the weather", "天气所在城市"),
+                    help: tr(
+                        "Named in the good-morning message; it looks the weather up with its web tools.",
+                        "早安消息里会提到这里的天气，由它用网页工具去查。",
+                    ),
+                    kind: Kind::Text,
+                },
+                Field {
+                    path: &["life", "dates"],
+                    label: tr("Days that matter", "重要的日子"),
+                    help: tr(
+                        "Comma-separated MM-DD and a name, e.g. \"03-14 my birthday, 05-20 our anniversary\".",
+                        "用逗号分隔，每项是 月-日 加名字，例如“03-14 我的生日, 05-20 纪念日”。",
+                    ),
+                    kind: Kind::Dates,
+                },
+                Field {
+                    path: &["heartbeat", "session"],
+                    label: tr("Where it reaches out", "主动消息发到哪里"),
+                    help: tr(
+                        "A session such as qq:c2c:<openid>, feishu:dm:<open_id> or zulip:dm:<email>. Empty: your private chat with the first qq:, feishu: or zulip: owner under Access, else the local main session.",
+                        "会话名，例如 qq:c2c:<openid>、feishu:dm:<open_id> 或 zulip:dm:<邮箱>。留空：发到权限里第一个 qq:、feishu: 或 zulip: owner 的私聊，没有则发到本地 main 会话。",
+                    ),
+                    kind: Kind::Text,
+                },
+                Field {
+                    path: &["life", "session"],
+                    label: tr("Where morning and evening go", "早安晚安发到哪里"),
+                    help: tr(
+                        "As above; empty for the same default.",
+                        "同上；留空使用同样的默认值。",
+                    ),
+                    kind: Kind::Text,
+                },
+            ],
         }],
     },
-    Section {
-        title: tr("Access", "权限"),
-        fields: &[Field {
-            path: &["access", "owners"],
-            label: tr("Owners", "Owner"),
-            help: tr(
-                "Comma-separated qq:<openid>, feishu:<open_id>, zulip:<email> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
-                "用逗号分隔的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
-            ),
-            kind: Kind::List,
-        }],
-    },
-    Section {
-        title: tr(
-            "Companion: time, heartbeat, inner life",
-            "陪伴：时间感、心跳、内心生活",
-        ),
-        fields: &[
-            Field {
-                path: &["agent", "time_sense"],
-                label: tr("Time sense", "时间感"),
-                help: tr(
-                    "Each message tells the model the local time, and how long ago you last wrote when it has been a while.",
-                    "每条消息都告诉模型当前本地时间，隔了一段时间再聊时还会告诉它你上次说话是多久以前。",
-                ),
-                kind: Kind::Bool,
+    Group {
+        title: tr("Gateway and updates", "Gateway 与更新"),
+        sections: &[
+            Section {
+                title: tr("Gateway and Web UI", "Gateway 与 Web UI"),
+                fields: &[
+                    Field {
+                        path: &["gateway", "bind"],
+                        label: tr("Listen address", "监听地址"),
+                        help: tr(
+                            "e.g. 127.0.0.1:18789, or 0.0.0.0:18789 for the LAN (needs a token).",
+                            "例如 127.0.0.1:18789；局域网访问用 0.0.0.0:18789（需要 token）。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["gateway", "token"],
+                        label: tr("Access token", "访问 token"),
+                        help: tr(
+                            "Required unless bound to loopback; OPENCLAW_RS_TOKEN wins when set. Type + to generate one.",
+                            "不是只监听本机时必须设置；设了 OPENCLAW_RS_TOKEN 时以环境变量为准。输入 + 自动生成。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "OPENCLAW_RS_TOKEN",
+                            generate: true,
+                        },
+                    },
+                    Field {
+                        path: &["gateway", "web"],
+                        label: tr("Web UI", "Web UI"),
+                        help: tr(
+                            "ui: Web UI and WebSocket API; api: only the API (for other clients); off: no HTTP at all, QQ, email and scheduled jobs only. Chat in the terminal with openclaw-rs tui.",
+                            "ui：Web UI 和 WebSocket API；api：只有 API（给其他客户端用）；off：完全不开 HTTP，只运行 QQ、邮件和定时任务。在终端里聊天用 openclaw-rs tui。",
+                        ),
+                        kind: Kind::Choice(&["ui", "api", "off"]),
+                    },
+                ],
             },
-            Field {
-                path: &["heartbeat", "enabled"],
-                label: tr("Heartbeat: reach out on its own", "心跳：主动找你"),
-                help: tr(
-                    "Every so often it may message you on its own when it has something worth saying. Needs the Gateway (service) running.",
-                    "每隔一段时间，如果它觉得有值得说的话，会主动给你发消息。需要 Gateway（后台服务）在运行。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["heartbeat", "every_minutes"],
-                label: tr("Heartbeat interval (minutes)", "心跳间隔（分钟）"),
-                help: tr(
-                    "How often it considers reaching out.",
-                    "多久考虑一次要不要主动找你。",
-                ),
-                kind: Kind::Int,
-            },
-            Field {
-                path: &["heartbeat", "quiet_hours"],
-                label: tr("Quiet hours", "免打扰时段"),
-                help: tr(
-                    "Local time HH:MM-HH:MM with no heartbeat; may cross midnight. Empty: none.",
-                    "本地时间 HH:MM-HH:MM，期间不主动找你，可以跨午夜。留空表示没有。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["heartbeat", "max_per_day"],
-                label: tr("Messages it starts per day", "每天最多主动消息数"),
-                help: tr(
-                    "At most this many a day; one more when you answered the last one quickly.",
-                    "一天里最多主动发几条；你很快回复了上一条时，当天可以多一条。",
-                ),
-                kind: Kind::Int,
-            },
-            Field {
-                path: &["heartbeat", "prompt"],
-                label: tr("What to keep an eye on", "让它多留意什么"),
-                help: tr(
-                    "Optional words added to each heartbeat, e.g. \"Ask how my running is going now and then.\"",
-                    "可选，每次心跳都会带上的话，例如“偶尔问问我跑步的情况”。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["life", "enabled"],
-                label: tr("Inner life", "内心生活"),
-                help: tr(
-                    "A nightly diary, mood and notes about you, carried into your conversations, plus good-morning and good-night messages. Needs the Gateway running.",
-                    "每晚写日记、记下心情和关于你的事，并带进你们的对话；还有早安和晚安消息。需要 Gateway 在运行。",
-                ),
-                kind: Kind::Bool,
-            },
-            Field {
-                path: &["life", "reflect_at"],
-                label: tr("Nightly reflection at", "每晚反思时间"),
-                help: tr("Local time HH:MM.", "本地时间 HH:MM。"),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["life", "morning"],
-                label: tr("Good-morning at", "早安时间"),
-                help: tr(
-                    "Local time HH:MM; empty for none.",
-                    "本地时间 HH:MM；留空表示不发。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["life", "evening"],
-                label: tr("Good-night at", "晚安时间"),
-                help: tr(
-                    "Local time HH:MM; empty for none.",
-                    "本地时间 HH:MM；留空表示不发。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["life", "city"],
-                label: tr("City for the weather", "天气所在城市"),
-                help: tr(
-                    "Named in the good-morning message; it looks the weather up with its web tools.",
-                    "早安消息里会提到这里的天气，由它用网页工具去查。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["life", "dates"],
-                label: tr("Days that matter", "重要的日子"),
-                help: tr(
-                    "Comma-separated MM-DD and a name, e.g. \"03-14 my birthday, 05-20 our anniversary\".",
-                    "用逗号分隔，每项是 月-日 加名字，例如“03-14 我的生日, 05-20 纪念日”。",
-                ),
-                kind: Kind::Dates,
-            },
-            Field {
-                path: &["heartbeat", "session"],
-                label: tr("Where it reaches out", "主动消息发到哪里"),
-                help: tr(
-                    "A session such as qq:c2c:<openid>, feishu:dm:<open_id> or zulip:dm:<email>. Empty: your private chat with the first qq:, feishu: or zulip: owner under Access, else the local main session.",
-                    "会话名，例如 qq:c2c:<openid>、feishu:dm:<open_id> 或 zulip:dm:<邮箱>。留空：发到权限里第一个 qq:、feishu: 或 zulip: owner 的私聊，没有则发到本地 main 会话。",
-                ),
-                kind: Kind::Text,
-            },
-            Field {
-                path: &["life", "session"],
-                label: tr("Where morning and evening go", "早安晚安发到哪里"),
-                help: tr(
-                    "As above; empty for the same default.",
-                    "同上；留空使用同样的默认值。",
-                ),
-                kind: Kind::Text,
+            Section {
+                title: tr("Updates", "更新"),
+                fields: &[
+                    Field {
+                        path: &["update", "check"],
+                        label: tr("Look for new versions", "检查新版本"),
+                        help: tr(
+                            "The Gateway checks GitHub Releases once a day and logs a new version.",
+                            "Gateway 每天检查一次 GitHub Releases，发现新版本就写进日志。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["update", "auto"],
+                        label: tr("Install updates on their own", "自动安装更新"),
+                        help: tr(
+                            "The Gateway installs a new version (checksum checked, old binary kept) and restarts when no turn is running. The service account must be able to write the binary.",
+                            "Gateway 自动安装新版本（会校验 checksum，保留旧版本），并在没有对话进行时重启。服务账号需要能写入程序文件。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                ],
             },
         ],
     },
@@ -1401,6 +1524,50 @@ impl Drop for EchoOff {
     }
 }
 
+/// A terminal to talk on, for steps done outside this module (signing in).
+pub trait Prompt {
+    fn say(&mut self, text: &str) -> Result<()>;
+    /// One trimmed line, or `None` at end of input.
+    fn ask(&mut self, prompt: &str) -> Result<Option<String>>;
+    fn lang(&self) -> Lang;
+}
+
+impl<R: BufRead, W: Write> Prompt for Term<R, W> {
+    fn say(&mut self, text: &str) -> Result<()> {
+        Term::say(self, text)?;
+        self.out.flush()?;
+        Ok(())
+    }
+
+    fn ask(&mut self, prompt: &str) -> Result<Option<String>> {
+        Term::ask(self, prompt)
+    }
+
+    fn lang(&self) -> Lang {
+        self.lang
+    }
+}
+
+/// Signs in to ChatGPT on a terminal: who signed in, or `None` when input ended.
+/// `true` signs in with a device code, `false` in a browser.
+pub type SignIn<'a> = Box<dyn FnMut(&mut dyn Prompt, bool) -> Result<Option<String>> + 'a>;
+
+/// Signing in for real, saved in the state directory.
+pub fn chatgpt_sign_in() -> (Option<String>, SignIn<'static>) {
+    match crate::config::state_dir() {
+        Ok(state) => (
+            crate::chatgpt::signed_in(&state),
+            Box::new(move |term: &mut dyn Prompt, device| {
+                crate::chatgpt::sign_in(term, &state, device)
+            }),
+        ),
+        Err(err) => {
+            let why = format!("{err:#}");
+            (None, Box::new(move |_: &mut dyn Prompt, _| bail!("{why}")))
+        }
+    }
+}
+
 /// The process's own terminal.
 pub fn terminal(lang: Lang) -> Term<std::io::StdinLock<'static>, std::io::Stdout> {
     // SAFETY: isatty has no preconditions.
@@ -1442,21 +1609,29 @@ fn run_on<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<bo
             tokio::runtime::Handle::current().block_on(crate::onboard::Catalog::models(&catalog))
         })
     });
+    let (signed_in, sign_in) = chatgpt_sign_in();
+    models.signed_in = signed_in;
+    models.sign_in = Some(sign_in);
     edit_with(path, term, &mut models)
 }
 
-/// OpenRouter's model list for the model fields, loaded once, when first needed.
+/// OpenRouter's model list for the model fields, loaded once, when first
+/// needed, and the ChatGPT sign-in.
 #[derive(Default)]
 pub struct Models<'a> {
     load: Option<Box<dyn FnMut() -> Result<Vec<ModelInfo>> + 'a>>,
     list: Option<Vec<ModelInfo>>,
+    /// Signs in to ChatGPT; without it, the sign-in field cannot be used.
+    pub sign_in: Option<SignIn<'a>>,
+    /// Who is signed in to ChatGPT now.
+    pub signed_in: Option<String>,
 }
 
 impl<'a> Models<'a> {
     pub fn new(load: impl FnMut() -> Result<Vec<ModelInfo>> + 'a) -> Self {
         Self {
             load: Some(Box::new(load)),
-            list: None,
+            ..Self::default()
         }
     }
 
@@ -1518,8 +1693,8 @@ pub fn edit_with<R: BufRead, W: Write>(
     term.tell(HOW, &[])?;
     loop {
         term.say("")?;
-        for (i, section) in SECTIONS.iter().enumerate() {
-            term.say(&format!("  {}) {}", i + 1, section.title.get(term.lang)))?;
+        for (i, group) in GROUPS.iter().enumerate() {
+            term.say(&format!("  {}) {}", i + 1, group.title.get(term.lang)))?;
         }
         term.say(&format!("  s) {}", SAVE.get(term.lang)))?;
         term.say(&format!("  q) {}", QUIT.get(term.lang)))?;
@@ -1532,10 +1707,10 @@ pub fn edit_with<R: BufRead, W: Write>(
             other => match other
                 .parse::<usize>()
                 .ok()
-                .and_then(|n| SECTIONS.get(n.wrapping_sub(1)))
+                .and_then(|n| GROUPS.get(n.wrapping_sub(1)))
             {
-                Some(section) => {
-                    if !edit_section(&mut doc, section, term)? {
+                Some(group) => {
+                    if !edit_group(&mut doc, group, term, models)? {
                         return finish(path, &doc, &original, term, false);
                     }
                 }
@@ -1545,7 +1720,40 @@ pub fn edit_with<R: BufRead, W: Write>(
     }
 }
 
-/// The menus picked with the arrow keys: sections, then fields.
+/// Picks one of a group's sections by number and walks it; a group of one
+/// section goes straight to it. `false` when input ended.
+fn edit_group<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    group: &Group,
+    term: &mut Term<R, W>,
+    models: &mut Models<'_>,
+) -> Result<bool> {
+    if let [section] = group.sections {
+        return edit_section(doc, section, term, models);
+    }
+    term.say(&format!("\n[{}]", group.title.get(term.lang)))?;
+    for (i, section) in group.sections.iter().enumerate() {
+        term.say(&format!("  {}) {}", i + 1, section.title.get(term.lang)))?;
+    }
+    loop {
+        let Some(choice) = term.ask(BACK_PROMPT.get(term.lang))? else {
+            return Ok(false);
+        };
+        if choice.is_empty() {
+            return Ok(true);
+        }
+        match choice
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| group.sections.get(n.wrapping_sub(1)))
+        {
+            Some(section) => return edit_section(doc, section, term, models),
+            None => term.tell(PICK_MENU, &[])?,
+        }
+    }
+}
+
+/// The menus picked with the arrow keys: groups, sections, then fields.
 fn edit_with_arrows<R: BufRead, W: Write>(
     path: &Path,
     mut doc: DocumentMut,
@@ -1556,9 +1764,9 @@ fn edit_with_arrows<R: BufRead, W: Write>(
     let title = EDITING.fill(term.lang, &[&path.display().to_string()]);
     let mut cur = 0;
     loop {
-        let mut items: Vec<String> = SECTIONS
+        let mut items: Vec<String> = GROUPS
             .iter()
-            .map(|s| s.title.get(term.lang).to_owned())
+            .map(|g| g.title.get(term.lang).to_owned())
             .collect();
         items.push(SAVE.get(term.lang).into());
         items.push(QUIT.get(term.lang).into());
@@ -1569,14 +1777,14 @@ fn edit_with_arrows<R: BufRead, W: Write>(
             title.clone()
         };
         match term.select(&shown, &items, cur, &|_| None)? {
-            Picked::Item(i) if i < SECTIONS.len() => {
+            Picked::Item(i) if i < GROUPS.len() => {
                 cur = i;
-                if !section_with_arrows(&mut doc, &SECTIONS[i], term, models)? {
+                if !group_with_arrows(&mut doc, &GROUPS[i], term, models)? {
                     return finish(path, &doc, original, term, false);
                 }
             }
             Picked::Item(i) => {
-                return finish(path, &doc, original, term, i == SECTIONS.len());
+                return finish(path, &doc, original, term, i == GROUPS.len());
             }
             Picked::Back if changed => {
                 let choices = [
@@ -1597,16 +1805,52 @@ fn edit_with_arrows<R: BufRead, W: Write>(
     }
 }
 
+/// A group's sections; Enter opens one. A group of one section opens it
+/// at once. `false` when input ended.
+fn group_with_arrows<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    group: &'static Group,
+    term: &mut Term<R, W>,
+    models: &mut Models<'_>,
+) -> Result<bool> {
+    let lang = term.lang;
+    let title = group.title.get(lang);
+    if let [section] = group.sections {
+        return section_with_arrows(doc, section, &format!("[{title}]"), term, models);
+    }
+    let mut cur = 0;
+    loop {
+        let mut items: Vec<String> = group
+            .sections
+            .iter()
+            .map(|s| s.title.get(lang).to_owned())
+            .collect();
+        items.push(BACK.get(lang).into());
+        match term.select(&format!("[{title}]"), &items, cur, &|_| None)? {
+            Picked::Item(i) if i < group.sections.len() => {
+                cur = i;
+                let section = &group.sections[i];
+                let trail = format!("[{title} › {}]", section.title.get(lang));
+                if !section_with_arrows(doc, section, &trail, term, models)? {
+                    return Ok(false);
+                }
+            }
+            Picked::Item(_) | Picked::Back => return Ok(true),
+            Picked::End => return Ok(false),
+        }
+    }
+}
+
 /// A section's fields with their values; Enter edits one. `false` when
 /// input ended.
 fn section_with_arrows<R: BufRead, W: Write>(
     doc: &mut DocumentMut,
     section: &'static Section,
+    title: &str,
     term: &mut Term<R, W>,
     models: &mut Models<'_>,
 ) -> Result<bool> {
     let lang = term.lang;
-    let title = format!("[{}]", section.title.get(lang));
     let label_width = section
         .fields
         .iter()
@@ -1621,12 +1865,12 @@ fn section_with_arrows<R: BufRead, W: Write>(
             .map(|f| {
                 let label = f.label.get(lang);
                 let pad = " ".repeat(label_width - text_width(label));
-                format!("{label}{pad}  {}", describe(doc, f, lang))
+                format!("{label}{pad}  {}", shown(doc, f, lang, models))
             })
             .collect();
         items.push(BACK.get(lang).into());
         let help = |i: usize| section.fields.get(i).map(|f| f.help.get(lang).to_owned());
-        match term.select(&title, &items, cur, &help)? {
+        match term.select(title, &items, cur, &help)? {
             Picked::Item(i) if i < section.fields.len() => {
                 if !field_with_arrows(doc, &section.fields[i], term, models)? {
                     return Ok(false);
@@ -1648,6 +1892,29 @@ fn field_with_arrows<R: BufRead, W: Write>(
 ) -> Result<bool> {
     let lang = term.lang;
     let label = field.label.get(lang);
+    if let Kind::Revoke = field.kind {
+        return revoke_owner(doc, term);
+    }
+    if let Kind::SignIn { device } = field.kind {
+        if let Some(who) = models.signed_in.clone() {
+            let items = [
+                USE_SIGN_IN.fill(lang, &[&who]),
+                SIGN_IN_AGAIN.get(lang).to_owned(),
+            ];
+            let help = |_| Some(field.help.get(lang).to_owned());
+            match term.select(label, &items, 0, &help)? {
+                Picked::Item(0) => {
+                    let model = crate::chatgpt::use_in_doc(doc);
+                    term.tell(ON_CHATGPT, &[&model])?;
+                    return Ok(true);
+                }
+                Picked::Item(_) => {}
+                Picked::Back => return Ok(true),
+                Picked::End => return Ok(false),
+            }
+        }
+        return sign_in(doc, term, models, device);
+    }
     let current = describe(doc, field, lang);
     // ChatGPT's models are not in OpenRouter's list: typed instead.
     let chatgpt =
@@ -1882,11 +2149,19 @@ fn edit_section<R: BufRead, W: Write>(
     doc: &mut DocumentMut,
     section: &Section,
     term: &mut Term<R, W>,
+    models: &mut Models<'_>,
 ) -> Result<bool> {
     term.say(&format!("\n[{}]", section.title.get(term.lang)))?;
     let mut index = 0;
     while let Some(field) = section.fields.get(index) {
-        let current = describe(doc, field, term.lang);
+        if let Kind::Revoke = field.kind {
+            if !revoke_owner(doc, term)? {
+                return Ok(false);
+            }
+            index += 1;
+            continue;
+        }
+        let current = shown(doc, field, term.lang, models);
         let kind = match field.kind {
             Kind::Decider { .. } => Kind::Choice(DECIDERS),
             kind => kind,
@@ -1901,7 +2176,7 @@ fn edit_section<R: BufRead, W: Write>(
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            Kind::Bool => match term.lang {
+            Kind::Bool | Kind::SignIn { .. } => match term.lang {
                 Lang::En => " (y/n)".into(),
                 Lang::Zh => " (y/n，是/否)".into(),
             },
@@ -1921,6 +2196,19 @@ fn edit_section<R: BufRead, W: Write>(
             "?" => {
                 term.say(&format!("  {}", field.help.get(term.lang)))?;
                 continue;
+            }
+            text if let Kind::SignIn { device } = field.kind => {
+                match value_for(Kind::Bool, text, term.lang) {
+                    Ok(yes) => {
+                        if yes.as_bool() == Some(true) && !sign_in(doc, term, models, device)? {
+                            return Ok(false);
+                        }
+                    }
+                    Err(err) => {
+                        term.say(&format!("  {err:#}"))?;
+                        continue;
+                    }
+                }
             }
             "-" => {
                 if !change(doc, field.path, None, term)? {
@@ -1949,9 +2237,10 @@ fn edit_section<R: BufRead, W: Write>(
 /// tool): the companion section, chat reply splitting and the language.
 /// Keys, permissions and access stay with the editor.
 fn chat_settable() -> impl Iterator<Item = &'static Field> {
-    let companion = SECTIONS.last().map_or(&[][..], |s| s.fields);
-    let elsewhere = SECTIONS
-        .iter()
+    let companion = sections()
+        .find(|s| s.fields.iter().any(|f| f.path == ["heartbeat", "enabled"]))
+        .map_or(&[][..], |s| s.fields);
+    let elsewhere = sections()
         .flat_map(|s| s.fields)
         .filter(|f| matches!(f.path, [_, "split_replies"] | ["language"]));
     companion.iter().chain(elsewhere)
@@ -2073,6 +2362,7 @@ fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
             }
             Value::Array(array)
         }
+        Kind::SignIn { .. } | Kind::Revoke => bail!("{text:?} cannot be typed here"),
         Kind::Secret { generate, .. } => {
             if generate && text == "+" {
                 Value::from(random_token()?)
@@ -2126,6 +2416,146 @@ fn remove(doc: &mut DocumentMut, path: &[&str]) {
     }
 }
 
+/// What the menus show for `field`: who is signed in for the sign-in.
+fn shown(doc: &DocumentMut, field: &Field, lang: Lang, models: &Models<'_>) -> String {
+    match field.kind {
+        Kind::SignIn { .. } => models
+            .signed_in
+            .clone()
+            .unwrap_or_else(|| NOT_SIGNED_IN.get(lang).into()),
+        _ => describe(doc, field, lang),
+    }
+}
+
+/// Signs in to ChatGPT and points the model at it. `false` when input ended.
+fn sign_in<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    term: &mut Term<R, W>,
+    models: &mut Models<'_>,
+    device: bool,
+) -> Result<bool> {
+    let Some(sign_in) = models.sign_in.as_mut() else {
+        term.tell(NO_SIGN_IN, &[])?;
+        return Ok(true);
+    };
+    match sign_in(term, device) {
+        Ok(Some(who)) => {
+            models.signed_in = Some(who);
+            let model = crate::chatgpt::use_in_doc(doc);
+            term.tell(ON_CHATGPT, &[&model])?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(err) => {
+            term.tell(SIGN_IN_FAILED, &[&format!("{err:#}")])?;
+            Ok(true)
+        }
+    }
+}
+
+fn owners_array(doc: &DocumentMut) -> Option<&Array> {
+    doc.get("access")?.get("owners")?.as_array()
+}
+
+/// The owners on a chat app (`qq:`, `feishu:`, `zulip:`) listed in `doc`.
+pub(crate) fn chat_owners(doc: &DocumentMut) -> Vec<String> {
+    owners_array(doc)
+        .into_iter()
+        .flat_map(|a| a.iter())
+        .filter_map(|v| v.as_str())
+        .map(str::trim)
+        .filter(|o| crate::chat::private_chat(o).is_some())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Removes `owner` from `access.owners`.
+fn revoke(doc: &mut DocumentMut, owner: &str) {
+    if let Some(array) = doc
+        .get_mut("access")
+        .and_then(|a| a.get_mut("owners"))
+        .and_then(Item::as_array_mut)
+    {
+        array.retain(|v| v.as_str().map(str::trim) != Some(owner));
+    }
+}
+
+/// Lets the person pick a chat app's owner to revoke. `false` when input ended.
+pub(crate) fn revoke_owner<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    term: &mut Term<R, W>,
+) -> Result<bool> {
+    let owners = chat_owners(doc);
+    if owners.is_empty() {
+        term.tell(NO_CHAT_OWNERS, &[])?;
+        return Ok(true);
+    }
+    let picked = if term.arrows {
+        let mut items = owners.clone();
+        items.push(BACK.get(term.lang).into());
+        let title = REVOKE_TITLE.get(term.lang);
+        match term.select(title, &items, 0, &|_| None)? {
+            Picked::Item(i) => owners.get(i).cloned(),
+            Picked::Back => None,
+            Picked::End => return Ok(false),
+        }
+    } else {
+        for (i, owner) in owners.iter().enumerate() {
+            term.say(&format!("  {}) {owner}", i + 1))?;
+        }
+        loop {
+            let Some(answer) = term.ask(REVOKE_WHICH.get(term.lang))? else {
+                return Ok(false);
+            };
+            if answer.is_empty() {
+                break None;
+            }
+            let found = answer
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| owners.get(n.wrapping_sub(1)))
+                .or_else(|| owners.iter().find(|o| o.eq_ignore_ascii_case(&answer)));
+            match found {
+                Some(owner) => break Some(owner.clone()),
+                None => term.tell(PICK_ONE, &[&owners.join(", ")])?,
+            }
+        }
+    };
+    if let Some(owner) = picked {
+        revoke(doc, &owner);
+        term.tell(REVOKED, &[&owner])?;
+    }
+    Ok(true)
+}
+
+/// Adds `id` to `access.owners` in the file at `path`, unless it is there.
+pub(crate) fn add_owner(path: &Path, id: &str) -> Result<()> {
+    let mut doc = load(path)?;
+    let listed = owners_array(&doc).is_some_and(|a| {
+        a.iter()
+            .filter_map(|v| v.as_str())
+            .any(|o| o.trim().eq_ignore_ascii_case(id))
+    });
+    if listed {
+        return Ok(());
+    }
+    match doc
+        .get_mut("access")
+        .and_then(|a| a.get_mut("owners"))
+        .and_then(Item::as_array_mut)
+    {
+        Some(array) => array.push(id),
+        None => {
+            let mut array = Array::new();
+            array.push(id);
+            set(&mut doc, &["access", "owners"], Value::Array(array));
+        }
+    }
+    let text = doc.to_string();
+    toml::from_str::<Config>(&text).context("the new settings do not load")?;
+    write_private(path, &text)
+}
+
 /// The value in effect for `field`, defaults included; secrets are never shown.
 /// A string set at `path`, as the config loads it.
 fn describe_path(doc: &DocumentMut, path: &[&str]) -> Option<String> {
@@ -2170,6 +2600,14 @@ fn describe(doc: &DocumentMut, field: &Field, lang: Lang) -> String {
             (true, _) => FROM_ENV.fill(lang, &[env]),
             (false, true) => IN_FILE.get(lang).into(),
             (false, false) => NOT_SET.get(lang).into(),
+        };
+    }
+    if let Kind::Revoke = field.kind {
+        let owners = chat_owners(doc);
+        return if owners.is_empty() {
+            NONE.get(lang).into()
+        } else {
+            owners.join(", ")
         };
     }
     if let Kind::Decider { model, base_url } = field.kind {
@@ -2234,11 +2672,12 @@ mod tests {
             "# my notes\n[model]\nmodel = \"x/old\"  # keep me\n\n[custom]\nthing = 1\n",
         )
         .unwrap();
-        // Model (section 2): new id, keep key, two fallbacks, keep retries, cache by number,
-        // a bad then a good budget, reset summary model, keep image and audio
-        // models, recall, max steps, the three guide fields, provider and
-        // reasoning effort.
-        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\ns\n";
+        // Model › provider: keep provider and key, skip both sign-ins, new
+        // id, keep reasoning effort, two fallbacks. Model › context: keep
+        // retries, cache by number, a bad then a good budget, reset summary
+        // model, keep image and audio models, recall and max steps.
+        let script =
+            "2\n1\n\n\n\n\na/new\n\nb/one, c/two ,\n2\n2\n\n3\nlots\n32000\n-\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -2264,7 +2703,7 @@ mod tests {
     fn sets_up_the_companion_without_touching_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let section = SECTIONS.len().to_string();
+        let section = "6";
         // Time sense kept; heartbeat on, every 90 min, keep quiet hours and
         // the daily limit, a prompt; inner life on, keep the times, a city,
         // a bad then a good list of dates; keep both sessions.
@@ -2355,7 +2794,7 @@ mod tests {
             "[qq]\napp_secret = \"hunter2\"\nallow = [\"A\", \"B\"]\n",
         )
         .unwrap();
-        let out = drive(&path, "5\n?\n\n\n\n\nq\n");
+        let out = drive(&path, "3\n1\n?\n\n\n\n\nq\n");
         assert!(out.contains("Enabled (y/n) [false]"), "{out}");
         assert!(out.contains("Connects to QQ over WebSocket"), "{out}");
         assert!(out.contains("Allowed openids [A, B]"), "{out}");
@@ -2367,10 +2806,10 @@ mod tests {
     fn quitting_or_running_out_of_input_saves_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let out = drive(&path, "4\n0.0.0.0:1\n+\nq\n");
+        let out = drive(&path, "7\n1\n0.0.0.0:1\n+\nq\n");
         assert!(out.contains("Quit without saving."), "{out}");
         assert!(!path.exists());
-        drive(&path, "5\ny\n");
+        drive(&path, "3\n1\ny\n");
         assert!(!path.exists());
     }
 
@@ -2378,7 +2817,7 @@ mod tests {
     fn generates_a_token_and_sets_nested_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        drive(&path, "4\n\n+\n\n3\n\n\n\n\n\nopenrouter\n\ns\n");
+        drive(&path, "7\n1\n\n+\n\n4\n1\n\n\n\n\n\nopenrouter\n\ns\n");
         let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let token = config.gateway.token.unwrap();
         assert_eq!(token.len(), 48);
@@ -2408,9 +2847,10 @@ mod tests {
         let out = drive_in(
             Lang::Zh,
             &path,
-            "5\n?\n是\n\n\n\n\n99\n8\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
+            "3\n1\n?\n是\n\n\n\n\n99\n3\n4\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
         );
-        assert!(out.contains("2) 模型与上下文"), "{out}");
+        assert!(out.contains("2) 模型"), "{out}");
+        assert!(out.contains("1) QQ 机器人"), "{out}");
         assert!(out.contains("s) 保存并退出"), "{out}");
         assert!(out.contains("启用 (y/n，是/否) [false]"), "{out}");
         assert!(
@@ -2465,8 +2905,22 @@ mod tests {
             UNSAVED,
             KEEP_EDITING,
             TYPE_HOW,
+            NOT_SIGNED_IN,
+            NO_SIGN_IN,
+            SIGN_IN_FAILED,
+            USE_SIGN_IN,
+            SIGN_IN_AGAIN,
+            ON_CHATGPT,
+            NO_CHAT_OWNERS,
+            REVOKED,
+            REVOKE_TITLE,
+            REVOKE_WHICH,
+            BACK_PROMPT,
         ];
-        for section in SECTIONS {
+        for group in GROUPS {
+            texts.push(group.title);
+        }
+        for section in sections() {
             texts.push(section.title);
             for field in section.fields {
                 texts.extend([field.label, field.help]);
@@ -2474,6 +2928,109 @@ mod tests {
         }
         crate::i18n::assert_complete(&texts);
         assert_eq!(SAVED.fill(Lang::Zh, &["a.toml"]), "已保存 a.toml。");
+    }
+
+    /// The typed menu answers that open the section titled `title`.
+    fn open(title: &str) -> String {
+        for (g, group) in GROUPS.iter().enumerate() {
+            for (i, section) in group.sections.iter().enumerate() {
+                if section.title.get(Lang::En) == title {
+                    return match group.sections.len() {
+                        1 => format!("{}\n", g + 1),
+                        _ => format!("{}\n{}\n", g + 1, i + 1),
+                    };
+                }
+            }
+        }
+        panic!("no section {title}")
+    }
+
+    #[test]
+    fn lets_the_first_chat_claim_ownership_and_revokes_a_chat_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[access]\nowners = [\"mail:me@example.org\", \"qq:ME\", \"zulip:z@example.org\"]\n",
+        )
+        .unwrap();
+        // Keep the owners, turn claiming on, revoke the second chat owner.
+        let script = format!("{}\ny\n2\ns\n", open("Access"));
+        let out = drive(&path, &script);
+        assert!(
+            out.contains("1) qq:ME") && out.contains("2) zulip:z@example.org"),
+            "{out}"
+        );
+        assert!(out.contains("Revoked zulip:z@example.org"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert!(config.access.first_chat_owner);
+        assert_eq!(config.access.owners, ["mail:me@example.org", "qq:ME"]);
+
+        // With arrows: Access and spending › Access, the revoke field
+        // (third), the only chat owner; back out and save.
+        let mut term = keys("5\r1\r\x1b[B\x1b[B\r\rqqq\r");
+        edit_with(&path, &mut term, &mut Models::default()).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.access.owners, ["mail:me@example.org"]);
+        // Nothing left to revoke.
+        let out = drive(&path, &format!("{}\n\nq\n", open("Access")));
+        assert!(out.contains("No chat app"), "{out}");
+    }
+
+    #[test]
+    fn adds_a_claimed_owner_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# mine\n[model]\nmodel = \"a/b\"\n").unwrap();
+        add_owner(&path, "qq:ALICE").unwrap();
+        add_owner(&path, "feishu:ou_b").unwrap();
+        add_owner(&path, "qq:alice").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine"), "{text}");
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.access.owners, ["qq:ALICE", "feishu:ou_b"]);
+    }
+
+    #[test]
+    fn signs_in_to_chatgpt_from_the_model_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[model]\nmodel = \"x/y\"\n").unwrap();
+        let mut asked = Vec::new();
+        let mut models = Models {
+            sign_in: Some(Box::new(|term: &mut dyn Prompt, device| {
+                asked.push(device);
+                let code = term.ask("code: ")?;
+                assert_eq!(code.as_deref(), Some("abc"));
+                Ok(Some("me@example.org".into()))
+            })),
+            ..Models::default()
+        };
+        // Model › provider, the browser sign-in (3rd); then the device code
+        // (4th), signing in again; back out and save.
+        let script = "2\r1\r3\rabc\n4\r\x1b[B\rabc\nqqq\r";
+        let mut term = keys(script);
+        edit_with(&path, &mut term, &mut models).unwrap();
+        assert_eq!(models.signed_in.as_deref(), Some("me@example.org"));
+        drop(models);
+        assert_eq!(asked, [false, true]);
+        let config = Config::load(&path).unwrap();
+        assert!(config.chatgpt());
+        assert_eq!(config.model.model, crate::chatgpt::DEFAULT_MODEL);
+
+        // Signed in already: just use it, here typed.
+        std::fs::write(&path, "[model]\nmodel = \"gpt-5-codex\"\n").unwrap();
+        let mut models = Models {
+            signed_in: Some("me@example.org".into()),
+            ..Models::default()
+        };
+        let mut term = keys("2\r1\r3\r\rqqq\r");
+        edit_with(&path, &mut term, &mut models).unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(out.contains("me@example.org"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert!(config.chatgpt());
+        assert_eq!(config.model.model, "gpt-5-codex");
     }
 
     fn keys(script: &str) -> Term<&[u8], Vec<u8>> {
@@ -2501,16 +3058,17 @@ mod tests {
             audio: false,
             tools: true,
             max_output: None,
+            efforts: Vec::new(),
         };
         let mut loads = 0;
         let mut models = Models::new(|| {
             loads += 1;
             Ok(vec![model("maker/blind", false), model("other/sees", true)])
         });
-        // Section 2, the model field, search "sees" and take it; then the
-        // guide provider (fifth from the end), one down to openrouter-chat;
-        // back out and save.
-        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\x1b[A\x1b[A\rj\rqq\r";
+        // Model › provider, the model field (5th), search "sees" and take
+        // it; back, then Model › messages during a reply, its provider, one
+        // down to openrouter-chat; back out and save.
+        let script = "2\r1\r5\r\rsees\n\rq3\r2\rj\rqqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         drop(models);
@@ -2566,9 +3124,10 @@ mod tests {
     fn edits_with_arrow_menus() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        // Tools (3): shell → allow (1). Back. Gateway (4): bind typed, token
-        // generated. Back. End, up: "Save and exit".
-        let script = "3\r\r1\rq4\r\r127.0.0.1:1\nj\r+\nq\x1b[F\x1b[A\r";
+        // Tools and the web (4) › Tools (1): shell → allow (1). Back twice.
+        // Gateway and updates (7) › Gateway (1): bind typed, token
+        // generated. Back twice. End, up: "Save and exit".
+        let script = "4\r1\r\r1\rqq7\r1\r\r127.0.0.1:1\nj\r+\nqq\x1b[F\x1b[A\r";
         let mut term = keys(script);
         edit(&path, &mut term).unwrap();
         let out = String::from_utf8(term.out).unwrap();
@@ -2584,15 +3143,15 @@ mod tests {
     fn picks_a_context_budget_from_the_menu_or_types_one() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        // Model (2), down to the budget (6th field): 128k from the menu.
-        let mut term = keys("2\r6\r4\rq\x1b[F\x1b[A\r");
+        // Model (2) › context (2), the budget (3rd field): 128k from the menu.
+        let mut term = keys("2\r2\r3\r4\rqq\x1b[F\x1b[A\r");
         edit(&path, &mut term).unwrap();
         let out = String::from_utf8(term.out).unwrap();
         assert!(out.contains("Context budget [auto] › 128k"), "{out}");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("context_tokens = \"128k\""), "{text}");
         // "Other…" takes a typed count, written back with k or m.
-        let mut term = keys("2\r6\r7\r1500000\nq\x1b[F\x1b[A\r");
+        let mut term = keys("2\r2\r3\r7\r1500000\nqq\x1b[F\x1b[A\r");
         edit(&path, &mut term).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("context_tokens = \"1.5m\""), "{text}");
@@ -2619,7 +3178,7 @@ mod tests {
     fn rejects_a_choice_outside_the_list() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let out = drive(&path, "3\nmaybe\n9\nask\n\n\n\n\n\n\ns\n");
+        let out = drive(&path, "4\n1\nmaybe\n9\nask\n\n\n\n\n\n\ns\n");
         assert_eq!(
             out.matches("pick one of: allow, ask, deny").count(),
             2,

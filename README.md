@@ -125,10 +125,21 @@ account and billed to the plan's Codex allowance.
 
 ```sh
 openclaw-rs login             # sign in in a browser
+openclaw-rs login --device    # or enter a code at auth.openai.com/codex/device on any device
 openclaw-rs login --import    # or take the Codex CLI's sign-in (~/.codex/auth.json)
 openclaw-rs login --status    # who is signed in
 openclaw-rs login --logout
 ```
+
+`openclaw-rs init` offers both sign-ins as its second step, and
+`openclaw-rs config` has them under Model › Provider and sign-in ("Sign in
+to ChatGPT (browser)" and "(device code)"), so there is no separate command
+to remember.
+
+`--device` needs nothing from this machine's localhost: it shows a code to
+enter at `auth.openai.com/codex/device` in a browser on any device, a phone
+too, and waits up to 15 minutes. If ChatGPT says device codes are off, turn
+on device code sign-in for Codex in ChatGPT's security settings first.
 
 `login` prints an address to open in a browser. On the machine itself
 that is all; on a Raspberry Pi over SSH the last page does not load (it
@@ -139,7 +150,7 @@ and paste it into the terminal. Forwarding the port first
 then sets `model.provider = "chatgpt"`, and `model.model = "gpt-5"` when
 the model was an OpenRouter id, with no editing of config.toml; change
 either in `openclaw-rs config` (any model your plan offers in Codex, e.g.
-`gpt-5-codex`), and `model.reasoning_effort` (`minimal` … `high`).
+`gpt-5-codex`), and `model.reasoning_effort` (see below).
 
 Web search uses the subscription's own search (`search.provider =
 "chatgpt"`, which `openrouter` becomes without an OpenRouter key), and
@@ -217,9 +228,12 @@ the screen.
 `openclaw-rs init` sets up what a first run needs (see [Usage](#usage)).
 
 `openclaw-rs config` (or `/config` in the terminal UI) edits
-`<state dir>/config.toml` interactively, section by section (model and
-context, tools, gateway, QQ, email, web search, browser, limits, updates,
-skills, access, and the companion: time sense, heartbeat, inner life). Every
+`<state dir>/config.toml` interactively in three levels: a category, then
+its section, then the settings. The categories are language; model
+(provider and sign-in, context and model calls, messages during a reply);
+chat apps and email (QQ, Feishu, Zulip, email); tools and the web (tools,
+web search, browser, reading web pages, skills); access and spending; the
+companion (time sense, heartbeat, inner life); and Gateway and updates. Every
 setting below can be changed there; nothing needs editing by hand. Saving
 restarts a running Gateway so the change applies at once (when this user
 may restart it; otherwise it says how).
@@ -1112,12 +1126,26 @@ not offered (or is talked into it) is still refused:
 ```toml
 [access]
 owners = ["qq:<your openid>", "feishu:<your open_id>", "zulip:me@example.com", "mail:me@example.com"]
+first_chat_owner = false            # true: the first private chat on an app without owner claims it
 guest = ["web_search", "web_fetch"] # what any other sender may use
 [access.grants]                      # more for named senders, sessions or channels
 "qq:<friend openid>" = ["memory", "cron"]
 "qq:group:<group openid>" = ["web_search"]
 "mail:*" = ["memory"]
 ```
+
+Finding your own openid or open_id is the hard part, so with
+`first_chat_owner = true` (off by default; asked by `openclaw-rs init`, and
+"First chat becomes owner" in `openclaw-rs config`, under Access and
+spending › Access) the
+first person to write to the bot in a private chat on QQ, Feishu or Zulip
+becomes that app's owner, and is added to `owners` in config.toml. Each app
+has its own: once QQ has an owner, nobody else claims QQ, but Feishu is still
+open. Groups and email never claim anything. Write to the bot yourself right
+after turning it on, and turn it off again afterwards: until you do, whoever
+reaches the bot first gets every tool. "Revoke a chat owner" in the same
+section (also offered by `init`) removes the owner you pick; with
+`first_chat_owner` on, the next private chat on that app claims it again.
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
@@ -1294,7 +1322,7 @@ request_timeout_secs = 300
 # fallbacks = ["openai/gpt-x"]       # OpenRouter tries these when `model` fails
 max_retries = 3                      # connection errors, HTTP 408/429/5xx, early stream errors
 prompt_cache = "auto"                # auto | on | off: cache_control breakpoints
-# reasoning_effort = "medium"        # chatgpt only: minimal | low | medium | high
+# reasoning_effort = "auto"          # auto | off | none | minimal | low | medium | high | xhigh | max
 
 [agent]
 system_prompt = "You are a helpful personal assistant running on OpenClaw."
@@ -1343,6 +1371,26 @@ the result says how many bytes were omitted. `ask` prompts on the controlling te
 the action is declined and the model is told so. Tools set to `deny` are not
 offered to the model at all. `browser` is offered when the host has a
 browser installed; see [Browser](#browser).
+
+## Thinking level
+
+`model.reasoning_effort` sets how hard the model thinks before answering,
+for OpenRouter and ChatGPT alike. Left unset (or `auto`), openclaw-rs asks
+the provider's API which levels the model takes and sends the lowest from
+`low` up — usually `low`; a model whose lowest level is higher gets that
+one.
+
+- ChatGPT: the Codex model list (`supported_reasoning_levels`); when it
+  cannot be read, OpenRouter's catalog entry for `openai/<model>`.
+- OpenRouter: the model catalog (`reasoning.supported_efforts`), cached
+  for a week with the context windows.
+- A model that lists no levels, or whose levels cannot be read, gets
+  nothing: it thinks as it does by default.
+
+`off` sends nothing and leaves it to the model; a level (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is sent as is. Change
+it in `openclaw-rs config` → Model → Provider and sign-in → Thinking
+level.
 
 ## Reliability, caching and cost
 

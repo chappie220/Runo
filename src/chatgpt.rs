@@ -52,6 +52,26 @@ const BAD_PASTE: Tr = tr(
     "That is not the address the sign-in ended on (or its state does not match); try again.",
     "这不是登录最后跳转到的地址（或 state 不匹配），请再试一次。",
 );
+const FINISH_PROMPT: Tr = tr(
+    "Paste the address, or press Enter once the browser says you are signed in: ",
+    "粘贴地址，或在浏览器显示已登录后直接按回车：",
+);
+const NOT_YET: Tr = tr(
+    "Not signed in yet: finish in the browser, or paste the address the last page ended on.",
+    "还没有登录完成：请在浏览器里完成登录，或粘贴最后一页的地址。",
+);
+const DEVICE_HOW: Tr = tr(
+    "On any device (a phone works), open {} in a browser, sign in with your ChatGPT account and enter this code:\n\n    {}\n\nIt is good for 15 minutes; waiting for it (Ctrl-C stops). If ChatGPT says device codes are off, turn on device code sign-in for Codex in ChatGPT's settings (Security) first.",
+    "在任意设备（手机也行）的浏览器里打开 {}，用你的 ChatGPT 账号登录，然后输入这个码：\n\n    {}\n\n15 分钟内有效；正在等待（Ctrl-C 停止）。如果 ChatGPT 提示没有开启设备码，请先在 ChatGPT 设置的“安全”里打开 Codex 的设备码登录。",
+);
+const DEVICE_UNAVAILABLE: Tr = tr(
+    "the ChatGPT sign-in server offers no device codes; sign in in the browser instead",
+    "ChatGPT 登录服务器不提供设备码登录；请改用浏览器登录",
+);
+const DEVICE_EXPIRED: Tr = tr(
+    "the device code expired before it was entered; start the sign-in again",
+    "设备码在输入前已过期；请重新登录",
+);
 const PORT_BUSY: Tr = tr(
     "(Port 1455 is busy, so only pasting works this time.)",
     "（1455 端口被占用，这次只能粘贴地址。）",
@@ -91,6 +111,11 @@ const TEXTS: &[Tr] = &[
     EXPIRED,
     OPEN_URL,
     PASTE,
+    FINISH_PROMPT,
+    NOT_YET,
+    DEVICE_HOW,
+    DEVICE_UNAVAILABLE,
+    DEVICE_EXPIRED,
     BAD_PASTE,
     PORT_BUSY,
     SIGNED_IN,
@@ -419,12 +444,12 @@ async fn pasted(state: String) -> Result<String> {
     }
 }
 
-async fn exchange(issuer: &str, code: &str, verifier: &str) -> Result<Tokens> {
+async fn exchange(issuer: &str, code: &str, verifier: &str, redirect: &str) -> Result<Tokens> {
     let mut form = reqwest::Url::parse("http://form.invalid/").expect("static URL");
     form.query_pairs_mut()
         .append_pair("grant_type", "authorization_code")
         .append_pair("code", code)
-        .append_pair("redirect_uri", REDIRECT)
+        .append_pair("redirect_uri", redirect)
         .append_pair("client_id", CLIENT_ID)
         .append_pair("code_verifier", verifier);
     let response = http()
@@ -445,32 +470,254 @@ async fn exchange(issuer: &str, code: &str, verifier: &str) -> Result<Tokens> {
     Tokens::from_response(&body, None)
 }
 
-/// Signs in in a browser and returns the tokens.
-pub async fn login(issuer: &str) -> Result<Tokens> {
-    let pkce = pkce()?;
-    let state = hex(&random_bytes(16)?);
-    eprintln!(
-        "{}\n",
-        OPEN_URL.with(&[&authorize_url(issuer, &pkce, &state)])
-    );
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
-        .await
-        .ok();
-    if listener.is_none() {
-        eprintln!("{}", PORT_BUSY.now());
+/// A sign-in under way: the address to open, and the local callback that
+/// may receive the code.
+pub struct Pending {
+    issuer: String,
+    url: String,
+    state: String,
+    verifier: String,
+    callback: Option<tokio::task::JoinHandle<Result<String>>>,
+}
+
+impl Pending {
+    /// Starts a sign-in, listening on the callback port when it is free.
+    pub async fn start(issuer: &str) -> Result<Self> {
+        let pkce = pkce()?;
+        let state = hex(&random_bytes(16)?);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
+            .await
+            .ok();
+        Ok(Self {
+            issuer: issuer.to_owned(),
+            url: authorize_url(issuer, &pkce, &state),
+            callback: listener.map(|l| tokio::spawn(callback(l, state.clone()))),
+            state,
+            verifier: pkce.verifier,
+        })
     }
-    let from_browser = async {
-        match listener {
-            Some(listener) => callback(listener, state.clone()).await,
+
+    /// What to show: where to sign in, and how to finish.
+    pub fn instructions(&self, lang: crate::i18n::Lang) -> String {
+        let mut text = OPEN_URL.fill(lang, &[&self.url]);
+        if self.callback.is_none() {
+            text.push('\n');
+            text.push_str(PORT_BUSY.get(lang));
+        }
+        text
+    }
+
+    /// The code in a pasted address; `None` when it is not the right one.
+    pub fn code_from(&self, pasted: &str) -> Option<String> {
+        pasted_code(pasted, &self.state)
+    }
+
+    /// The code the browser already sent to the callback, if it did.
+    pub async fn received(&mut self) -> Result<Option<String>> {
+        match &mut self.callback {
+            Some(handle) if handle.is_finished() => {
+                let code = handle.await??;
+                self.callback = None;
+                Ok(Some(code))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Waits for the browser; forever when the port was busy.
+    async fn browser_code(&mut self) -> Result<String> {
+        match &mut self.callback {
+            Some(handle) => handle.await?,
             None => std::future::pending().await,
         }
-    };
+    }
+
+    /// Trades the code for tokens.
+    pub async fn finish(self, code: &str) -> Result<Tokens> {
+        if let Some(handle) = &self.callback {
+            handle.abort();
+        }
+        exchange(&self.issuer, code, &self.verifier, REDIRECT).await
+    }
+}
+
+/// A device-code sign-in under way: a code to enter in a browser on any
+/// device, so nothing has to reach this machine's localhost.
+pub struct DeviceCode {
+    issuer: String,
+    device_auth_id: String,
+    pub user_code: String,
+    interval: Duration,
+}
+
+impl DeviceCode {
+    /// Asks the sign-in server for a code.
+    pub async fn start(issuer: &str) -> Result<Self> {
+        let response = http()
+            .post(format!("{issuer}/api/accounts/deviceauth/usercode"))
+            .json(&json!({ "client_id": CLIENT_ID }))
+            .send()
+            .await
+            .context("cannot reach the ChatGPT sign-in server")?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            bail!(DEVICE_UNAVAILABLE.now());
+        }
+        let body: Value = response.json().await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            bail!("ChatGPT refused a device code with HTTP {status}: {body}");
+        }
+        let text = |key: &str| body[key].as_str().map(str::to_owned);
+        let interval = match &body["interval"] {
+            Value::String(s) => s.trim().parse().ok(),
+            other => other.as_u64(),
+        };
+        Ok(Self {
+            issuer: issuer.to_owned(),
+            device_auth_id: text("device_auth_id").context("no device_auth_id in the answer")?,
+            user_code: text("user_code")
+                .or_else(|| text("usercode"))
+                .context("no user_code in the answer")?,
+            interval: Duration::from_secs(interval.unwrap_or(5)),
+        })
+    }
+
+    /// Where to enter the code, and the code.
+    pub fn instructions(&self, lang: crate::i18n::Lang) -> String {
+        DEVICE_HOW.fill(
+            lang,
+            &[&format!("{}/codex/device", self.issuer), &self.user_code],
+        )
+    }
+
+    /// Waits until the code was entered, then trades it for tokens.
+    pub async fn finish(self) -> Result<Tokens> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15 * 60);
+        loop {
+            let response = http()
+                .post(format!("{}/api/accounts/deviceauth/token", self.issuer))
+                .json(&json!({
+                    "device_auth_id": self.device_auth_id,
+                    "user_code": self.user_code,
+                }))
+                .send()
+                .await
+                .context("cannot reach the ChatGPT sign-in server")?;
+            let status = response.status();
+            if status.is_success() {
+                let body: Value = response.json().await.unwrap_or(Value::Null);
+                let code = body["authorization_code"]
+                    .as_str()
+                    .context("no authorization_code in the answer")?;
+                let verifier = body["code_verifier"]
+                    .as_str()
+                    .context("no code_verifier in the answer")?;
+                let redirect = format!("{}/deviceauth/callback", self.issuer);
+                return exchange(&self.issuer, code, verifier, &redirect).await;
+            }
+            // Not entered yet.
+            if status != reqwest::StatusCode::FORBIDDEN && status != reqwest::StatusCode::NOT_FOUND
+            {
+                let body = response.text().await.unwrap_or_default();
+                bail!("ChatGPT sign-in refused with HTTP {status}: {body}");
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(DEVICE_EXPIRED.now());
+            }
+            tokio::time::sleep(self.interval).await;
+        }
+    }
+}
+
+/// Signs in in a browser and returns the tokens.
+pub async fn login(issuer: &str) -> Result<Tokens> {
+    let mut pending = Pending::start(issuer).await?;
+    eprintln!("{}\n", pending.instructions(crate::i18n::current()));
+    let state = pending.state.clone();
     let code = tokio::select! {
-        code = from_browser => code?,
-        code = pasted(state.clone()) => code?,
+        code = pending.browser_code() => code?,
+        code = pasted(state) => code?,
     };
     eprintln!();
-    exchange(issuer, &code, &pkce.verifier).await
+    pending.finish(&code).await
+}
+
+/// Signs in with a device code, printing where to enter it.
+pub async fn login_with_code(issuer: &str) -> Result<Tokens> {
+    let device = DeviceCode::start(issuer).await?;
+    eprintln!("{}\n", device.instructions(crate::i18n::current()));
+    device.finish().await
+}
+
+/// Signs in on `term` (`openclaw-rs init` and `config`), in a browser or
+/// with a device code, and saves the sign-in in `state`. Returns who signed
+/// in, or `None` when input ended. Blocks; call it on a runtime worker.
+pub fn sign_in(
+    term: &mut dyn crate::setup::Prompt,
+    state: &Path,
+    device: bool,
+) -> Result<Option<String>> {
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let tokens = if device {
+                let device = DeviceCode::start(ISSUER).await?;
+                term.say(&device.instructions(term.lang()))?;
+                device.finish().await?
+            } else {
+                match browser_sign_in(term).await? {
+                    Some(tokens) => tokens,
+                    None => return Ok(None),
+                }
+            };
+            std::fs::create_dir_all(state)
+                .with_context(|| format!("cannot create {}", state.display()))?;
+            let path = auth_path(state);
+            write(&path, &tokens)?;
+            let line = SIGNED_IN.fill(term.lang(), &[&tokens.who(), &path.display().to_string()]);
+            term.say(&line)?;
+            Ok(Some(who(&tokens)))
+        })
+    })
+}
+
+/// The browser sign-in on `term`; `None` when input ended.
+async fn browser_sign_in(term: &mut dyn crate::setup::Prompt) -> Result<Option<Tokens>> {
+    let mut pending = Pending::start(ISSUER).await?;
+    term.say(&pending.instructions(term.lang()))?;
+    term.say("")?;
+    let code = loop {
+        let Some(line) = term.ask(FINISH_PROMPT.get(term.lang()))? else {
+            return Ok(None);
+        };
+        if line.is_empty() {
+            match pending.received().await? {
+                Some(code) => break code,
+                None => term.say(NOT_YET.get(term.lang()))?,
+            }
+            continue;
+        }
+        match pending.code_from(&line) {
+            Some(code) => break code,
+            None => term.say(BAD_PASTE.get(term.lang()))?,
+        }
+    };
+    pending.finish(&code).await.map(Some)
+}
+
+/// Who is signed in, for menus: the email (and plan), or "ChatGPT".
+fn who(tokens: &Tokens) -> String {
+    let who = tokens.who();
+    let who = who.trim().trim_start_matches('(').trim_end_matches(')');
+    if who.is_empty() {
+        "ChatGPT".to_owned()
+    } else {
+        who.to_owned()
+    }
+}
+
+/// Who is signed in with the sign-in saved in `state`, if anyone.
+pub fn signed_in(state: &Path) -> Option<String> {
+    read(&auth_path(state)).ok().map(|t| who(&t))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -503,6 +750,8 @@ pub fn import(path: &Path) -> Result<Tokens> {
 pub enum Action {
     /// Sign in in a browser.
     Login,
+    /// Sign in with a code entered in a browser on any device.
+    Device,
     /// Take the sign-in of the Codex CLI.
     Import(PathBuf),
     Status,
@@ -541,6 +790,7 @@ pub async fn run(action: Action, config: &Path, state: &Path) -> Result<()> {
             return Ok(());
         }
         Action::Login => login(ISSUER).await?,
+        Action::Device => login_with_code(ISSUER).await?,
         Action::Import(ref from) => import(from)?,
     };
     std::fs::create_dir_all(state).with_context(|| format!("cannot create {}", state.display()))?;
@@ -571,6 +821,15 @@ pub fn codex_auth_file() -> PathBuf {
 /// or unset. Returns the model now set.
 pub fn use_in_config(config: &Path) -> Result<String> {
     let mut doc = crate::setup::load(config)?;
+    let chosen = use_in_doc(&mut doc);
+    let text = doc.to_string();
+    toml::from_str::<crate::config::Config>(&text).context("the new settings do not load")?;
+    crate::setup::write_private(config, &text)?;
+    Ok(chosen)
+}
+
+/// `use_in_config` on a document being edited.
+pub fn use_in_doc(doc: &mut toml_edit::DocumentMut) -> String {
     if !doc.contains_table("model") {
         doc["model"] = toml_edit::table();
     }
@@ -582,16 +841,63 @@ pub fn use_in_config(config: &Path) -> Result<String> {
         .unwrap_or("")
         .trim()
         .to_owned();
-    let chosen = if current.is_empty() || current.contains('/') {
+    if current.is_empty() || current.contains('/') {
         model["model"] = toml_edit::value(DEFAULT_MODEL);
         DEFAULT_MODEL.to_owned()
     } else {
         current
-    };
-    let text = doc.to_string();
-    toml::from_str::<crate::config::Config>(&text).context("the new settings do not load")?;
-    crate::setup::write_private(config, &text)?;
-    Ok(chosen)
+    }
+}
+
+/// The Codex version named when listing models: the backend lists what a
+/// client of that version may use.
+const CLIENT_VERSION: &str = "0.50.0";
+
+/// The reasoning levels ChatGPT offers for `model`, from the Codex
+/// backend's model list at `base`; `None` when the list does not name it.
+pub async fn reasoning_levels(auth: &Auth, base: &str, model: &str) -> Result<Option<Vec<String>>> {
+    let (token, account) = auth.access(false).await?;
+    let mut request = http()
+        .get(format!(
+            "{}/models?client_version={CLIENT_VERSION}",
+            base.trim_end_matches('/')
+        ))
+        .bearer_auth(token)
+        .header("originator", "codex_cli_rs");
+    if let Some(account) = account {
+        request = request.header("chatgpt-account-id", account);
+    }
+    let response = request
+        .send()
+        .await
+        .context("cannot list ChatGPT's models")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("listing ChatGPT's models failed with HTTP {status}");
+    }
+    let body: Value = response
+        .json()
+        .await
+        .context("ChatGPT's model list is not JSON")?;
+    Ok(listed_levels(&body, model))
+}
+
+/// `model`'s levels in a model list, which names models by `slug`.
+fn listed_levels(body: &Value, model: &str) -> Option<Vec<String>> {
+    let entry = body["models"].as_array()?.iter().find(|m| {
+        m["slug"]
+            .as_str()
+            .or_else(|| m["id"].as_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case(model.trim()))
+    })?;
+    let levels = entry["supported_reasoning_levels"].as_array()?;
+    Some(
+        levels
+            .iter()
+            .filter_map(|l| l["effort"].as_str().or_else(|| l.as_str()))
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// The Responses API request for a chat: the first system message becomes
@@ -1089,6 +1395,91 @@ mod tests {
             r#"{"detail":"Unsupported model"}"#,
         );
         assert!(!limit && message.contains("Unsupported model"), "{message}");
+    }
+
+    #[test]
+    fn reads_reasoning_levels_from_the_model_list() {
+        let body = json!({"models": [
+            {"slug": "gpt-5", "supported_reasoning_levels": [
+                {"effort": "minimal"}, {"effort": "low"}, {"effort": "medium"}, {"effort": "high"}
+            ]},
+            {"slug": "gpt-5-codex", "supported_reasoning_levels": ["low", "medium", "high"]},
+            {"slug": "plain"}
+        ]});
+        assert_eq!(
+            listed_levels(&body, "gpt-5").unwrap(),
+            ["minimal", "low", "medium", "high"]
+        );
+        assert_eq!(
+            listed_levels(&body, "GPT-5-codex").unwrap(),
+            ["low", "medium", "high"]
+        );
+        assert_eq!(listed_levels(&body, "plain"), None);
+        assert_eq!(listed_levels(&body, "other"), None);
+    }
+
+    #[tokio::test]
+    async fn signs_in_with_a_device_code() {
+        use axum::routing::post;
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = polls.clone();
+        let id_token = tokens(0).id_token;
+        let app = axum::Router::new()
+            .route(
+                "/api/accounts/deviceauth/usercode",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(body["client_id"], CLIENT_ID);
+                    axum::Json(json!({"device_auth_id": "dev-1", "user_code": "ABCD-1234", "interval": "0"}))
+                }),
+            )
+            .route(
+                "/api/accounts/deviceauth/token",
+                post(move |axum::Json(body): axum::Json<Value>| {
+                    let counter = counter.clone();
+                    async move {
+                        assert_eq!(body["device_auth_id"], "dev-1");
+                        assert_eq!(body["user_code"], "ABCD-1234");
+                        // Not entered on the first poll.
+                        if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                            return (axum::http::StatusCode::FORBIDDEN, axum::Json(json!({})));
+                        }
+                        (
+                            axum::http::StatusCode::OK,
+                            axum::Json(json!({"authorization_code": "code-1", "code_verifier": "ver-1"})),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/oauth/token",
+                post(move |host: axum::http::HeaderMap, form: String| async move {
+                    let pairs: HashMap<String, String> =
+                        reqwest::Url::parse(&format!("http://x/?{form}"))
+                            .unwrap()
+                            .query_pairs()
+                            .into_owned()
+                            .collect();
+                    let host = host["host"].to_str().unwrap();
+                    assert_eq!(pairs["code"], "code-1");
+                    assert_eq!(pairs["code_verifier"], "ver-1");
+                    assert_eq!(pairs["redirect_uri"], format!("http://{host}/deviceauth/callback"));
+                    axum::Json(json!({"id_token": id_token, "access_token": "a", "refresh_token": "r"}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let device = DeviceCode::start(&issuer).await.unwrap();
+        let how = device.instructions(crate::i18n::Lang::En);
+        assert!(
+            how.contains(&format!("{issuer}/codex/device")) && how.contains("ABCD-1234"),
+            "{how}"
+        );
+        let tokens = device.finish().await.unwrap();
+        assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(tokens.refresh_token, "r");
+        assert_eq!(tokens.email().as_deref(), Some("me@example.org"));
     }
 
     #[tokio::test]
