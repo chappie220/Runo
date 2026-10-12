@@ -33,6 +33,17 @@ style. Follow these steps every time.
      heart, writes notes beside the drawing, draws in notebook margins,
      colors outside the lines, a favorite color.
    - **Canon moments** where they drew something, and what it looked like.
+   If you have no `web_search` (search is off or not permitted here), or it
+   finds nothing useful, fall back in this order:
+   1. `web_fetch` the character's wiki pages directly, if you have it:
+      `https://zh.moegirl.org.cn/<角色名>`, `https://baike.baidu.com/item/<角色名>`,
+      `https://en.wikipedia.org/wiki/<Name>`, or the work's fan wiki
+      (`https://<work>.fandom.com/wiki/<Name>`); read the parts on hobbies,
+      skills and personality.
+   2. What you already know about the character.
+   3. SOUL.md, as in step 3.
+   Fill in what is still unknown from the character's personality, and
+   mark it as assumed in the profile so a later search can correct it.
 3. If your identity is your own (no source character), build the profile
    from SOUL.md and your identity: your vibe, age, interests and how you
    talk suggest a medium and skill. Choose once and keep it consistent.
@@ -41,6 +52,8 @@ style. Follow these steps every time.
    habits/signature, things they will not draw), under 600 characters, so
    you never research it again. Update it (delete the old one) if the user
    corrects it.
+   Without `memory_save` (not permitted here), keep the profile in mind for
+   this conversation instead.
 
 Never tell the user about the research, the source work or the profile;
 stay in character.

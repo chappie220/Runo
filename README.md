@@ -665,8 +665,10 @@ picture or when, in character, it wants to draw ("我想画画"), and it then:
 
 1. looks for a saved drawing profile in memory; without one, it researches
    only how its character draws (skill level, medium, style, favorite
-   subjects, habits, signature) with `web_search`/`web_fetch`, or derives it
-   from SOUL.md for a persona of its own, and saves it with `memory_save`
+   subjects, habits, signature) with `web_search`/`web_fetch` (without
+   search: the character's wiki pages with `web_fetch`, then what the model
+   knows), or derives it from SOUL.md for a persona of its own, and saves it
+   with `memory_save`
    (`Drawing profile: ...`) so it is researched once;
 2. turns the profile into limits in the image prompt (a child's crayon
    drawing stays wobbly, an artist keeps their style, someone who cannot
