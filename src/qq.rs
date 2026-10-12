@@ -1027,16 +1027,21 @@ mod tests {
         (bot, approver, message)
     }
 
-    /// Starts an approval and waits until it is asked.
+    /// Starts an approval and waits until it is asked: open, and its
+    /// message sent (the request opens before the message goes out).
     async fn ask(
         bot: &QqBot,
+        sent: &Sent,
         approver: QqApprover,
         summary: &'static str,
     ) -> tokio::task::JoinHandle<bool> {
         let session = approver.target.session();
+        let before = sent.lock().unwrap().len();
         let asked = tokio::spawn(async move { approver.approve("shell", summary).await });
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !bot.approvals.waiting(&session) && Instant::now() < deadline {
+        while !(bot.approvals.waiting(&session) && sent.lock().unwrap().len() > before)
+            && Instant::now() < deadline
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         asked
@@ -1052,7 +1057,7 @@ mod tests {
         assert!(sent.lock().unwrap().is_empty());
 
         // The owner gets a card with buttons, as a passive reply.
-        let asked = ask(&bot, approver(true), "ls").await;
+        let asked = ask(&bot, &sent, approver(true), "ls").await;
         let card = sent.lock().unwrap()[0].clone();
         assert_eq!(card.0, "/v2/users/U1/messages");
         assert_eq!(card.1["msg_type"], 2);
@@ -1090,7 +1095,7 @@ mod tests {
         );
 
         // The old card's buttons cannot answer a newer request; typing can.
-        let asked = ask(&bot, approver(true), "pwd").await;
+        let asked = ask(&bot, &sent, approver(true), "pwd").await;
         assert!(
             bot.answer_approval(&message("U1", &allow)),
             "stale, dropped"
@@ -1104,7 +1109,7 @@ mod tests {
     async fn asks_in_text_when_buttons_are_refused() {
         let sent: Sent = Arc::default();
         let (bot, approver, message) = approval_bot(sent.clone(), "NOMD").await;
-        let asked = ask(&bot, approver(true), "ls").await;
+        let asked = ask(&bot, &sent, approver(true), "ls").await;
         // Retried as an active message, then sent as text.
         let deadline = Instant::now() + Duration::from_secs(10);
         while sent.lock().unwrap().len() < 3 && Instant::now() < deadline {

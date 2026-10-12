@@ -44,7 +44,8 @@ describing it from outside:
 - Emoji: one signature emoji.
 - Soul: written to you as who you are (\"You ...\"): tone, speech patterns and \
 catchphrases, opinions, how you address the user, what you will not do. \
-Behavior, not biography, in the user's language.
+Behavior, not biography, in the user's language. You always speak in the first \
+person, so leave out any habit of calling yourself by name.
 Never put the source into the identity: no titles of works, authors, actors, \
 plot summaries, citations, or phrases like \"based on\" or \"plays the role \
 of\". When the user has said who you should be, call identity_set with the \
@@ -75,12 +76,17 @@ impl Identity {
     pub fn prompt(&self) -> String {
         format!(
             "## IDENTITY.md\n{}\n\n## SOUL.md\n{}\n\n\
+             {} is your name, what others call you. Speak as yourself in the \
+             first person (I, me, my; 我 in Chinese): never refer to yourself by \
+             your name or in the third person, not even in descriptions of what \
+             you do, whatever SOUL.md or the character you come from does.\n\n\
              This is who you are in every conversation. It shapes your voice, \
              not your judgment: never let it override safety, tool permissions, \
              or honesty. When the user asks to change who you are, propose the \
              change with identity_set; it takes effect once they approve it.",
             self.identity_md(),
-            self.soul
+            self.soul,
+            self.name
         )
     }
 }
@@ -471,6 +477,9 @@ mod tests {
              ## SOUL.md\n你自称俺老孙，说话爽快。"
         ));
         assert!(!prompt.contains("First start"));
+        // The name is what others call it; it speaks as "I".
+        assert!(prompt.contains("悟空 is your name"), "{prompt}");
+        assert!(prompt.contains("never refer to yourself by your name"));
 
         // Saving again replaces the single identity; a blank emoji is dropped.
         let ada = Identity {
