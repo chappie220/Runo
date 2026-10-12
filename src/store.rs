@@ -867,8 +867,8 @@ impl Store {
     pub fn history(&self, session_id: i64, limit: usize) -> Result<Vec<ChatMessage>> {
         let conn = self.chats();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, tool_calls, tool_call_id, attachments FROM (
-               SELECT id, role, content, tool_calls, tool_call_id, attachments FROM messages
+            "SELECT id, role, content, tool_calls, tool_call_id, attachments, created_at FROM (
+               SELECT id, role, content, tool_calls, tool_call_id, attachments, created_at FROM messages
                WHERE session_id = ?1 ORDER BY id DESC LIMIT ?2
              ) ORDER BY id ASC",
         )?;
@@ -898,7 +898,7 @@ impl Store {
             },
         )?;
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, tool_calls, tool_call_id, attachments FROM messages
+            "SELECT id, role, content, tool_calls, tool_call_id, attachments, created_at FROM messages
              WHERE session_id = ?1 AND id >= ?2 ORDER BY id ASC",
         )?;
         let messages = read_messages(&mut stmt, params![session_id, marks.start])?;
@@ -955,11 +955,12 @@ fn read_messages(
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
+            row.get::<_, i64>(6)?,
         ))
     })?;
     let mut messages = Vec::new();
     for row in rows {
-        let (id, role, content, tool_calls, tool_call_id, attachments) = row?;
+        let (id, role, content, tool_calls, tool_call_id, attachments, sent_at) = row?;
         let tool_calls: Option<Vec<ToolCall>> = tool_calls
             .map(|json| serde_json::from_str(&json))
             .transpose()?;
@@ -976,6 +977,7 @@ fn read_messages(
                 tool_call_id,
                 attachments,
                 images: Vec::new(),
+                sent_at: Some(sent_at),
             },
         ));
     }

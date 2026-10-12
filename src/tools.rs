@@ -475,6 +475,11 @@ impl BuiltinTools {
 
     fn memory_save(&self, actor: &Actor, args: MemorySaveArgs) -> Result<String, String> {
         // The owner's memories stay unattributed, like those saved from the terminal.
+        if let Ok(Some(id)) = self.store.memory_same(&args.content, actor.scope()) {
+            return Ok(format!(
+                "already saved as memory #{id}; nothing new was saved"
+            ));
+        }
         let id = self
             .store
             .memory_save_kind(&args.content, args.kind.as_deref(), actor.scope())
@@ -1512,6 +1517,10 @@ mod tests {
             .call(&call("memory_save", json!({"content": "生日是三月五日"})))
             .await;
         assert_eq!(saved, "saved memory #1");
+        let again = t
+            .call(&call("memory_save", json!({"content": " 生日是三月五日 "})))
+            .await;
+        assert_eq!(again, "already saved as memory #1; nothing new was saved");
         let found = t
             .call(&call("memory_search", json!({"query": "三月五日"})))
             .await;

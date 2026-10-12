@@ -62,12 +62,28 @@ impl Store {
         if content.chars().count() > MAX_MEMORY_CHARS {
             bail!("memory is longer than {MAX_MEMORY_CHARS} characters; save a shorter summary");
         }
+        if let Some(id) = self.memory_same(content, created_by)? {
+            return Ok(id);
+        }
         let conn = self.soul();
         conn.execute(
             "INSERT INTO memories(content, created_at, created_by, kind) VALUES (?1, ?2, ?3, ?4)",
             params![content, now(), created_by, kind],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// A memory of `created_by`'s with exactly this text, if one is saved.
+    pub fn memory_same(&self, content: &str, created_by: Option<&str>) -> Result<Option<i64>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .soul()
+            .query_row(
+                "SELECT id FROM memories WHERE content = ?1 AND created_by IS ?2 LIMIT 1",
+                params![content.trim(), created_by],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// The owner's memories of `kind`, newest first.

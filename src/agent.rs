@@ -280,6 +280,7 @@ impl<M: Model, T: Tools> Agent<M, T> {
         let tools_prompt = self.tools.prompt();
         // Once per turn, so every call of it sends the same prefix.
         let inner = self.inner_life(session);
+        let earlier = earlier_turns_note(&specs, self.time_sense());
         // Answers given before messages sent during the turn were inserted.
         let mut answers: Vec<String> = Vec::new();
         // What this turn's model calls cost so far.
@@ -297,6 +298,10 @@ impl<M: Model, T: Tools> Agent<M, T> {
             if let Some(inner) = &inner {
                 system.push_str("\n\n");
                 system.push_str(inner);
+            }
+            if let Some(note) = &earlier {
+                system.push_str("\n\n");
+                system.push_str(note);
             }
             let mut messages = vec![ChatMessage::system(&system)];
             messages.extend(
@@ -514,11 +519,15 @@ impl<M: Model, T: Tools> Agent<M, T> {
             .ok()
     }
 
+    /// Whether messages carry the time (`agent.time_sense`).
+    fn time_sense(&self) -> bool {
+        crate::live::read(|c| c.agent.time_sense).unwrap_or(self.config.time_sense)
+    }
+
     /// The local time, and how long ago the person last wrote here when it
     /// has been a while, as a note for this turn only (`agent.time_sense`).
     fn moment(&self, session_id: i64) -> Option<String> {
-        let on = crate::live::read(|c| c.agent.time_sense).unwrap_or(self.config.time_sense);
-        if !on {
+        if !self.time_sense() {
             return None;
         }
         let now = chrono::Local::now();
@@ -806,6 +815,20 @@ impl<M: Model, T: Tools> Agent<M, T> {
         {
             self.show_tool_images(&mut messages, current);
         }
+        // Earlier messages keep the time they were sent, so times the model
+        // gave in earlier replies still have their source.
+        if self.time_sense() {
+            for (index, message) in messages.iter_mut().enumerate() {
+                if message.role != Role::User || current.is_some_and(|c| index >= c) {
+                    continue;
+                }
+                if let Some(stamp) = message.sent_at.and_then(sent_note) {
+                    let text = message.content.get_or_insert_with(String::new);
+                    text.push_str("\n\n");
+                    text.push_str(&stamp);
+                }
+            }
+        }
         if let Some(recall) = recall
             && let Some(current) = current.and_then(|i| messages.get_mut(i))
         {
@@ -912,6 +935,45 @@ where
     }
     note.push(']');
     note
+}
+
+/// What the model cannot see of earlier turns, so it neither denies nor
+/// repeats what it did there; read by the model, so it stays in English.
+/// `None` without tools.
+fn earlier_turns_note(specs: &[ToolSpec], time_sense: bool) -> Option<String> {
+    if specs.is_empty() {
+        return None;
+    }
+    let mut note = String::from(
+        "## Earlier turns\n\n\
+         Your tool calls and their results from earlier turns are not shown to you; \
+         you only see the messages and your replies. So you may have done things there \
+         that you cannot see now (saved or deleted a memory, ran a command, changed a \
+         file). Never say you did not do something only because you do not see it: say \
+         you may have, and check when it matters.",
+    );
+    if specs.iter().any(|s| s.function.name == "memory_save") {
+        note.push_str(
+            " Before saving a memory, look at the memories shown with the message or use \
+             memory_search; do not save a fact that is already saved. When asked whether \
+             you saved something, check with memory_search before answering.",
+        );
+    }
+    if time_sense {
+        note.push_str(
+            " Each earlier message ends with the time it was sent ([Sent: …]) and the \
+             current one with the time now ([Now: …]); times you gave in earlier replies \
+             came from those notes, so they were not guesses.",
+        );
+    }
+    Some(note)
+}
+
+/// `[Sent: …]` on an earlier message, in local time; read by the model.
+fn sent_note(at: i64) -> Option<String> {
+    use chrono::TimeZone;
+    let at = chrono::Local.timestamp_opt(at, 0).single()?;
+    Some(format!("[Sent: {}]", at.format("%Y-%m-%d %A %H:%M")))
 }
 
 /// A rough length of time, as people say it.
@@ -1359,6 +1421,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_prompt_says_earlier_tool_calls_are_not_shown() {
+        assert_eq!(earlier_turns_note(&[], true), None);
+        let shell = ToolSpec::function("shell", "", serde_json::json!({}));
+        let save = ToolSpec::function("memory_save", "", serde_json::json!({}));
+        let plain = earlier_turns_note(std::slice::from_ref(&shell), false).unwrap();
+        assert!(
+            plain.contains("Never say you did not do something"),
+            "{plain}"
+        );
+        assert!(
+            !plain.contains("memory_search") && !plain.contains("[Sent"),
+            "{plain}"
+        );
+        let full = earlier_turns_note(&[shell, save], true).unwrap();
+        assert!(
+            full.contains("do not save a fact that is already saved"),
+            "{full}"
+        );
+        assert!(full.contains("[Sent: …]"), "{full}");
+    }
+
     #[tokio::test]
     async fn the_model_is_told_the_time_and_how_long_it_has_been() {
         let mut agent = recorder_agent();
@@ -1413,6 +1497,17 @@ mod tests {
             .unwrap();
         let third = last(&agent);
         assert!(!third.contains("last wrote"), "{third}");
+        // Earlier messages show when they were sent, so a time given in an
+        // earlier reply still has its source.
+        let sent = agent.model.seen.lock().unwrap().last().unwrap().clone();
+        let earlier: Vec<_> = sent
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .filter_map(|m| m.content.clone())
+            .collect();
+        assert!(earlier[0].starts_with("早\n\n[Sent: "), "{earlier:?}");
+        assert!(earlier[2].starts_with("在吗\n\n[Sent: "), "{earlier:?}");
+        assert!(!earlier.last().unwrap().contains("[Sent: "), "{earlier:?}");
         assert!(
             agent.store.history(id, 20).unwrap().iter().all(|m| !m
                 .content
