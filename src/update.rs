@@ -129,28 +129,34 @@ pub fn asset_name() -> String {
 }
 
 /// Whether version `a` is newer than `b` (`1.2.10` > `1.2.9`, `0.3.5.1` >
-/// `0.3.5`; a pre-release such as `1.3.0-rc1` is older than `1.3.0`).
+/// `0.3.5`; a pre-release such as `1.3.0-rc1` is older than `1.3.0`, and a
+/// revision, a number after `-` such as `0.3.6.1-1`, is newer than it).
 pub fn newer(a: &str, b: &str) -> bool {
-    fn parts(v: &str) -> (Vec<u64>, bool) {
+    /// The numbers, then where the suffix puts it: a pre-release below the
+    /// release (-1), none at 0, a revision above it.
+    fn parts(v: &str) -> (Vec<u64>, i64) {
         let v = v.trim().trim_start_matches('v');
-        let (core, pre) = match v.split_once(['-', '+']) {
-            Some((core, rest)) => (core, v.as_bytes()[core.len()] == b'-' && !rest.is_empty()),
-            None => (v, false),
+        let (core, rank) = match v.split_once(['-', '+']) {
+            Some((core, rest)) if v.as_bytes()[core.len()] == b'-' && !rest.is_empty() => {
+                let rank = match rest.parse::<u32>() {
+                    Ok(revision) => i64::from(revision),
+                    Err(_) => -1,
+                };
+                (core, rank)
+            }
+            Some((core, _)) => (core, 0),
+            None => (v, 0),
         };
         let numbers: Vec<u64> = core.split('.').map(|n| n.parse().unwrap_or(0)).collect();
-        (numbers, pre)
+        (numbers, rank)
     }
-    let (mut a_core, a_pre) = parts(a);
-    let (mut b_core, b_pre) = parts(b);
+    let (mut a_core, a_rank) = parts(a);
+    let (mut b_core, b_rank) = parts(b);
     // Missing parts are 0: 1.0 is 1.0.0, 0.3.5 is 0.3.5.0.
     let len = a_core.len().max(b_core.len()).max(3);
     a_core.resize(len, 0);
     b_core.resize(len, 0);
-    match a_core.cmp(&b_core) {
-        std::cmp::Ordering::Greater => true,
-        std::cmp::Ordering::Less => false,
-        std::cmp::Ordering::Equal => b_pre && !a_pre,
-    }
+    (a_core, a_rank) > (b_core, b_rank)
 }
 
 fn http() -> Result<reqwest::Client> {
@@ -524,6 +530,12 @@ mod tests {
         assert!(newer("v0.3.6", "0.3.5.1"));
         assert!(!newer("0.3.5", "0.3.5.1"));
         assert!(!newer("0.3.5.0", "0.3.5"));
+        assert!(newer("0.3.6.1-1", "0.3.6.1"));
+        assert!(newer("v0.3.6.1-2", "0.3.6.1-1"));
+        assert!(newer("0.3.6.1-10", "0.3.6.1-9"));
+        assert!(!newer("0.3.6.1", "0.3.6.1-1"));
+        assert!(newer("0.3.6.2", "0.3.6.1-1"));
+        assert!(!newer("0.3.6.1-rc1", "0.3.6.1"));
     }
 
     #[test]

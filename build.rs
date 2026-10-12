@@ -11,7 +11,7 @@ fn main() {
     let release = release(&manifest).unwrap_or_else(|| version.clone());
     assert!(
         release == version || release.starts_with(&format!("{version}.")),
-        "package.metadata.openclaw.release {release} must be {version} or {version}.<n>"
+        "package.metadata.openclaw.release {release} must be {version} or {version}.<n>, optionally with a -<revision>"
     );
     println!("cargo:rustc-env=OPENCLAW_VERSION={release}");
 }
