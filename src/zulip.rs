@@ -218,6 +218,37 @@ impl ZulipBot {
         Ok(())
     }
 
+    /// Uploads a picture and sends a message that shows it.
+    pub async fn send_image(&self, target: &Target, mime: &str, data: &[u8]) -> Result<()> {
+        let name = format!(
+            "image-{}.{}",
+            chrono::Local::now().format("%Y%m%d-%H%M%S"),
+            mime.rsplit('/').next().unwrap_or("png")
+        );
+        let (kind, body) = crate::net::multipart(&[(
+            "file",
+            crate::net::Part::File {
+                name: &name,
+                mime,
+                data,
+            },
+        )]);
+        let path = "/api/v1/user_uploads";
+        let request = self
+            .request(reqwest::Method::POST, path)
+            .header(reqwest::header::CONTENT_TYPE, kind)
+            .body(body);
+        let uploaded = self.call(request, path).await?;
+        let uri = uploaded["url"]
+            .as_str()
+            .or_else(|| uploaded["uri"].as_str())
+            .context("Zulip returned no address for the picture")?;
+        let mut pairs = target.address();
+        pairs.push(("content", format!("[{name}]({uri})")));
+        self.post("/api/v1/messages", &pairs).await?;
+        Ok(())
+    }
+
     /// Downloads an upload linked in a message, up to the attachment limit.
     async fn download(&self, path: &str, name: &str) -> Result<Upload> {
         let mut response = self
@@ -392,6 +423,11 @@ impl Approver for ZulipApprover {
         let prompt = crate::i18n::chat::APPROVAL_ASK.with(&[tool, &format!("```\n{shown}\n```")]);
         let asked = self.bot.send(&self.target, &prompt).await;
         self.bot.approvals.wait(&session, asked, answer).await
+    }
+
+    async fn send_image(&self, mime: &str, data: &[u8]) -> Result<bool> {
+        self.bot.send_image(&self.target, mime, data).await?;
+        Ok(true)
     }
 }
 

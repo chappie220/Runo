@@ -81,6 +81,12 @@ enum ServerMsg {
         tool: String,
         summary: String,
     },
+    /// A picture the turn made, base64-encoded.
+    Image {
+        session: String,
+        mime: String,
+        data: String,
+    },
     Done {
         session: String,
         text: String,
@@ -801,6 +807,16 @@ impl Approver for SocketApprover {
             .unwrap_or_else(|p| p.into_inner())
             .remove(&id);
         allowed
+    }
+
+    async fn send_image(&self, mime: &str, data: &[u8]) -> anyhow::Result<bool> {
+        use base64::Engine;
+        let image = ServerMsg::Image {
+            session: self.session.clone(),
+            mime: mime.to_owned(),
+            data: base64::engine::general_purpose::STANDARD.encode(data),
+        };
+        Ok(self.out.send(image).is_ok())
     }
 }
 

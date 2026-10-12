@@ -21,6 +21,7 @@ mod guide;
 mod heartbeat;
 mod i18n;
 mod identity;
+mod imagegen;
 mod life;
 mod limits;
 mod live;
@@ -867,6 +868,7 @@ async fn build_agent(
         config::ContextBudget::Auto => onboard::auto_context(config, state).await,
         config::ContextBudget::Tokens(_) => None,
     };
+    let image = imagegen::ImageGen::new(config, &api_key)?;
     let voice = openrouter
         .then(|| voice::Transcriber::new(&side, config.agent.audio_model.as_deref(), &api_key))
         .transpose()?;
@@ -889,6 +891,7 @@ async fn build_agent(
             )
             .with_review(review)
             .with_mail(mail)
+            .with_image(image)
             .with_settings(Some(config_path.to_owned())),
         store,
         config: config::AgentConfig {

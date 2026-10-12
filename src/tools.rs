@@ -29,6 +29,12 @@ use crate::store::Store;
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn approve(&self, tool: &str, summary: &str) -> bool;
+
+    /// Shows a picture the turn made (`data` of type `mime`) in the chat;
+    /// `false` when this front end cannot show pictures.
+    async fn send_image(&self, _mime: &str, _data: &[u8]) -> anyhow::Result<bool> {
+        Ok(false)
+    }
 }
 
 tokio::task_local! {
@@ -42,6 +48,15 @@ pub async fn with_approver<F: std::future::Future>(
     turn: F,
 ) -> F::Output {
     TURN_APPROVER.scope(approver, turn).await
+}
+
+/// Shows a picture in the chat the turn answers; `Ok(false)` when it has
+/// none that can (a terminal, a scheduled job).
+pub async fn send_image(mime: &str, data: &[u8]) -> anyhow::Result<bool> {
+    match TURN_APPROVER.try_with(Arc::clone) {
+        Ok(approver) => approver.send_image(mime, data).await,
+        Err(_) => Ok(false),
+    }
 }
 
 /// Asks the turn's approver, as an `ask` tool does.
@@ -100,6 +115,7 @@ pub struct BuiltinTools {
     skills: Option<Skills>,
     review: Option<Reviewer>,
     mail: Option<Arc<MailBot>>,
+    image: Option<crate::imagegen::ImageGen>,
     /// config.toml, for the `settings` tool; `None` offers no such tool.
     settings: Option<PathBuf>,
 }
@@ -123,6 +139,17 @@ struct SendMailArgs {
     to: String,
     subject: String,
     body: String,
+}
+
+#[derive(Deserialize)]
+struct ImageArgs {
+    prompt: String,
+    #[serde(default)]
+    aspect_ratio: Option<String>,
+    #[serde(default)]
+    transparent: bool,
+    #[serde(default)]
+    references: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -225,6 +252,7 @@ impl BuiltinTools {
             skills: None,
             review: None,
             mail: None,
+            image: None,
             settings: None,
         })
     }
@@ -288,6 +316,84 @@ impl BuiltinTools {
             .await
             .map_err(|err| format!("error: {err:#}"))?;
         Ok(format!("sent to {to}"))
+    }
+
+    /// Offers `image_generate` with this image model; `None` offers none.
+    pub fn with_image(mut self, image: Option<crate::imagegen::ImageGen>) -> Self {
+        self.image = image;
+        self
+    }
+
+    /// Draws a picture, saves it in the workspace and shows it in the chat.
+    async fn image_generate(&self, actor: &Actor, args: ImageArgs) -> Result<String, String> {
+        let image = self
+            .image
+            .as_ref()
+            .ok_or("error: image generation is off")?;
+        if args.prompt.trim().is_empty() {
+            return Err("error: the prompt is empty".into());
+        }
+        let mut references = Vec::new();
+        for path in &args.references {
+            let full = self.resolve(path);
+            let data = tokio::fs::read(&full)
+                .await
+                .map_err(|e| format!("error: {}: {e}", full.display()))?;
+            let mime = crate::attachments::guess_mime(path);
+            let mime = if mime.starts_with("image/") {
+                mime
+            } else {
+                crate::imagegen::sniff(&data).to_owned()
+            };
+            references.push((mime, data));
+        }
+        let request = crate::imagegen::Request {
+            prompt: args.prompt,
+            aspect_ratio: args.aspect_ratio,
+            transparent: args.transparent,
+            references,
+        };
+        let made = image
+            .generate(&request)
+            .await
+            .map_err(|e| format!("error: {e:#}"))?;
+        if let Some(cost) = made.cost {
+            let session = crate::agent::current_session().unwrap_or_default();
+            let usage = crate::llm::Usage {
+                cost,
+                ..Default::default()
+            };
+            if let Err(err) = self.store.record_usage(
+                &session,
+                "image",
+                Some(&actor.id),
+                Some(image.model()),
+                &usage,
+            ) {
+                eprintln!("usage: cannot record an image: {err:#}");
+            }
+        }
+        let relative = crate::imagegen::save(&self.workspace, &made)
+            .await
+            .map_err(|e| format!("error: {e:#}"))?;
+        let shown = match send_image(&made.mime, &made.data).await {
+            Ok(true) => "It is already shown in the chat; do not send it again or repeat its path."
+                .to_owned(),
+            Ok(false) => format!(
+                "This chat cannot show pictures: tell the user it is saved at {}.",
+                self.workspace.join(&relative).display()
+            ),
+            Err(err) => format!(
+                "Showing it in the chat failed ({err:#}): tell the user it is saved at {}.",
+                self.workspace.join(&relative).display()
+            ),
+        };
+        Ok(format!(
+            "{}\nPicture made by {} ({} KB), saved to {relative}. {shown}",
+            crate::attachments::tool_image_line(&relative),
+            image.model(),
+            made.data.len() / 1024,
+        ))
     }
 
     pub fn with_search(mut self, search: Option<Searcher>) -> Self {
@@ -1026,6 +1132,25 @@ impl BuiltinTools {
                 }, "required": ["action"]}),
             ));
         }
+        if let Some(image) = &self.image {
+            specs.push(ToolSpec::function(
+                "image_generate",
+                &format!(
+                    "Draw a picture with {} and send it to the user in this chat. Use it when they ask \
+                     for a picture, drawing, photo, sticker or edit of an image. Write the prompt in \
+                     detail (subject, style, composition, lighting, any text to show). To edit or draw \
+                     from existing pictures (files they sent, earlier results in images/), pass their \
+                     workspace paths as references. It can take a minute.",
+                    image.describe()
+                ),
+                json!({"type": "object", "properties": {
+                    "prompt": {"type": "string", "description": "What to draw, in detail"},
+                    "aspect_ratio": {"type": "string", "description": "e.g. 1:1, 16:9, 9:16, 4:3, 3:4; default: the model's choice"},
+                    "transparent": {"type": "boolean", "description": "Transparent background, e.g. for stickers and logos"},
+                    "references": {"type": "array", "items": {"type": "string"}, "description": "Workspace paths of pictures to edit or draw from (at most 5)"}
+                }, "required": ["prompt"]}),
+            ));
+        }
         if let Some(skills) = &self.skills
             && !skills.ready().is_empty()
         {
@@ -1138,6 +1263,10 @@ impl BuiltinTools {
                 Err(e) => Err(e),
             },
             "skill" => parse(call).and_then(|args| self.skill(args)),
+            "image_generate" => match parse(call) {
+                Ok(args) => self.image_generate(actor, args).await,
+                Err(e) => Err(e),
+            },
             "send_mail" => match parse(call) {
                 Ok(args) => self.send_mail(args).await,
                 Err(e) => Err(e),
@@ -1195,6 +1324,107 @@ mod tests {
         fn specs(&self) -> Vec<ToolSpec> {
             self.0.specs()
         }
+    }
+
+    /// Remembers the pictures a turn shows.
+    #[derive(Default)]
+    struct Screen(std::sync::Mutex<Vec<(String, Vec<u8>)>>);
+
+    #[async_trait]
+    impl Approver for Screen {
+        async fn approve(&self, _tool: &str, _summary: &str) -> bool {
+            false
+        }
+        async fn send_image(&self, mime: &str, data: &[u8]) -> anyhow::Result<bool> {
+            self.0.lock().unwrap().push((mime.into(), data.into()));
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn image_generate_draws_saves_and_shows_the_picture() {
+        use axum::routing::post;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api/v1", listener.local_addr().unwrap());
+        let seen: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let log = seen.clone();
+        let app = axum::Router::new().route(
+            "/api/v1/images",
+            post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let log = log.clone();
+                async move {
+                    log.lock().unwrap().push(body);
+                    axum::Json(json!({
+                        "data": [{"b64_json": "iVBORw0KGgo=", "media_type": "image/png"}],
+                        "usage": {"cost": 0.03}
+                    }))
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let dir = std::env::temp_dir().join(format!("openclaw-image-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cat.jpg"), [0xFF, 0xD8, 0xFF, 0]).unwrap();
+        let mut config = Config::default();
+        config.model.base_url = base;
+        config.image.model = Some("x/draw".into());
+        let image = crate::imagegen::ImageGen::new(&config, "k").unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let tools = BuiltinTools::new(dir.clone(), ToolsConfig::default(), store)
+            .unwrap()
+            .with_image(image);
+        let offered = owner(async { tools.specs() }).await;
+        assert!(offered.iter().any(|s| s.function.name == "image_generate"));
+
+        let screen = Arc::new(Screen::default());
+        let out = owner(with_approver(
+            screen.clone(),
+            tools.call(&call(
+                "image_generate",
+                json!({"prompt": "a cat in a hat", "aspect_ratio": "16:9", "references": ["cat.jpg"]}),
+            )),
+        ))
+        .await;
+        assert!(out.contains("already shown"), "{out}");
+        let saved = out
+            .lines()
+            .nth(1)
+            .and_then(|l| l.split("saved to ").nth(1))
+            .and_then(|l| l.split(". ").next())
+            .unwrap();
+        assert!(
+            saved.starts_with("images/") && saved.ends_with(".png"),
+            "{saved}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(saved)).unwrap(),
+            b"\x89PNG\r\n\x1a\n"
+        );
+        {
+            let shown = screen.0.lock().unwrap();
+            assert_eq!(shown.len(), 1);
+            assert_eq!(shown[0].0, "image/png");
+        }
+        let body = seen.lock().unwrap()[0].clone();
+        assert_eq!(body["model"], "x/draw");
+        assert_eq!(body["aspect_ratio"], "16:9");
+        assert_eq!(
+            body["input_references"][0],
+            "data:image/jpeg;base64,/9j/AA=="
+        );
+
+        // Without a front end that shows pictures, the path is passed on.
+        let out = owner(tools.call(&call("image_generate", json!({"prompt": "a dog"})))).await;
+        assert!(out.contains("cannot show pictures"), "{out}");
+        // Guests are not offered it unless granted.
+        let guest = crate::config::Config::default()
+            .access
+            .resolve("qq:G", "qq:c2c:G");
+        let offered = access::with_actor(guest, async { tools.specs() }).await;
+        assert!(!offered.iter().any(|s| s.function.name == "image_generate"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn tools(dir: &Path, config: ToolsConfig, approve: bool) -> Scoped {

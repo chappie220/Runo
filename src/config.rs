@@ -30,6 +30,7 @@ pub struct Config {
     pub search: SearchConfig,
     pub browser: BrowserConfig,
     pub fetch: FetchConfig,
+    pub image: ImageConfig,
     pub mcp: McpConfig,
     pub skills: SkillsConfig,
     pub limits: crate::limits::LimitsConfig,
@@ -205,6 +206,30 @@ impl Default for FetchConfig {
             timeout_secs: 20,
             max_bytes: 2_000_000,
             max_chars: 8000,
+        }
+    }
+}
+
+/// `image_generate`: draws pictures and sends them to the chat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageConfig {
+    /// Off: no `image_generate` tool.
+    pub enabled: bool,
+    /// `gpt-image-2` (the ChatGPT plan's, an id without `/`) or an
+    /// OpenRouter image model such as `google/gemini-2.5-flash-image`.
+    /// Default: gpt-image-2 on a ChatGPT plan, else none (no tool).
+    pub model: Option<String>,
+    /// Seconds one picture may take.
+    pub timeout_secs: u64,
+}
+
+impl Default for ImageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: None,
+            timeout_secs: 300,
         }
     }
 }
@@ -934,6 +959,19 @@ impl Config {
         }
     }
 
+    /// The model `image_generate` draws with; `None` when there is none.
+    pub fn image_model(&self) -> Option<String> {
+        if !self.image.enabled {
+            return None;
+        }
+        match self.image.model.as_deref().map(str::trim) {
+            Some(model) if !model.is_empty() => Some(model.to_owned()),
+            _ => self
+                .chatgpt()
+                .then(|| crate::imagegen::CHATGPT_MODEL.to_owned()),
+        }
+    }
+
     /// The settings for a side model (summaries, images, voice), which may
     /// run elsewhere than the main model: an id with a `/` is OpenRouter's,
     /// one without is ChatGPT's (unless the main model is on a server of
@@ -1003,6 +1041,18 @@ mod tests {
         config.model.provider = Provider::Openrouter;
         config.model.base_url = "http://127.0.0.1:11434/v1".into();
         assert_eq!(config.side_model("llama3").provider, Provider::Openrouter);
+    }
+
+    #[test]
+    fn pictures_are_drawn_on_the_chatgpt_plan_unless_a_model_is_picked() {
+        let mut config = Config::default();
+        assert_eq!(config.image_model(), None);
+        config.model.provider = Provider::Chatgpt;
+        assert_eq!(config.image_model().as_deref(), Some("gpt-image-2"));
+        config.image.model = Some("google/draws".into());
+        assert_eq!(config.image_model().as_deref(), Some("google/draws"));
+        config.image.enabled = false;
+        assert_eq!(config.image_model(), None);
     }
 
     #[test]

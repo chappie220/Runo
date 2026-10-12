@@ -24,7 +24,7 @@ use crate::setup::{self, Picked, Term};
 const SHOWN: usize = 12;
 
 /// A model from the catalog, with what the agent needs to know about it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelInfo {
     pub id: String,
     pub name: String,
