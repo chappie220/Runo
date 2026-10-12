@@ -125,14 +125,21 @@ account and billed to the plan's Codex allowance.
 
 ```sh
 openclaw-rs login             # sign in in a browser
+openclaw-rs login --device    # or enter a code at auth.openai.com/codex/device on any device
 openclaw-rs login --import    # or take the Codex CLI's sign-in (~/.codex/auth.json)
 openclaw-rs login --status    # who is signed in
 openclaw-rs login --logout
 ```
 
-`openclaw-rs init` offers the same sign-in as its second step, and
-`openclaw-rs config` has it at the end of "Model and context" ("Sign in to
-ChatGPT"), so there is no separate command to remember.
+`openclaw-rs init` offers both sign-ins as its second step, and
+`openclaw-rs config` has them under Model › Provider and sign-in ("Sign in
+to ChatGPT (browser)" and "(device code)"), so there is no separate command
+to remember.
+
+`--device` needs nothing from this machine's localhost: it shows a code to
+enter at `auth.openai.com/codex/device` in a browser on any device, a phone
+too, and waits up to 15 minutes. If ChatGPT says device codes are off, turn
+on device code sign-in for Codex in ChatGPT's security settings first.
 
 `login` prints an address to open in a browser. On the machine itself
 that is all; on a Raspberry Pi over SSH the last page does not load (it
@@ -221,9 +228,12 @@ the screen.
 `openclaw-rs init` sets up what a first run needs (see [Usage](#usage)).
 
 `openclaw-rs config` (or `/config` in the terminal UI) edits
-`<state dir>/config.toml` interactively, section by section (model and
-context, tools, gateway, QQ, email, web search, browser, limits, updates,
-skills, access, and the companion: time sense, heartbeat, inner life). Every
+`<state dir>/config.toml` interactively in three levels: a category, then
+its section, then the settings. The categories are language; model
+(provider and sign-in, context and model calls, messages during a reply);
+chat apps and email (QQ, Feishu, Zulip, email); tools and the web (tools,
+web search, browser, reading web pages, skills); access and spending; the
+companion (time sense, heartbeat, inner life); and Gateway and updates. Every
 setting below can be changed there; nothing needs editing by hand. Saving
 restarts a running Gateway so the change applies at once (when this user
 may restart it; otherwise it says how).
@@ -1126,7 +1136,8 @@ guest = ["web_search", "web_fetch"] # what any other sender may use
 
 Finding your own openid or open_id is the hard part, so with
 `first_chat_owner = true` (off by default; asked by `openclaw-rs init`, and
-"First chat becomes owner" in `openclaw-rs config`, section "Access") the
+"First chat becomes owner" in `openclaw-rs config`, under Access and
+spending › Access) the
 first person to write to the bot in a private chat on QQ, Feishu or Zulip
 becomes that app's owner, and is added to `owners` in config.toml. Each app
 has its own: once QQ has an owner, nobody else claims QQ, but Feishu is still

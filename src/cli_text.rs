@@ -336,6 +336,14 @@ const ARGS: &[(&str, &str, Tr)] = &[
     ),
     ("login", "logout", tr("Forget the sign-in", "退出登录")),
     (
+        "login",
+        "device",
+        tr(
+            "Sign in with a code entered in a browser on any device",
+            "用设备码登录：在任意设备的浏览器里输入一个码",
+        ),
+    ),
+    (
         "update",
         "check",
         tr(

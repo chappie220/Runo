@@ -177,12 +177,16 @@ const STEP_OWNERS: Tr = tr("Owners on chat apps", "聊天平台的所有者");
 const PROVIDER_TITLE: Tr = tr("Which models?", "用哪里的模型？");
 const PROVIDER_OPENROUTER: Tr = tr("OpenRouter, with an API key", "OpenRouter，用 API key");
 const PROVIDER_CHATGPT: Tr = tr(
-    "My ChatGPT subscription (sign in)",
-    "我的 ChatGPT 订阅（登录）",
+    "My ChatGPT subscription (sign in in a browser)",
+    "我的 ChatGPT 订阅（浏览器登录）",
+);
+const PROVIDER_DEVICE: Tr = tr(
+    "My ChatGPT subscription (sign in with a device code)",
+    "我的 ChatGPT 订阅（设备码登录）",
 );
 const PICK_PROVIDER: Tr = tr(
-    "1) OpenRouter, with an API key  2) My ChatGPT subscription (sign in) [{}]: ",
-    "1) OpenRouter，用 API key  2) 我的 ChatGPT 订阅（登录）[{}]：",
+    "1) OpenRouter, with an API key  2) My ChatGPT subscription (sign in in a browser)  3) The same, with a device code [{}]: ",
+    "1) OpenRouter，用 API key  2) 我的 ChatGPT 订阅（浏览器登录）  3) 同上，用设备码登录 [{}]：",
 );
 const KEEP_SIGN_IN: Tr = tr(
     "Keep the ChatGPT sign-in ({})? [Y/n]: ",
@@ -196,8 +200,8 @@ const CHATGPT_MODEL: Tr = tr(
     "你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex [{}]：",
 );
 const OWNERS_HOW: Tr = tr(
-    "On QQ, Feishu and Zulip only owners may use every tool (memory, files, shell); everyone else is a guest. Owners are listed in access.owners (`openclaw-rs config`, section \"Access\").",
-    "在 QQ、飞书和 Zulip 上，只有所有者能使用全部工具（记忆、文件、shell），其他人都是访客。所有者记在 access.owners 里（`openclaw-rs config` 的“权限”一节）。",
+    "On QQ, Feishu and Zulip only owners may use every tool (memory, files, shell); everyone else is a guest. Owners are listed in access.owners (`openclaw-rs config`, Access and spending › Access).",
+    "在 QQ、飞书和 Zulip 上，只有所有者能使用全部工具（记忆、文件、shell），其他人都是访客。所有者记在 access.owners 里（`openclaw-rs config` 的“权限与花费 › 权限”）。",
 );
 const OWNERS_NOW: Tr = tr("Owners now: {}", "当前所有者：{}");
 const FIRST_CHAT_ASK: Tr = tr(
@@ -380,6 +384,7 @@ pub const ALL: &[Tr] = &[
     PROVIDER_TITLE,
     PROVIDER_OPENROUTER,
     PROVIDER_CHATGPT,
+    PROVIDER_DEVICE,
     PICK_PROVIDER,
     KEEP_SIGN_IN,
     SIGN_IN_FAILED,
@@ -858,14 +863,16 @@ fn provider<R: BufRead, W: Write>(
     signed_in: Option<String>,
 ) -> Result<Option<bool>> {
     let start = usize::from(config.chatgpt());
-    let chatgpt = if term.arrows {
+    // 0: OpenRouter, 1: ChatGPT in a browser, 2: ChatGPT with a device code.
+    let picked = if term.arrows {
         let items = [
             PROVIDER_OPENROUTER.get(term.lang).to_owned(),
             PROVIDER_CHATGPT.get(term.lang).to_owned(),
+            PROVIDER_DEVICE.get(term.lang).to_owned(),
         ];
         match term.select(PROVIDER_TITLE.get(term.lang), &items, start, &|_| None)? {
-            Picked::Item(i) => i == 1,
-            Picked::Back => start == 1,
+            Picked::Item(i) => i,
+            Picked::Back => start,
             Picked::End => return Ok(None),
         }
     } else {
@@ -874,14 +881,16 @@ fn provider<R: BufRead, W: Write>(
             return Ok(None);
         };
         match answer.as_str() {
-            "1" => false,
-            "2" => true,
-            _ => start == 1,
+            "1" => 0,
+            "2" => 1,
+            "3" => 2,
+            _ => start,
         }
     };
-    if !chatgpt {
+    if picked == 0 {
         return Ok(Some(false));
     }
+    let device = picked == 2;
     if let Some(who) = signed_in {
         let Some(keep) = term.confirm(&KEEP_SIGN_IN.fill(term.lang, &[&who]), true)? else {
             return Ok(None);
@@ -891,7 +900,7 @@ fn provider<R: BufRead, W: Write>(
         }
     }
     loop {
-        match sign_in(term) {
+        match sign_in(term, device) {
             Ok(Some(who)) => {
                 term.tell(SIGNED_IN_AS, &[&who])?;
                 return Ok(Some(true));
@@ -1328,7 +1337,7 @@ mod tests {
         // ownership; yes to the Gateway.
         let script = "\r\rsk-good\nsees\n\r\r\rShanghai\n31-02\n03-14\n\n\r\r";
         let unused = || -> Option<setup::SignIn<'static>> {
-            Some(Box::new(|_: &mut dyn setup::Prompt| unreachable!()))
+            Some(Box::new(|_: &mut dyn setup::Prompt, _| unreachable!()))
         };
         let mut term = Term {
             input: script.as_bytes(),
@@ -1427,15 +1436,17 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut signed = 0;
         let host = Host {
-            sign_in: Some(Box::new(|term: &mut dyn setup::Prompt| {
+            sign_in: Some(Box::new(|term: &mut dyn setup::Prompt, device| {
+                assert!(device);
                 signed += 1;
                 term.say("open this")?;
                 Ok(Some("me@example.org".into()))
             })),
             ..Host::default()
         };
-        // English; ChatGPT; a model; no companion; the first chat claims.
-        let script = "2\n2\ngpt-5-codex\nn\ny\n";
+        // English; ChatGPT with a device code; a model; no companion; the
+        // first chat claims.
+        let script = "2\n3\ngpt-5-codex\nn\ny\n";
         let (done, out) = drive_with(&path, script, host).await;
         assert_eq!(done, Some(Lang::En), "{out}");
         assert_eq!(signed, 1);
@@ -1458,7 +1469,7 @@ mod tests {
         )
         .unwrap();
         let host = Host {
-            sign_in: Some(Box::new(|_: &mut dyn setup::Prompt| unreachable!())),
+            sign_in: Some(Box::new(|_: &mut dyn setup::Prompt, _| unreachable!())),
             signed_in: Some("me@example.org".into()),
             ..Host::default()
         };

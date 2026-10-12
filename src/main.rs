@@ -146,6 +146,9 @@ enum Command {
         /// Forget the sign-in.
         #[arg(long, conflicts_with = "import")]
         logout: bool,
+        /// Sign in with a code entered in a browser on any device.
+        #[arg(long, conflicts_with_all = ["import", "status", "logout"])]
+        device: bool,
     },
     /// Install the latest release from GitHub, or go back to the previous binary.
     Update {
@@ -457,6 +460,7 @@ async fn run(cli: Cli) -> Result<()> {
         import,
         status,
         logout,
+        device,
     } = &cli.command
     {
         let action = match import {
@@ -465,6 +469,7 @@ async fn run(cli: Cli) -> Result<()> {
             Some(path) => {
                 chatgpt::Action::Import(path.clone().unwrap_or_else(chatgpt::codex_auth_file))
             }
+            None if *device => chatgpt::Action::Device,
             None => chatgpt::Action::Login,
         };
         return chatgpt::run(action, &config_path, &state).await;
