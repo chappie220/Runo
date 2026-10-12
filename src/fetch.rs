@@ -55,7 +55,7 @@ impl Fetcher {
                 .redirect(reqwest::redirect::Policy::none())
                 .user_agent(concat!(
                     "Mozilla/5.0 (compatible; OpenClaw/",
-                    env!("CARGO_PKG_VERSION"),
+                    env!("OPENCLAW_VERSION"),
                     ")"
                 ));
             if public {

@@ -92,6 +92,17 @@ CREATE TABLE diary (
   created_at INTEGER NOT NULL
 );
 "#,
+        r#"
+-- 0.3.5.1: identities set up before the agent kept to the first person are
+-- set up again. The old one is kept here, not used.
+CREATE TABLE identity_retired AS
+  SELECT name, creature, vibe, emoji, soul, updated_at,
+         CAST(strftime('%s', 'now') AS INTEGER) AS retired_at
+  FROM identity;
+DELETE FROM identity;
+UPDATE identity_drafts SET state = 'superseded', decided_at = CAST(strftime('%s', 'now') AS INTEGER)
+  WHERE state = 'awaiting';
+"#,
     ],
     legacy: &[
         ("memories", "id, content, created_at"),
@@ -1267,6 +1278,51 @@ mod tests {
         assert_eq!(store.sessions().unwrap()[0].messages, 1);
         assert!(store.identity().unwrap().is_none());
         assert!(store.job_list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_identity_from_before_0_3_5_1_is_retired_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join(SOUL.file)).unwrap();
+        for sql in &SOUL.migrations[..4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO identity VALUES (1, '小雪', 'AI', 'warm', NULL, '小雪说话温柔。', 5);
+             INSERT INTO identity_drafts(name, creature, vibe, soul, hash, proposed_by,
+                                         session, state, created_at)
+               VALUES ('x', 'y', 'z', 's', 'h', 'owner', 'main', 'awaiting', 1);
+             INSERT INTO memories(content, created_at) VALUES ('likes tea', 1);
+             PRAGMA user_version = 4;",
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(dir.path()).unwrap();
+        assert!(store.identity().unwrap().is_none());
+        assert!(store.identity_drafts_awaiting().unwrap().is_empty());
+        let soul = store.soul();
+        let kept: String = soul
+            .query_row("SELECT soul FROM identity_retired", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, "小雪说话温柔。");
+        let memories: i64 = soul
+            .query_row("SELECT count(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(memories, 1);
+        drop(soul);
+        // A new identity stays: the reset ran once.
+        store
+            .identity_set(&crate::identity::Identity {
+                name: "Ada".into(),
+                creature: "AI".into(),
+                vibe: "calm".into(),
+                soul: "You speak plainly.".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.identity().unwrap().unwrap().name, "Ada");
     }
 
     #[test]

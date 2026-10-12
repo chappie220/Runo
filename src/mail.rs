@@ -431,7 +431,7 @@ impl MailBot {
         let _ = session
             .id([
                 ("name", Some("openclaw-rs")),
-                ("version", Some(env!("CARGO_PKG_VERSION"))),
+                ("version", Some(crate::update::VERSION)),
             ])
             .await;
         Ok(session)

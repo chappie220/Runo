@@ -59,7 +59,7 @@ use crate::store::Store;
 use crate::tools::{BuiltinTools, TerminalApprover, with_approver};
 
 #[derive(Parser)]
-#[command(name = "openclaw-rs", version, about = "Single-binary OpenClaw")]
+#[command(name = "openclaw-rs", version = update::VERSION, about = "Single-binary OpenClaw")]
 struct Cli {
     /// Config file (default: <state dir>/config.toml).
     #[arg(long, global = true, value_hint = clap::ValueHint::FilePath)]

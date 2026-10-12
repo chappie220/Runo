@@ -22,9 +22,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          # package.metadata.openclaw.release when set (it may have a fourth
+          # part), else the package version.
+          version=$(sed -n 's/^release = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ -n "$version" ] || version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml release $version" >&2
             exit 1
           fi
       - uses: dtolnay/rust-toolchain@stable

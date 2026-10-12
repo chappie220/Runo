@@ -1,10 +1,16 @@
 [package]
 name = "openclaw-rs"
-version = "0.3.6"
+version = "0.3.5"
 edition = "2024"
 description = "Single-binary OpenClaw Gateway: OpenRouter agent, SQLite state, Web/CLI/QQ"
 license = "MIT"
 publish = false
+
+[package.metadata.openclaw]
+# The release number: what `--version` shows, `update` compares and the
+# tag is (v<release>). It may add a fourth part to `version`, which Cargo
+# keeps at three; without it the release is `version`.
+release = "0.3.5.1"
 
 [[bin]]
 name = "openclaw-rs"
