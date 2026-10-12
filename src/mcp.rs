@@ -391,7 +391,7 @@ impl Conn {
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "openclaw-rs", "version": env!("CARGO_PKG_VERSION")},
+                    "clientInfo": {"name": "openclaw-rs", "version": crate::update::VERSION},
                 }),
             )
             .await

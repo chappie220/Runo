@@ -864,8 +864,12 @@ check_hours = 24
 repo = "chappie220/openclaw"   # where releases come from
 ```
 
-Releases are published by pushing a tag that matches `Cargo.toml`'s version
-(`git tag v0.2.0 && git push origin v0.2.0`): the Release workflow builds
+Releases are published by pushing a tag that matches `Cargo.toml`'s release
+number: `package.metadata.openclaw.release` when set, which may add a fourth
+part such as `0.3.5.1` to the three Cargo allows, else `version`
+(`git tag v0.3.5.1 && git push origin v0.3.5.1`). Binaries before 0.3.5.1
+compare only three parts, so they reach a four-part release with
+`scripts/update.sh` rather than `update`. The Release workflow builds
 the aarch64 and x86_64 musl binaries and their `SHA256SUMS`. A release
 already made for the tag (e.g. on the website, which also creates the tag)
 gets the files added; otherwise the workflow creates it with generated notes.

@@ -175,7 +175,7 @@ fn write_archive(
 
     let manifest = serde_json::to_vec_pretty(&Manifest {
         format: FORMAT,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: crate::update::VERSION.to_owned(),
         created: chrono::Local::now().to_rfc3339(),
         workspace: with_workspace,
     })?;
