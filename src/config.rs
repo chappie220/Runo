@@ -172,8 +172,9 @@ impl Default for BrowserConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkConfig {
-    /// HTTP proxy for the model providers, sign-in, chat apps (WebSockets
-    /// too), search, voice and updates, e.g. `http://127.0.0.1:7890`.
+    /// HTTP proxy for the model providers, sign-in, search, voice and
+    /// updates, e.g. `http://127.0.0.1:7890`; chat apps use it only with
+    /// their own `proxy = true`.
     /// Local addresses, `web_fetch` and email never use it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
@@ -357,6 +358,9 @@ impl MailConfig {
 #[serde(default)]
 pub struct QqConfig {
     pub enabled: bool,
+    /// Through `network.proxy`; off connects directly, as these services
+    /// usually need no proxy.
+    pub proxy: bool,
     pub app_id: String,
     /// Prefer `QQ_APP_SECRET`; a secret here is stored in plain text.
     pub app_secret: Option<String>,
@@ -373,6 +377,7 @@ impl Default for QqConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            proxy: false,
             app_id: String::new(),
             app_secret: None,
             allow: Vec::new(),
@@ -396,6 +401,9 @@ impl QqConfig {
 #[serde(default)]
 pub struct FeishuConfig {
     pub enabled: bool,
+    /// Through `network.proxy`; off connects directly, as these services
+    /// usually need no proxy.
+    pub proxy: bool,
     pub app_id: String,
     /// Prefer `FEISHU_APP_SECRET`; a secret here is stored in plain text.
     pub app_secret: Option<String>,
@@ -412,6 +420,7 @@ impl Default for FeishuConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            proxy: false,
             app_id: String::new(),
             app_secret: None,
             allow: Vec::new(),
@@ -434,6 +443,9 @@ impl FeishuConfig {
 #[serde(default)]
 pub struct ZulipConfig {
     pub enabled: bool,
+    /// Through `network.proxy`; off connects directly, as these services
+    /// usually need no proxy.
+    pub proxy: bool,
     /// The organization's address, e.g. `https://example.zulipchat.com`.
     pub site: String,
     /// The bot's email, shown on its settings page.
@@ -451,6 +463,7 @@ impl Default for ZulipConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            proxy: false,
             site: String::new(),
             email: String::new(),
             api_key: None,

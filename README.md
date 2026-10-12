@@ -276,9 +276,11 @@ options is under [Memory](#memory) below.
 
 Where the model providers cannot be reached directly, everything that talks
 to them can go through an HTTP proxy: the models (ChatGPT and OpenRouter),
-ChatGPT's sign-in, the model lists, QQ, Feishu and Zulip (their WebSocket
-long connections too, through an HTTP `CONNECT` tunnel), web search, voice,
-MCP servers over HTTP and updates. `init` asks before signing in; later it is
+ChatGPT's sign-in, the model lists, web search, voice, MCP servers over HTTP
+and updates. QQ, Feishu and Zulip connect directly unless their own
+`proxy = true` is set ("Use the network proxy" in their `config` section,
+shown once a proxy is set); then their WebSocket long connections go
+through it too, in an HTTP `CONNECT` tunnel. `init` asks before signing in; later it is
 **Model › Provider and sign-in › Network proxy** in `openclaw-rs config`
 (`-` goes direct again).
 
@@ -286,6 +288,9 @@ MCP servers over HTTP and updates. `init` asks before signing in; later it is
 [network]
 proxy = "http://127.0.0.1:7890"   # Clash, v2rayN and the like: their HTTP port
 # proxy = "http://user:password@proxy.lan:8080"
+
+[feishu]
+proxy = true   # Lark from abroad, say; QQ, Feishu and Zulip default to direct
 ```
 
 Only `http://` proxies work (the address may be typed without it). These

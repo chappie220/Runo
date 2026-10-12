@@ -1,6 +1,6 @@
 //! The network proxy (`network.proxy`): the model providers, ChatGPT's
-//! sign-in, chat apps (their WebSockets too), search, voice and updates go
-//! through it. Addresses on this host and the local network never do, and
+//! sign-in, search, voice and updates go through it; chat apps (their
+//! WebSockets too) only when their own `proxy` switch is on. Addresses on this host and the local network never do, and
 //! neither does `web_fetch`, which checks every address itself.
 
 use std::sync::RwLock;
@@ -60,7 +60,16 @@ pub fn current() -> Option<reqwest::Url> {
 
 /// A client builder that goes through the proxy when one is set.
 pub fn builder() -> reqwest::ClientBuilder {
+    builder_for(true)
+}
+
+/// A client builder for a service with its own proxy switch: through the
+/// proxy only when `proxy` is on and one is set.
+pub fn builder_for(proxy: bool) -> reqwest::ClientBuilder {
     let builder = reqwest::Client::builder();
+    if !proxy {
+        return builder.no_proxy();
+    }
     match current().and_then(|url| reqwest::Proxy::all(url.as_str()).ok()) {
         Some(proxy) => builder.proxy(proxy.no_proxy(reqwest::NoProxy::from_string(DIRECT))),
         None => builder,
@@ -85,8 +94,8 @@ fn direct(host: &str) -> bool {
 pub type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Opens a WebSocket at `url`, through the proxy (an HTTP CONNECT tunnel)
-/// when one is set.
-pub async fn websocket(url: &str) -> Result<Socket> {
+/// when `proxy` is on and one is set.
+pub async fn websocket(url: &str, proxy: bool) -> Result<Socket> {
     let target = reqwest::Url::parse(url).with_context(|| format!("{url:?} is not a URL"))?;
     let host = target.host_str().context("the WebSocket URL has no host")?;
     let port = target
@@ -97,7 +106,7 @@ pub async fn websocket(url: &str) -> Result<Socket> {
             _ => None,
         })
         .context("the WebSocket URL has no port")?;
-    let proxy = current().filter(|_| !direct(host));
+    let proxy = current().filter(|_| proxy && !direct(host));
     let Some(proxy) = proxy else {
         let (socket, _) = tokio_tungstenite::connect_async(url).await?;
         return Ok(socket);

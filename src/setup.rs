@@ -64,6 +64,11 @@ fn relevant(field: &Field, config: &Config) -> bool {
     use crate::config::SearchProvider;
     match field.path {
         ["model", "fallbacks"] | ["model", "prompt_cache"] => !config.chatgpt(),
+        ["qq" | "feishu" | "zulip", "proxy"] => config
+            .network
+            .proxy
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty()),
         ["search", "searxng_url"] => config.search.provider == SearchProvider::Searxng,
         ["search", "model"] => config.search_provider() == SearchProvider::Openrouter,
         ["tools", "review", "model"] => config.tools.review.provider != ReviewProvider::Off,
@@ -226,8 +231,8 @@ const GROUPS: &[Group] = &[
                         path: &["network", "proxy"],
                         label: tr("Network proxy", "网络代理"),
                         help: tr(
-                            "An HTTP proxy (http://host:port, e.g. Clash's 7890) for the model providers, sign-in, chat apps (their WebSockets too), search, voice and updates. Local addresses, web_fetch and email go direct. Reset (-) to go direct.",
-                            "HTTP 代理（http://主机:端口，例如 Clash 的 7890），模型提供方、登录、聊天应用（包括 WebSocket）、搜索、语音和更新都走它。本机和局域网地址、web_fetch 和邮件直连。输入 - 取消代理。",
+                            "An HTTP proxy (http://host:port, e.g. Clash's 7890) for the model providers, sign-in, search, voice and updates. Chat apps use it only where \"Use the network proxy\" is on in their section. Local addresses, web_fetch and email go direct. Reset (-) to go direct.",
+                            "HTTP 代理（http://主机:端口，例如 Clash 的 7890），模型提供方、登录、搜索、语音和更新都走它。聊天应用只有在各自设置里打开“使用网络代理”才走它。本机和局域网地址、web_fetch 和邮件直连。输入 - 取消代理。",
                         ),
                         kind: Kind::Proxy,
                     },
@@ -408,6 +413,15 @@ const GROUPS: &[Group] = &[
                         kind: Kind::Bool,
                     },
                     Field {
+                        path: &["qq", "proxy"],
+                        label: tr("Use the network proxy", "使用网络代理"),
+                        help: tr(
+                            "Reach QQ through network.proxy (Model › Provider and sign-in). Off connects directly; most need no proxy.",
+                            "通过网络代理（模型 › 模型提供方与登录）连接QQ。关闭则直连；大多数情况不需要代理。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
                         path: &["qq", "app_id"],
                         label: tr("AppID", "AppID"),
                         help: tr(
@@ -457,6 +471,15 @@ const GROUPS: &[Group] = &[
                         help: tr(
                             "Connects to Feishu over the long connection when `serve` runs; no public address needed. In the developer console: add the bot capability, the im:message permissions, and subscribe to im.message.receive_v1 and the card.action.trigger callback with the long connection.",
                             "运行 `serve` 时通过长连接接入飞书，不需要公网地址。在开发者后台：添加机器人能力和 im:message 相关权限，事件与回调都选“长连接”，订阅 im.message.receive_v1 事件和 card.action.trigger 回调。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["feishu", "proxy"],
+                        label: tr("Use the network proxy", "使用网络代理"),
+                        help: tr(
+                            "Reach Feishu through network.proxy (Model › Provider and sign-in). Off connects directly; most need no proxy.",
+                            "通过网络代理（模型 › 模型提供方与登录）连接飞书。关闭则直连；大多数情况不需要代理。",
                         ),
                         kind: Kind::Bool,
                     },
@@ -519,6 +542,15 @@ const GROUPS: &[Group] = &[
                         help: tr(
                             "Polls Zulip for messages when `serve` runs. Create a Generic bot under Personal settings → Bots.",
                             "运行 `serve` 时从 Zulip 拉取消息。在 个人设置 → 机器人 里创建一个 Generic 机器人。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["zulip", "proxy"],
+                        label: tr("Use the network proxy", "使用网络代理"),
+                        help: tr(
+                            "Reach Zulip through network.proxy (Model › Provider and sign-in). Off connects directly; most need no proxy.",
+                            "通过网络代理（模型 › 模型提供方与登录）连接Zulip。关闭则直连；大多数情况不需要代理。",
                         ),
                         kind: Kind::Bool,
                     },
@@ -3233,6 +3265,21 @@ mod tests {
             max_output: None,
             efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn chat_app_proxy_switches_show_only_with_a_proxy() {
+        let field = Field {
+            path: &["qq", "proxy"],
+            label: tr("", ""),
+            help: tr("", ""),
+            kind: Kind::Bool,
+        };
+        let mut config = Config::default();
+        assert!(!relevant(&field, &config));
+        config.network.proxy = Some("http://127.0.0.1:7890".into());
+        assert!(relevant(&field, &config));
+        assert!(!config.qq.proxy && !config.feishu.proxy && !config.zulip.proxy);
     }
 
     #[test]
