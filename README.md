@@ -655,6 +655,29 @@ timeout_secs = 300
 It is the `image_generate` [capability](#access), which guests do not have
 unless granted, since every picture costs quota or credit.
 
+### Drawing in character
+
+A persona that draws should draw like itself, not like a generic image
+model. While `image_generate` is on, a built-in `drawing` [skill](#skills)
+is listed (only its name and one line, like any skill; nothing is added to
+the start of a conversation). The model loads it when someone asks for a
+picture or when, in character, it wants to draw ("我想画画"), and it then:
+
+1. looks for a saved drawing profile in memory; without one, it researches
+   only how its character draws (skill level, medium, style, favorite
+   subjects, habits, signature) with `web_search`/`web_fetch`, or derives it
+   from SOUL.md for a persona of its own, and saves it with `memory_save`
+   (`Drawing profile: ...`) so it is researched once;
+2. turns the profile into limits in the image prompt (a child's crayon
+   drawing stays wobbly, an artist keeps their style, someone who cannot
+   draw draws badly), drawn on a fitting surface such as a sketchbook page;
+3. sends the picture and answers in character.
+
+It is offered to those who have both the `skills` and `image_generate`
+capabilities. To change it, put your own `skills/drawing/SKILL.md` in the
+workspace (start from [the built-in one](skills/drawing/SKILL.md)); it
+replaces the built-in skill. `skills.disabled = ["drawing"]` turns it off.
+
 ## MCP servers
 
 Tools from [Model Context Protocol](https://modelcontextprotocol.io) servers

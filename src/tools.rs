@@ -421,8 +421,22 @@ impl BuiltinTools {
         self
     }
 
-    fn skill(&self, args: SkillArgs) -> Result<String, String> {
-        let skills = self.skills.as_ref().ok_or("error: skills are off")?;
+    /// The skills `actor` is offered: the workspace's, plus the built-in
+    /// drawing skill while they may draw.
+    fn skills_for(&self, actor: Option<&Actor>) -> Option<Skills> {
+        let skills = self.skills.as_ref()?;
+        let draws = self.image.is_some() && actor.is_some_and(|a| a.can(Capability::ImageGenerate));
+        Some(if draws {
+            skills.clone().with_builtins(&[crate::skills::DRAWING])
+        } else {
+            skills.clone()
+        })
+    }
+
+    fn skill(&self, actor: &Actor, args: SkillArgs) -> Result<String, String> {
+        let skills = self
+            .skills_for(Some(actor))
+            .ok_or("error: skills are off")?;
         skills
             .load(args.name.trim())
             .map_err(|err| format!("error: {err:#}"))
@@ -989,11 +1003,11 @@ impl Tools for BuiltinTools {
     }
 
     fn prompt(&self) -> Option<String> {
-        let skills = self.skills.as_ref()?;
         let actor = access::current()?;
         if !actor.can(Capability::Skills) {
             return None;
         }
+        let skills = self.skills_for(Some(&actor))?;
         let can_write = actor.can(Capability::FilesWrite) && self.config.write != Permission::Deny;
         skills.prompt(can_write)
     }
@@ -1140,7 +1154,8 @@ impl BuiltinTools {
                      for a picture, drawing, photo, sticker or edit of an image. Write the prompt in \
                      detail (subject, style, composition, lighting, any text to show). To edit or draw \
                      from existing pictures (files they sent, earlier results in images/), pass their \
-                     workspace paths as references. It can take a minute.",
+                     workspace paths as references. It can take a minute. If the drawing skill is listed, \
+                     load it first.",
                     image.describe()
                 ),
                 json!({"type": "object", "properties": {
@@ -1151,7 +1166,7 @@ impl BuiltinTools {
                 }, "required": ["prompt"]}),
             ));
         }
-        if let Some(skills) = &self.skills
+        if let Some(skills) = self.skills_for(access::current().as_ref())
             && !skills.ready().is_empty()
         {
             specs.push(ToolSpec::function(
@@ -1262,7 +1277,7 @@ impl BuiltinTools {
                 Ok(args) => self.web_fetch(actor, args).await,
                 Err(e) => Err(e),
             },
-            "skill" => parse(call).and_then(|args| self.skill(args)),
+            "skill" => parse(call).and_then(|args| self.skill(actor, args)),
             "image_generate" => match parse(call) {
                 Ok(args) => self.image_generate(actor, args).await,
                 Err(e) => Err(e),
@@ -1425,6 +1440,68 @@ mod tests {
         let offered = access::with_actor(guest, async { tools.specs() }).await;
         assert!(!offered.iter().any(|s| s.function.name == "image_generate"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_drawing_skill_comes_with_image_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.model.provider = crate::config::Provider::Chatgpt;
+        let skills = Skills::new(dir.path(), &crate::config::SkillsConfig::default());
+        let plain = BuiltinTools::new(
+            dir.path().to_owned(),
+            ToolsConfig::default(),
+            Store::open_in_memory().unwrap(),
+        )
+        .unwrap()
+        .with_skills(Some(skills.clone()));
+        // No image model: no drawing skill, and no skill tool at all.
+        let (prompt, offered) = owner(async { (plain.prompt(), plain.specs()) }).await;
+        assert!(!prompt.unwrap_or_default().contains("- drawing:"));
+        assert!(!offered.iter().any(|s| s.function.name == "skill"));
+
+        let t = plain.with_image(crate::imagegen::ImageGen::new(&config, "").unwrap());
+        let (prompt, loaded) = owner(async {
+            (
+                t.prompt().unwrap(),
+                t.call(&call("skill", json!({"name": "drawing"}))).await,
+            )
+        })
+        .await;
+        assert!(
+            prompt.contains("- drawing: Drawing as your character."),
+            "{prompt}"
+        );
+        assert!(loaded.starts_with("Skill drawing (built in)."), "{loaded}");
+        assert!(loaded.contains("Drawing profile:"), "{loaded}");
+        assert!(!loaded.contains("description:"), "{loaded}");
+
+        // Someone who may use skills but not draw is not offered it.
+        let mut access = crate::access::AccessConfig::default();
+        access
+            .grants
+            .insert("qq:X".into(), vec![Capability::Skills]);
+        let guest = access.resolve("qq:X", "qq:c2c:X");
+        let (prompt, loaded) = access::with_actor(guest, async {
+            (
+                t.prompt().unwrap_or_default(),
+                t.call(&call("skill", json!({"name": "drawing"}))).await,
+            )
+        })
+        .await;
+        assert!(!prompt.contains("- drawing:"), "{prompt}");
+        assert!(loaded.contains("no skill named"), "{loaded}");
+
+        // A workspace skill of the same name replaces it.
+        let own = dir.path().join("skills/drawing/SKILL.md");
+        std::fs::create_dir_all(own.parent().unwrap()).unwrap();
+        std::fs::write(
+            &own,
+            "---\nname: drawing\ndescription: Mine.\n---\nDraw stick figures.\n",
+        )
+        .unwrap();
+        let loaded = owner(t.call(&call("skill", json!({"name": "drawing"})))).await;
+        assert!(loaded.ends_with("Draw stick figures."), "{loaded}");
     }
 
     fn tools(dir: &Path, config: ToolsConfig, approve: bool) -> Scoped {
