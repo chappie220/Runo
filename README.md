@@ -750,8 +750,10 @@ The model can also create, list and remove jobs (`cron_add`, `cron_list`,
 Each message reaches the model with the local time (the host's time zone; set
 `TZ` for the service if needed), and, when it has been 30 minutes or more,
 how long ago the person last wrote in that conversation. Like recalled
-memories, the note goes with that turn only and is never stored. Turn it off
-with `agent.time_sense = false`.
+memories, the note goes with that turn only and is never stored. Earlier
+messages are sent with the time they were sent (`[Sent: …]`, from the
+history), so a time given in an earlier reply still has its source and is
+not mistaken for a guess. Turn it off with `agent.time_sense = false`.
 
 ## Heartbeat
 
@@ -1300,7 +1302,8 @@ max_results = 5
 Long-term memory is a SQLite FTS5 index with the trigram tokenizer, so Chinese
 text matches by substring without word segmentation. Space-separated terms
 match any; terms shorter than three characters fall back to `LIKE`. The model
-gets `memory_save`, `memory_search` and `memory_delete` tools. A memory can
+gets `memory_save`, `memory_search` and `memory_delete` tools; saving
+text that is already saved keeps the one copy. A memory can
 have a kind: `person` (who you are), `ongoing` (something in your life to
 follow up on), `shared` (a moment you shared) or `dislike` (something you do
 not want); [Inner life](#inner-life) uses them.
@@ -1387,9 +1390,11 @@ shell_timeout_secs = 120
 max_output_bytes = 16384  # per stream; also the most shell output held in memory
 ```
 
-Tool calls and their output (shell, files, search) are only sent during the
-turn that made them; later turns see just the user's messages and the
-assistant's replies. When a conversation outgrows `context_tokens`, it is cut
+Tool output (shell, files, search) is sent in full only during the turn
+that made it. Later turns keep the tool calls, with long texts in their
+arguments cut to 200 characters, and the first 200 characters of each
+result, so the model still knows what it did before (a memory it saved, a
+command it ran) and does not do it again or deny it. When a conversation outgrows `context_tokens`, it is cut
 back to half the budget: the oldest turns, tool output included, are folded
 by the model into a running summary sent at the start of the window.
 The full history stays in `chats.sqlite`.

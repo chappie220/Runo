@@ -1314,12 +1314,13 @@ mod tests {
             let actor = gateway.actor(sender, session);
             let reply = gateway.run_unattended(actor, session, "hi").await.unwrap();
             assert_eq!(
-                reply.starts_with("saved memory"),
+                reply.starts_with("saved memory") || reply.starts_with("already saved"),
                 allowed,
                 "{sender}: {reply}"
             );
         }
-        assert_eq!(store.memory_list(10).unwrap().len(), 3);
+        // The owners saved the same text, kept once.
+        assert_eq!(store.memory_list(10).unwrap().len(), 1);
     }
 
     #[tokio::test]

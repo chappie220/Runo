@@ -1,8 +1,10 @@
 //! Fits a session's history into a token budget instead of a message count.
 //!
-//! Tool calls and their output (shell, files, search, …) only live for the
-//! turn that made them: once the user writes again, earlier turns are sent
-//! as just the user's messages and the assistant's replies.
+//! Tool output (shell, files, search, …) lives in full only for the turn
+//! that made it: once the user writes again, earlier turns keep their tool
+//! calls with long arguments cut and the start of each result, so the model
+//! still knows what it did (a memory it saved, a command it ran) without
+//! paying for the output again.
 //!
 //! Two marks per session only move forward, and only when the window
 //! overflows; it then shrinks to half the budget. Between those jumps the
@@ -60,17 +62,77 @@ fn stub(message: &ChatMessage) -> ChatMessage {
     }
 }
 
-/// A message from an earlier turn without its tool calls and results; `None`
-/// when nothing is left.
+/// Characters kept of an earlier turn's tool result, and of each text in
+/// its tool calls' arguments.
+const EARLIER_RESULT_CHARS: usize = 200;
+const EARLIER_ARGUMENT_CHARS: usize = 200;
+
+/// A message from an earlier turn as sent: tool calls with long texts in
+/// their arguments cut, results cut to their start; `None` when nothing is
+/// left.
 fn without_tools(message: &ChatMessage) -> Option<ChatMessage> {
     match message.role {
-        Role::Tool => None,
-        Role::Assistant if message.tool_calls.is_some() => message
-            .content
-            .as_deref()
-            .filter(|t| !t.is_empty())
-            .map(ChatMessage::assistant),
+        Role::Tool => {
+            let text = message.content.as_deref().unwrap_or_default();
+            let cut = cut(text, EARLIER_RESULT_CHARS);
+            Some(ChatMessage {
+                content: Some(match cut {
+                    Some(start) => format!(
+                        "{start}… [earlier tool output, {} bytes, cut to its start]",
+                        text.len()
+                    ),
+                    None => text.to_owned(),
+                }),
+                ..message.clone()
+            })
+        }
+        Role::Assistant => match message.tool_calls.as_deref() {
+            Some(calls) if !calls.is_empty() => {
+                let mut calls = calls.to_vec();
+                for call in &mut calls {
+                    call.function.arguments = short_arguments(&call.function.arguments);
+                }
+                Some(ChatMessage {
+                    tool_calls: Some(calls),
+                    ..message.clone()
+                })
+            }
+            Some(_) => message
+                .content
+                .as_deref()
+                .filter(|t| !t.is_empty())
+                .map(ChatMessage::assistant),
+            None => Some(message.clone()),
+        },
         _ => Some(message.clone()),
+    }
+}
+
+/// The first `chars` characters of `text`, or `None` when it is no longer.
+fn cut(text: &str, chars: usize) -> Option<&str> {
+    text.char_indices().nth(chars).map(|(at, _)| &text[..at])
+}
+
+/// Tool call arguments with every long text cut; still valid JSON.
+fn short_arguments(arguments: &str) -> String {
+    fn shorten(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some(start) = cut(text, EARLIER_ARGUMENT_CHARS) {
+                    *text = format!("{start}… [{} characters]", text.chars().count());
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(shorten),
+            serde_json::Value::Object(fields) => fields.values_mut().for_each(shorten),
+            _ => {}
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(mut value) => {
+            shorten(&mut value);
+            value.to_string()
+        }
+        Err(_) => "{}".to_owned(),
     }
 }
 
@@ -427,27 +489,57 @@ mod tests {
     }
 
     #[test]
-    fn earlier_turns_are_sent_without_tool_calls_or_output() {
-        let mut history = turns(3);
+    fn earlier_turns_keep_their_tool_calls_with_output_cut() {
+        let mut history: Vec<(i64, ChatMessage)> = (0..3)
+            .flat_map(|t| {
+                [
+                    (2 * t + 1, ChatMessage::user(format!("q{t}"))),
+                    (2 * t + 2, ChatMessage::assistant(format!("a{t}"))),
+                ]
+            })
+            .collect();
         history.push((
             13,
             ChatMessage::assistant_tool_calls(Some("checking".into()), vec![]),
         ));
-        history.push((14, ChatMessage::user("now")));
-        history.push((15, call("c9")));
-        history.push((16, ChatMessage::tool_result("c9", "fresh")));
+        let long = "汉".repeat(300);
+        let mut save = call("c1");
+        save.tool_calls.as_mut().unwrap()[0].function = FunctionCall {
+            name: "memory_save".into(),
+            arguments: serde_json::json!({"content": "生日是三月五日", "note": long}).to_string(),
+        };
+        history.push((14, save));
+        history.push((15, ChatMessage::tool_result("c1", "saved memory #7")));
+        history.push((16, call("c2")));
+        history.push((17, ChatMessage::tool_result("c2", "x".repeat(5000))));
+        history.push((18, ChatMessage::assistant("done")));
+        history.push((19, ChatMessage::user("now")));
+        history.push((20, call("c9")));
+        history.push((21, ChatMessage::tool_result("c9", "fresh")));
         let Fitted {
             messages, marks, ..
         } = fit(history, Marks::default(), 0, 100_000);
         assert_eq!(marks, Marks::default());
-        assert_eq!(
-            contents(&messages),
-            [
-                "q0", "a0", "q1", "a1", "q2", "a2", "checking", "now", "", "fresh"
-            ]
+        let texts = contents(&messages);
+        assert_eq!(texts[..7], ["q0", "a0", "q1", "a1", "q2", "a2", "checking"]);
+        assert!(messages[6].tool_calls.is_none());
+        // The memory it saved is still there to see.
+        let saved = &messages[7].tool_calls.as_ref().unwrap()[0].function;
+        assert_eq!(saved.name, "memory_save");
+        let args: serde_json::Value = serde_json::from_str(&saved.arguments).unwrap();
+        assert_eq!(args["content"], "生日是三月五日");
+        assert!(
+            args["note"]
+                .as_str()
+                .unwrap()
+                .ends_with("… [300 characters]")
         );
-        assert!(messages[..7].iter().all(|m| m.tool_calls.is_none()));
-        assert!(messages[8].tool_calls.is_some());
+        assert_eq!(texts[8], "saved memory #7");
+        // Long output only by its start.
+        assert!(texts[10].starts_with(&"x".repeat(200)), "{}", texts[10]);
+        assert!(texts[10].contains("5000 bytes"), "{}", texts[10]);
+        assert!(texts[10].len() < 300);
+        assert_eq!(texts[11..], ["done", "now", "", "fresh"]);
     }
 
     #[test]

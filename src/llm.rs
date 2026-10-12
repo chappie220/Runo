@@ -59,6 +59,9 @@ pub struct ChatMessage {
     /// `data:` URLs of images to send with this message in this call.
     #[serde(skip)]
     pub images: Vec<String>,
+    /// When it was stored (Unix seconds); `None` until then.
+    #[serde(skip)]
+    pub sent_at: Option<i64>,
 }
 
 impl ChatMessage {
@@ -70,6 +73,7 @@ impl ChatMessage {
             tool_call_id: None,
             attachments: Vec::new(),
             images: Vec::new(),
+            sent_at: None,
         }
     }
     pub fn system(content: impl Into<String>) -> Self {
@@ -89,6 +93,7 @@ impl ChatMessage {
             tool_call_id: None,
             attachments: Vec::new(),
             images: Vec::new(),
+            sent_at: None,
         }
     }
     pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
@@ -99,6 +104,7 @@ impl ChatMessage {
             tool_call_id: Some(call_id.into()),
             attachments: Vec::new(),
             images: Vec::new(),
+            sent_at: None,
         }
     }
 }

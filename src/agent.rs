@@ -514,11 +514,15 @@ impl<M: Model, T: Tools> Agent<M, T> {
             .ok()
     }
 
+    /// Whether messages carry the time (`agent.time_sense`).
+    fn time_sense(&self) -> bool {
+        crate::live::read(|c| c.agent.time_sense).unwrap_or(self.config.time_sense)
+    }
+
     /// The local time, and how long ago the person last wrote here when it
     /// has been a while, as a note for this turn only (`agent.time_sense`).
     fn moment(&self, session_id: i64) -> Option<String> {
-        let on = crate::live::read(|c| c.agent.time_sense).unwrap_or(self.config.time_sense);
-        if !on {
+        if !self.time_sense() {
             return None;
         }
         let now = chrono::Local::now();
@@ -806,6 +810,20 @@ impl<M: Model, T: Tools> Agent<M, T> {
         {
             self.show_tool_images(&mut messages, current);
         }
+        // Earlier messages keep the time they were sent, so times the model
+        // gave in earlier replies still have their source.
+        if self.time_sense() {
+            for (index, message) in messages.iter_mut().enumerate() {
+                if message.role != Role::User || current.is_some_and(|c| index >= c) {
+                    continue;
+                }
+                if let Some(stamp) = message.sent_at.and_then(sent_note) {
+                    let text = message.content.get_or_insert_with(String::new);
+                    text.push_str("\n\n");
+                    text.push_str(&stamp);
+                }
+            }
+        }
         if let Some(recall) = recall
             && let Some(current) = current.and_then(|i| messages.get_mut(i))
         {
@@ -912,6 +930,13 @@ where
     }
     note.push(']');
     note
+}
+
+/// `[Sent: …]` on an earlier message, in local time; read by the model.
+fn sent_note(at: i64) -> Option<String> {
+    use chrono::TimeZone;
+    let at = chrono::Local.timestamp_opt(at, 0).single()?;
+    Some(format!("[Sent: {}]", at.format("%Y-%m-%d %A %H:%M")))
 }
 
 /// A rough length of time, as people say it.
@@ -1413,6 +1438,17 @@ mod tests {
             .unwrap();
         let third = last(&agent);
         assert!(!third.contains("last wrote"), "{third}");
+        // Earlier messages show when they were sent, so a time given in an
+        // earlier reply still has its source.
+        let sent = agent.model.seen.lock().unwrap().last().unwrap().clone();
+        let earlier: Vec<_> = sent
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .filter_map(|m| m.content.clone())
+            .collect();
+        assert!(earlier[0].starts_with("早\n\n[Sent: "), "{earlier:?}");
+        assert!(earlier[2].starts_with("在吗\n\n[Sent: "), "{earlier:?}");
+        assert!(!earlier.last().unwrap().contains("[Sent: "), "{earlier:?}");
         assert!(
             agent.store.history(id, 20).unwrap().iter().all(|m| !m
                 .content
