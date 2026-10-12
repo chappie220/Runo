@@ -23,6 +23,8 @@ pub struct Config {
     pub tools: ToolsConfig,
     pub gateway: GatewayConfig,
     pub qq: QqConfig,
+    pub feishu: FeishuConfig,
+    pub zulip: ZulipConfig,
     pub mail: MailConfig,
     pub search: SearchConfig,
     pub browser: BrowserConfig,
@@ -95,6 +97,8 @@ pub enum SearchProvider {
     Openrouter,
     /// A SearXNG instance with the JSON format enabled (`searxng_url`).
     Searxng,
+    /// The ChatGPT subscription's own web search (`openclaw-rs login`).
+    Chatgpt,
     /// No `web_search` tool.
     Off,
 }
@@ -375,6 +379,83 @@ impl QqConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct FeishuConfig {
+    pub enabled: bool,
+    pub app_id: String,
+    /// Prefer `FEISHU_APP_SECRET`; a secret here is stored in plain text.
+    pub app_secret: Option<String>,
+    /// Sender open_ids (`ou_…`) or group chat_ids (`oc_…`) that may talk
+    /// to the bot; empty allows everyone.
+    pub allow: Vec<String>,
+    /// `https://open.feishu.cn`, or `https://open.larksuite.com` for Lark.
+    pub api_base: String,
+    /// As `qq.split_replies`.
+    pub split_replies: bool,
+}
+
+impl Default for FeishuConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_id: String::new(),
+            app_secret: None,
+            allow: Vec::new(),
+            api_base: "https://open.feishu.cn".into(),
+            split_replies: true,
+        }
+    }
+}
+
+impl FeishuConfig {
+    pub fn app_secret(&self) -> Option<String> {
+        std::env::var("FEISHU_APP_SECRET")
+            .ok()
+            .or_else(|| self.app_secret.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ZulipConfig {
+    pub enabled: bool,
+    /// The organization's address, e.g. `https://example.zulipchat.com`.
+    pub site: String,
+    /// The bot's email, shown on its settings page.
+    pub email: String,
+    /// Prefer `ZULIP_API_KEY`; a key here is stored in plain text.
+    pub api_key: Option<String>,
+    /// Sender emails or channel (stream) names that may talk to the bot;
+    /// empty allows everyone in the organization.
+    pub allow: Vec<String>,
+    /// As `qq.split_replies`.
+    pub split_replies: bool,
+}
+
+impl Default for ZulipConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            site: String::new(),
+            email: String::new(),
+            api_key: None,
+            allow: Vec::new(),
+            split_replies: true,
+        }
+    }
+}
+
+impl ZulipConfig {
+    pub fn api_key(&self) -> Option<String> {
+        std::env::var("ZULIP_API_KEY")
+            .ok()
+            .or_else(|| self.api_key.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GatewayConfig {
     pub bind: String,
     /// Required for non-loopback binds; prefer `OPENCLAW_RS_TOKEN`.
@@ -418,6 +499,9 @@ impl GatewayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelConfig {
+    /// Who serves the model: OpenRouter (or any compatible server at
+    /// `base_url`), or a ChatGPT subscription signed in with `login`.
+    pub provider: Provider,
     pub base_url: String,
     /// Required: there is no default model, so the operator always chooses.
     pub model: String,
@@ -431,6 +515,20 @@ pub struct ModelConfig {
     /// stream that fails before any text), with exponential backoff.
     pub max_retries: u32,
     pub prompt_cache: PromptCache,
+    /// ChatGPT only: how hard reasoning models think (`minimal`, `low`,
+    /// `medium`, `high`); unset leaves it to the model.
+    pub reasoning_effort: Option<String>,
+}
+
+/// Who serves the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    /// OpenRouter, or another OpenAI-compatible Chat Completions server.
+    #[default]
+    Openrouter,
+    /// A ChatGPT plan, through the Codex backend's Responses API.
+    Chatgpt,
 }
 
 /// Whether to mark `cache_control` breakpoints for prompt caching.
@@ -698,6 +796,7 @@ impl Default for ToolsConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
+            provider: Provider::Openrouter,
             base_url: DEFAULT_BASE_URL.into(),
             model: String::new(),
             api_key: None,
@@ -705,6 +804,7 @@ impl Default for ModelConfig {
             fallbacks: Vec::new(),
             max_retries: 3,
             prompt_cache: PromptCache::Auto,
+            reasoning_effort: None,
         }
     }
 }
@@ -730,6 +830,11 @@ impl Default for AgentConfig {
 }
 
 impl Config {
+    /// Whether any channel that strangers can write to is on.
+    pub fn any_channel(&self) -> bool {
+        self.qq.enabled || self.feishu.enabled || self.zulip.enabled || self.mail.enabled
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => {
@@ -747,6 +852,54 @@ impl Config {
             anyhow::bail!(crate::cli_text::NO_MODEL.now());
         }
         Ok(model)
+    }
+
+    /// Whether the model is a ChatGPT subscription.
+    pub fn chatgpt(&self) -> bool {
+        self.model.provider == Provider::Chatgpt
+    }
+
+    /// The key the model is called with: the OpenRouter key, or none
+    /// (empty) for a ChatGPT subscription, which signs in instead.
+    pub fn model_key(&self) -> Result<String> {
+        if self.chatgpt() {
+            return Ok(self.api_key().unwrap_or_default());
+        }
+        self.api_key()
+    }
+
+    /// Where the helpers that only speak OpenRouter (search, voice, review
+    /// and guide deciders) go: the model settings as they are, or for a
+    /// ChatGPT subscription the same model at OpenRouter as `openai/<id>`.
+    pub fn openrouter_model(&self) -> ModelConfig {
+        if !self.chatgpt() {
+            return self.model.clone();
+        }
+        let model = self.model.model.trim();
+        ModelConfig {
+            provider: Provider::Openrouter,
+            base_url: DEFAULT_BASE_URL.into(),
+            model: if model.contains('/') {
+                model.to_owned()
+            } else {
+                format!("openai/{model}")
+            },
+            ..self.model.clone()
+        }
+    }
+
+    /// The settings for a side model (summaries, images): on a ChatGPT
+    /// subscription an id with a `/` is an OpenRouter model.
+    pub fn side_model(&self, model: &str) -> ModelConfig {
+        let base = if self.chatgpt() && model.contains('/') {
+            self.openrouter_model()
+        } else {
+            self.model.clone()
+        };
+        ModelConfig {
+            model: model.to_owned(),
+            ..base
+        }
     }
 
     /// Environment wins so secrets never need to live in the config file.

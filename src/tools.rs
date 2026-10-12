@@ -44,6 +44,15 @@ pub async fn with_approver<F: std::future::Future>(
     TURN_APPROVER.scope(approver, turn).await
 }
 
+/// Asks the turn's approver, as an `ask` tool does.
+#[cfg(test)]
+pub(crate) async fn approve(tool: &str, summary: &str) -> bool {
+    match TURN_APPROVER.try_with(Arc::clone) {
+        Ok(approver) => approver.approve(tool, summary).await,
+        Err(_) => false,
+    }
+}
+
 /// Prompts on the controlling terminal, so piped stdin cannot answer for the user.
 pub struct TerminalApprover;
 

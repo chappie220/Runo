@@ -74,6 +74,8 @@ const S_MCP: Tr = tr("MCP servers", "MCP 服务器");
 const S_SKILLS: Tr = tr("Skills", "Skills");
 const S_GATEWAY: Tr = tr("Gateway", "Gateway");
 const S_QQ: Tr = tr("QQ", "QQ");
+const S_FEISHU: Tr = tr("Feishu", "飞书");
+const S_ZULIP: Tr = tr("Zulip", "Zulip");
 const S_MAIL: Tr = tr("Email", "邮件");
 const S_ACCESS: Tr = tr("Access", "权限");
 const S_LIMITS: Tr = tr("Spending limits", "花费上限");
@@ -107,6 +109,18 @@ const KEY_FROM_ENV: Tr = tr(
 );
 const KEY_FROM_FILE: Tr = tr("API key from config.toml", "API key 来自 config.toml");
 const KEY_OK: Tr = tr("the key works", "key 可用");
+const CHATGPT_IN: Tr = tr(
+    "the model runs on a ChatGPT subscription, signed in{}",
+    "模型使用 ChatGPT 订阅，已登录{}",
+);
+const CHATGPT_OUT: Tr = tr(
+    "the model runs on a ChatGPT subscription, but: {}",
+    "模型使用 ChatGPT 订阅，但是：{}",
+);
+const NO_OPENROUTER: Tr = tr(
+    "no OpenRouter key: voice and the guide are off, web search uses ChatGPT's (optional with ChatGPT)",
+    "没有 OpenRouter key：语音和 guide 已关闭，联网搜索改用 ChatGPT 自带的（用 ChatGPT 时可以不设置）",
+);
 const KEY_OK_CREDIT: Tr = tr("the key works ({})", "key 可用（{}）");
 const KEY_BAD: Tr = tr(
     "the key was refused ({}): create a new one at https://openrouter.ai/keys and run `openclaw-rs init`",
@@ -226,8 +240,8 @@ const LIMIT_NONE_TOTAL: Tr = tr(
     "整个 agent 没有总上限：设置 limits.daily_usd 或 limits.monthly_usd 可以保护余额",
 );
 const LIMIT_NONE_GUESTS: Tr = tr(
-    "QQ or email is on and guests have no limit: anyone who writes can spend your balance (set limits.guest_daily_usd)",
-    "QQ 或邮件已开启，但访客没有上限：任何发消息的人都能花你的余额（设置 limits.guest_daily_usd）",
+    "a chat channel or email is on and guests have no limit: anyone who writes can spend your balance (set limits.guest_daily_usd)",
+    "聊天渠道或邮件已开启，但访客没有上限：任何发消息的人都能花你的余额（设置 limits.guest_daily_usd）",
 );
 const LIMIT_NO_COSTS: Tr = tr(
     "{} may not report what calls cost; limits only count the costs it reports",
@@ -267,6 +281,14 @@ const SEARCH_OFF: Tr = tr("off: no web_search tool", "已关闭：没有 web_sea
 const SEARCH_OPENROUTER: Tr = tr(
     "OpenRouter's web plugin, billed per search with the same key",
     "使用 OpenRouter 的 web 插件，用同一个 key 按次计费",
+);
+const SEARCH_CHATGPT: Tr = tr(
+    "the ChatGPT subscription's own web search, within the plan",
+    "使用 ChatGPT 订阅自带的联网搜索，算在套餐里",
+);
+const SEARCH_NOT_CHATGPT: Tr = tr(
+    "search.provider is \"chatgpt\" but the model is not on a ChatGPT subscription: run `openclaw-rs login`",
+    "search.provider 是 \"chatgpt\"，但模型没有使用 ChatGPT 订阅：请运行 `openclaw-rs login`",
 );
 const SEARXNG_OK: Tr = tr("SearXNG at {} answers", "SearXNG（{}）可用");
 const SEARXNG_FAILED: Tr = tr(
@@ -314,10 +336,16 @@ const QQ_OPEN: Tr = tr(
     "qq.allow 为空：任何找到这个机器人的人都能和它对话",
 );
 const QQ_FAILED: Tr = tr("cannot log in: {}", "无法登录：{}");
+const SETTING_EMPTY: Tr = tr("{} is empty", "{} 为空");
+const NO_SECRET: Tr = tr("no {}: set {} or {}", "没有 {}：设置 {} 或 {}");
+const ALLOW_EMPTY: Tr = tr(
+    "{}.allow is empty: anyone who finds the bot can talk to it",
+    "{}.allow 为空：任何找到这个机器人的人都能和它对话",
+);
 const MAIL_FAILED: Tr = tr("cannot check: {}", "无法检查：{}");
 const NO_OWNERS: Tr = tr(
-    "access.owners is empty, so on QQ and email even you are a guest: add your qq:<openid> or mail:<address>",
-    "access.owners 为空，所以在 QQ 和邮件里你自己也只是访客：把你的 qq:<openid> 或 mail:<地址> 加进去",
+    "access.owners is empty, so in chats and email even you are a guest: add your qq:<openid>, feishu:<open_id>, zulip:<email> or mail:<address>",
+    "access.owners 为空，所以在聊天和邮件里你自己也只是访客：把你的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址> 加进去",
 );
 const ACCESS_OK: Tr = tr("owners: {}", "owner：{}");
 const SERVICE_INSTALLED: Tr = tr(
@@ -366,6 +394,8 @@ pub const ALL: &[Tr] = &[
     S_SKILLS,
     S_GATEWAY,
     S_QQ,
+    S_FEISHU,
+    S_ZULIP,
     S_MAIL,
     S_ACCESS,
     S_LIMITS,
@@ -382,6 +412,9 @@ pub const ALL: &[Tr] = &[
     KEY_FROM_ENV,
     KEY_FROM_FILE,
     KEY_OK,
+    CHATGPT_IN,
+    CHATGPT_OUT,
+    NO_OPENROUTER,
     KEY_OK_CREDIT,
     KEY_BAD,
     KEY_UNCHECKED,
@@ -442,6 +475,8 @@ pub const ALL: &[Tr] = &[
     SKILLS_GUESTS,
     SEARCH_OFF,
     SEARCH_OPENROUTER,
+    SEARCH_CHATGPT,
+    SEARCH_NOT_CHATGPT,
     SEARXNG_OK,
     SEARXNG_FAILED,
     SEARXNG_NO_URL,
@@ -456,6 +491,9 @@ pub const ALL: &[Tr] = &[
     QQ_NO_SECRET,
     QQ_OPEN,
     QQ_FAILED,
+    SETTING_EMPTY,
+    NO_SECRET,
+    ALLOW_EMPTY,
     MAIL_FAILED,
     NO_OWNERS,
     ACCESS_OK,
@@ -534,8 +572,16 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
     report.add([writable(&workspace)]);
 
     report.section(S_MODELS);
-    report.add(key_findings(&config));
+    report.add(key_findings(&config, state));
     let key = config.api_key().ok();
+    // A ChatGPT subscription is called signed in, with no key.
+    let call_key = if config.chatgpt() {
+        crate::chatgpt::read(&crate::chatgpt::auth_path(state))
+            .ok()
+            .map(|_| key.clone().unwrap_or_default())
+    } else {
+        key.clone()
+    };
     let catalog = crate::onboard::OpenRouter::new(&config.model.base_url)?;
     let mut models = None;
     let mut refused = false;
@@ -557,13 +603,14 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
     // Ids on other servers need not be OpenRouter's, so only OpenRouter's list is binding.
     let binding = models
         .as_deref()
-        .filter(|_| config.model.base_url.trim_end_matches('/') == DEFAULT_BASE_URL);
+        .filter(|_| config.model.base_url.trim_end_matches('/') == DEFAULT_BASE_URL)
+        .filter(|_| !config.chatgpt());
     report.add(model_findings(&config, binding));
     report.add([context_finding(&config, state, offline, binding).await]);
     // With a refused key every call fails the same way, so none is made.
     if !offline
         && !refused
-        && let (Some(key), Ok(model)) = (&key, config.model_id())
+        && let (Some(key), Ok(model)) = (&call_key, config.model_id())
     {
         report.add([call_findings(&config, key, model).await]);
         let vision = config
@@ -598,6 +645,12 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
 
     report.section(S_QQ);
     report.add(qq_findings(&config, offline).await);
+
+    report.section(S_FEISHU);
+    report.add(feishu_findings(&config, offline).await);
+
+    report.section(S_ZULIP);
+    report.add(zulip_findings(&config, offline).await);
 
     report.section(S_MAIL);
     report.add(mail_findings(&config, offline).await);
@@ -675,15 +728,24 @@ fn writable(dir: &Path) -> Finding {
     }
 }
 
-fn key_findings(config: &Config) -> Vec<Finding> {
+fn key_findings(config: &Config, state: &Path) -> Vec<Finding> {
     let mut findings = vec![match config.model_id() {
         Ok(model) => ok(MODEL_IS.with(&[model])),
         Err(_) => fail(NO_MODEL.now()),
     }];
+    if config.chatgpt() {
+        findings.push(
+            match crate::chatgpt::read(&crate::chatgpt::auth_path(state)) {
+                Ok(tokens) => ok(CHATGPT_IN.with(&[&tokens.who()])),
+                Err(err) => fail(CHATGPT_OUT.with(&[&format!("{err:#}")])),
+            },
+        );
+    }
     let from_env = std::env::var("OPENROUTER_API_KEY").is_ok_and(|k| !k.trim().is_empty());
     findings.push(match (from_env, config.api_key().is_ok()) {
         (true, _) => info(KEY_FROM_ENV.now()),
         (false, true) => info(KEY_FROM_FILE.now()),
+        (false, false) if config.chatgpt() => info(NO_OPENROUTER.now()),
         (false, false) => fail(NO_KEY.now()),
     });
     findings
@@ -755,11 +817,10 @@ fn model_findings(config: &Config, models: Option<&[ModelInfo]>) -> Vec<Finding>
 fn client(config: &Config, key: &str, model: &str) -> Result<crate::llm::Client> {
     crate::llm::Client::new(
         &crate::config::ModelConfig {
-            model: model.to_owned(),
             fallbacks: Vec::new(),
             max_retries: 0,
             request_timeout_secs: 60,
-            ..config.model.clone()
+            ..config.side_model(model)
         },
         key.to_owned(),
     )
@@ -962,6 +1023,12 @@ async fn mcp_findings(config: &Config, workspace: &Path, offline: bool) -> Vec<F
 async fn search_findings(config: &Config, offline: bool) -> Vec<Finding> {
     match config.search.provider {
         SearchProvider::Off => vec![info(SEARCH_OFF.now())],
+        // Without the key a subscription searches on its own.
+        SearchProvider::Openrouter if config.chatgpt() && config.api_key().is_err() => {
+            vec![info(SEARCH_CHATGPT.now())]
+        }
+        SearchProvider::Chatgpt if !config.chatgpt() => vec![fail(SEARCH_NOT_CHATGPT.now())],
+        SearchProvider::Chatgpt => vec![info(SEARCH_CHATGPT.now())],
         SearchProvider::Openrouter => vec![info(SEARCH_OPENROUTER.now())],
         SearchProvider::Searxng => {
             let Some(url) = config
@@ -1044,6 +1111,80 @@ async fn qq_findings(config: &Config, offline: bool) -> Vec<Finding> {
         return findings;
     }
     let checked = match crate::qq::QqBot::new(qq.clone()) {
+        Ok(bot) => bot.check().await,
+        Err(err) => Err(err),
+    };
+    findings.insert(
+        0,
+        match checked {
+            Ok(detail) => ok(detail),
+            Err(err) => fail(QQ_FAILED.with(&[&format!("{err:#}")])),
+        },
+    );
+    findings
+}
+
+async fn feishu_findings(config: &Config, offline: bool) -> Vec<Finding> {
+    let feishu = &config.feishu;
+    if !feishu.enabled {
+        return vec![info(OFF.now())];
+    }
+    let mut findings = Vec::new();
+    if feishu.app_id.trim().is_empty() {
+        findings.push(fail(SETTING_EMPTY.with(&["feishu.app_id"])));
+    }
+    if feishu.app_secret().is_none() {
+        findings.push(fail(NO_SECRET.with(&[
+            "app secret",
+            "FEISHU_APP_SECRET",
+            "feishu.app_secret",
+        ])));
+    }
+    if feishu.allow.is_empty() {
+        findings.push(warn(ALLOW_EMPTY.with(&["feishu"])));
+    }
+    if offline || findings.iter().any(|f| f.status == Status::Fail) {
+        return findings;
+    }
+    let checked = match crate::feishu::FeishuBot::new(feishu.clone()) {
+        Ok(bot) => bot.check().await,
+        Err(err) => Err(err),
+    };
+    findings.insert(
+        0,
+        match checked {
+            Ok(detail) => ok(detail),
+            Err(err) => fail(QQ_FAILED.with(&[&format!("{err:#}")])),
+        },
+    );
+    findings
+}
+
+async fn zulip_findings(config: &Config, offline: bool) -> Vec<Finding> {
+    let zulip = &config.zulip;
+    if !zulip.enabled {
+        return vec![info(OFF.now())];
+    }
+    let mut findings = Vec::new();
+    for (key, value) in [("zulip.site", &zulip.site), ("zulip.email", &zulip.email)] {
+        if value.trim().is_empty() {
+            findings.push(fail(SETTING_EMPTY.with(&[key])));
+        }
+    }
+    if zulip.api_key().is_none() {
+        findings.push(fail(NO_SECRET.with(&[
+            "API key",
+            "ZULIP_API_KEY",
+            "zulip.api_key",
+        ])));
+    }
+    if zulip.allow.is_empty() {
+        findings.push(warn(ALLOW_EMPTY.with(&["zulip"])));
+    }
+    if offline || findings.iter().any(|f| f.status == Status::Fail) {
+        return findings;
+    }
+    let checked = match crate::zulip::ZulipBot::new(zulip.clone()) {
         Ok(bot) => bot.check().await,
         Err(err) => Err(err),
     };
@@ -1146,7 +1287,7 @@ fn limits_findings(config: &Config) -> Vec<Finding> {
     if set(limits.daily_usd).is_none() && set(limits.monthly_usd).is_none() {
         findings.push(info(LIMIT_NONE_TOTAL.now()));
     }
-    if (config.qq.enabled || config.mail.enabled) && set(limits.guest_daily_usd).is_none() {
+    if config.any_channel() && set(limits.guest_daily_usd).is_none() {
         findings.push(warn(LIMIT_NONE_GUESTS.now()));
     }
     let base = config.model.base_url.trim_end_matches('/');
@@ -1159,7 +1300,7 @@ fn limits_findings(config: &Config) -> Vec<Finding> {
 fn access_findings(config: &Config) -> Vec<Finding> {
     let owners = &config.access.owners;
     if owners.is_empty() {
-        if config.qq.enabled || config.mail.enabled {
+        if config.any_channel() {
             vec![warn(NO_OWNERS.now())]
         } else {
             Vec::new()

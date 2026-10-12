@@ -137,8 +137,8 @@ const SECTIONS: &[Section] = &[
                 path: &["model", "model"],
                 label: tr("Model", "模型"),
                 help: tr(
-                    "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5.",
-                    "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5。",
+                    "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5; with chatgpt, a model your plan offers in Codex, e.g. gpt-5 or gpt-5-codex.",
+                    "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5；用 chatgpt 时填你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex。",
                 ),
                 kind: Kind::Model(Need::Tools),
             },
@@ -261,6 +261,24 @@ const SECTIONS: &[Section] = &[
                     "输入 - 使用该服务的默认模型，即上一行显示的那个。",
                 ),
                 kind: Kind::Text,
+            },
+            Field {
+                path: &["model", "provider"],
+                label: tr("Provider", "模型提供方"),
+                help: tr(
+                    "openrouter: an OpenRouter key; chatgpt: your ChatGPT plan, signed in with `openclaw-rs login` (which also sets this).",
+                    "openrouter：用 OpenRouter key；chatgpt：用你的 ChatGPT 订阅，先运行 `openclaw-rs login` 登录（登录时会自动设好这一项）。",
+                ),
+                kind: Kind::Choice(&["openrouter", "chatgpt"]),
+            },
+            Field {
+                path: &["model", "reasoning_effort"],
+                label: tr("Reasoning effort (ChatGPT)", "推理强度（ChatGPT）"),
+                help: tr(
+                    "chatgpt only: how hard the model thinks before answering; reset (-) leaves it to the model.",
+                    "只对 chatgpt 有效：模型回答前思考的程度；输入 - 交给模型自己决定。",
+                ),
+                kind: Kind::Choice(&["minimal", "low", "medium", "high"]),
             },
         ],
     },
@@ -424,6 +442,130 @@ const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: tr("Feishu / Lark bot", "飞书机器人"),
+        fields: &[
+            Field {
+                path: &["feishu", "enabled"],
+                label: tr("Enabled", "启用"),
+                help: tr(
+                    "Connects to Feishu over the long connection when `serve` runs; no public address needed. In the developer console: add the bot capability, the im:message permissions, and subscribe to im.message.receive_v1 and the card.action.trigger callback with the long connection.",
+                    "运行 `serve` 时通过长连接接入飞书，不需要公网地址。在开发者后台：添加机器人能力和 im:message 相关权限，事件与回调都选“长连接”，订阅 im.message.receive_v1 事件和 card.action.trigger 回调。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["feishu", "app_id"],
+                label: tr("App ID", "App ID"),
+                help: tr(
+                    "cli_… from the app's credentials page (open.feishu.cn).",
+                    "应用凭证页里的 cli_…（open.feishu.cn）。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["feishu", "app_secret"],
+                label: tr("App Secret", "App Secret"),
+                help: tr(
+                    "FEISHU_APP_SECRET wins when set.",
+                    "设了 FEISHU_APP_SECRET 时以环境变量为准。",
+                ),
+                kind: Kind::Secret {
+                    env: "FEISHU_APP_SECRET",
+                    generate: false,
+                },
+            },
+            Field {
+                path: &["feishu", "allow"],
+                label: tr("Allowed senders or groups", "允许的用户或群"),
+                help: tr(
+                    "Comma-separated open_ids (ou_…) or group chat_ids (oc_…); empty lets everyone in the tenant chat. The log prints each sender.",
+                    "用逗号分隔的 open_id（ou_…）或群 chat_id（oc_…）；留空则企业里所有人都能聊天。日志里会打印每个发送者。",
+                ),
+                kind: Kind::List,
+            },
+            Field {
+                path: &["feishu", "api_base"],
+                label: tr("Server", "服务器"),
+                help: tr(
+                    "https://open.feishu.cn, or https://open.larksuite.com for Lark.",
+                    "https://open.feishu.cn；国际版 Lark 用 https://open.larksuite.com。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["feishu", "split_replies"],
+                label: tr("Split chatty replies", "闲聊回复分条发送"),
+                help: tr(
+                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                ),
+                kind: Kind::Bool,
+            },
+        ],
+    },
+    Section {
+        title: tr("Zulip bot", "Zulip 机器人"),
+        fields: &[
+            Field {
+                path: &["zulip", "enabled"],
+                label: tr("Enabled", "启用"),
+                help: tr(
+                    "Polls Zulip for messages when `serve` runs. Create a Generic bot under Personal settings → Bots.",
+                    "运行 `serve` 时从 Zulip 拉取消息。在 个人设置 → 机器人 里创建一个 Generic 机器人。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["zulip", "site"],
+                label: tr("Organization URL", "组织地址"),
+                help: tr(
+                    "e.g. https://example.zulipchat.com",
+                    "例如 https://example.zulipchat.com",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["zulip", "email"],
+                label: tr("Bot email", "机器人邮箱"),
+                help: tr(
+                    "Shown on the bot's settings, e.g. claw-bot@example.zulipchat.com.",
+                    "机器人设置里显示的邮箱，例如 claw-bot@example.zulipchat.com。",
+                ),
+                kind: Kind::Text,
+            },
+            Field {
+                path: &["zulip", "api_key"],
+                label: tr("API key", "API key"),
+                help: tr(
+                    "ZULIP_API_KEY wins when set.",
+                    "设了 ZULIP_API_KEY 时以环境变量为准。",
+                ),
+                kind: Kind::Secret {
+                    env: "ZULIP_API_KEY",
+                    generate: false,
+                },
+            },
+            Field {
+                path: &["zulip", "allow"],
+                label: tr("Allowed senders or channels", "允许的用户或频道"),
+                help: tr(
+                    "Comma-separated sender emails or channel names; empty lets everyone in the organization chat. In channels the bot answers only when @-mentioned.",
+                    "用逗号分隔的发送者邮箱或频道名；留空则组织里所有人都能聊天。在频道里只有 @ 机器人才会回复。",
+                ),
+                kind: Kind::List,
+            },
+            Field {
+                path: &["zulip", "split_replies"],
+                label: tr("Split chatty replies", "闲聊回复分条发送"),
+                help: tr(
+                    "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                    "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                ),
+                kind: Kind::Bool,
+            },
+        ],
+    },
+    Section {
         title: tr("Email", "邮件"),
         fields: &[
             Field {
@@ -531,10 +673,10 @@ const SECTIONS: &[Section] = &[
                 path: &["search", "provider"],
                 label: tr("Provider", "搜索服务"),
                 help: tr(
-                    "openrouter: billed per search with the OpenRouter key; searxng: your own instance; off: no web_search tool.",
-                    "openrouter：用 OpenRouter key 按次计费；searxng：自己的实例；off：不提供 web_search 工具。",
+                    "openrouter: billed per search with the OpenRouter key (on a ChatGPT subscription without that key, ChatGPT's search is used instead); searxng: your own instance; off: no web_search tool; chatgpt: the ChatGPT subscription's own search.",
+                    "openrouter：用 OpenRouter key 按次计费（用 ChatGPT 订阅又没有这个 key 时，自动改用 ChatGPT 的搜索）；searxng：自己的实例；off：不提供 web_search 工具；chatgpt：用 ChatGPT 订阅自带的搜索。",
                 ),
-                kind: Kind::Choice(&["openrouter", "searxng", "off"]),
+                kind: Kind::Choice(&["openrouter", "searxng", "off", "chatgpt"]),
             },
             Field {
                 path: &["search", "searxng_url"],
@@ -717,8 +859,8 @@ const SECTIONS: &[Section] = &[
             path: &["access", "owners"],
             label: tr("Owners", "Owner"),
             help: tr(
-                "Comma-separated qq:<openid> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
-                "用逗号分隔的 qq:<openid> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
+                "Comma-separated qq:<openid>, feishu:<open_id>, zulip:<email> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
+                "用逗号分隔的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
             ),
             kind: Kind::List,
         }],
@@ -838,8 +980,8 @@ const SECTIONS: &[Section] = &[
                 path: &["heartbeat", "session"],
                 label: tr("Where it reaches out", "主动消息发到哪里"),
                 help: tr(
-                    "A session such as qq:c2c:<openid>. Empty: your private QQ chat (the first qq: owner under Access), else the local main session.",
-                    "会话名，例如 qq:c2c:<openid>。留空：你的 QQ 私聊（权限里第一个 qq: owner），没有则发到本地 main 会话。",
+                    "A session such as qq:c2c:<openid>, feishu:dm:<open_id> or zulip:dm:<email>. Empty: your private chat with the first qq:, feishu: or zulip: owner under Access, else the local main session.",
+                    "会话名，例如 qq:c2c:<openid>、feishu:dm:<open_id> 或 zulip:dm:<邮箱>。留空：发到权限里第一个 qq:、feishu: 或 zulip: owner 的私聊，没有则发到本地 main 会话。",
                 ),
                 kind: Kind::Text,
             },
@@ -1507,7 +1649,12 @@ fn field_with_arrows<R: BufRead, W: Write>(
     let lang = term.lang;
     let label = field.label.get(lang);
     let current = describe(doc, field, lang);
-    if let Kind::Model(need) = field.kind {
+    // ChatGPT's models are not in OpenRouter's list: typed instead.
+    let chatgpt =
+        field.path == ["model", "model"] && parse(doc).is_ok_and(|config| config.chatgpt());
+    if let Kind::Model(need) = field.kind
+        && !chatgpt
+    {
         let list = models.get(term)?;
         if !list.is_empty() {
             let items = [
@@ -1799,14 +1946,14 @@ fn edit_section<R: BufRead, W: Write>(
 }
 
 /// The settings a person may change by asking in chat (the `settings`
-/// tool): the companion section, QQ reply splitting and the language.
+/// tool): the companion section, chat reply splitting and the language.
 /// Keys, permissions and access stay with the editor.
 fn chat_settable() -> impl Iterator<Item = &'static Field> {
     let companion = SECTIONS.last().map_or(&[][..], |s| s.fields);
     let elsewhere = SECTIONS
         .iter()
         .flat_map(|s| s.fields)
-        .filter(|f| matches!(f.path, ["qq", "split_replies"] | ["language"]));
+        .filter(|f| matches!(f.path, [_, "split_replies"] | ["language"]));
     companion.iter().chain(elsewhere)
 }
 
@@ -2089,8 +2236,9 @@ mod tests {
         .unwrap();
         // Model (section 2): new id, keep key, two fallbacks, keep retries, cache by number,
         // a bad then a good budget, reset summary model, keep image and audio
-        // models, recall, max steps and the three guide fields.
-        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\ns\n";
+        // models, recall, max steps, the three guide fields, provider and
+        // reasoning effort.
+        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -2260,7 +2408,7 @@ mod tests {
         let out = drive_in(
             Lang::Zh,
             &path,
-            "5\n?\n是\n\n\n\n\n99\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
+            "5\n?\n是\n\n\n\n\n99\n8\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
         );
         assert!(out.contains("2) 模型与上下文"), "{out}");
         assert!(out.contains("s) 保存并退出"), "{out}");
@@ -2360,9 +2508,9 @@ mod tests {
             Ok(vec![model("maker/blind", false), model("other/sees", true)])
         });
         // Section 2, the model field, search "sees" and take it; then the
-        // guide provider (third from the end), one down to openrouter-chat;
+        // guide provider (fifth from the end), one down to openrouter-chat;
         // back out and save.
-        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\rj\rqq\r";
+        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\x1b[A\x1b[A\rj\rqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         drop(models);

@@ -5,6 +5,8 @@ mod agent;
 mod attachments;
 mod backup;
 mod browser;
+mod chat;
+mod chatgpt;
 mod cli_text;
 mod completions;
 mod config;
@@ -12,6 +14,7 @@ mod context;
 mod cron;
 mod doctor;
 mod elevate;
+mod feishu;
 mod fetch;
 mod gateway;
 mod guide;
@@ -38,6 +41,7 @@ mod tui;
 mod update;
 mod usage;
 mod voice;
+mod zulip;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -130,6 +134,18 @@ enum Command {
         /// Only read the config and this host; contact nothing.
         #[arg(long)]
         offline: bool,
+    },
+    /// Sign in with a ChatGPT plan and run the model on it.
+    Login {
+        /// Take the sign-in of the Codex CLI (default ~/.codex/auth.json).
+        #[arg(long, value_name = "PATH", num_args = 0..=1)]
+        import: Option<Option<PathBuf>>,
+        /// Show who is signed in.
+        #[arg(long, conflicts_with_all = ["import", "logout"])]
+        status: bool,
+        /// Forget the sign-in.
+        #[arg(long, conflicts_with = "import")]
+        logout: bool,
     },
     /// Install the latest release from GitHub, or go back to the previous binary.
     Update {
@@ -436,6 +452,23 @@ async fn run(cli: Cli) -> Result<()> {
         let config = Config::load(&config_path).unwrap_or_default();
         return update::run(&config.update, check, rollback, &config.gateway.bind).await;
     }
+    // Before loading: signing in is how a config gets its model.
+    if let Command::Login {
+        import,
+        status,
+        logout,
+    } = &cli.command
+    {
+        let action = match import {
+            _ if *status => chatgpt::Action::Status,
+            _ if *logout => chatgpt::Action::Logout,
+            Some(path) => {
+                chatgpt::Action::Import(path.clone().unwrap_or_else(chatgpt::codex_auth_file))
+            }
+            None => chatgpt::Action::Login,
+        };
+        return chatgpt::run(action, &config_path, &state).await;
+    }
     if let Command::Init = cli.command {
         onboard::run(&config_path, i18n::current(), true).await?;
         return Ok(());
@@ -512,6 +545,7 @@ async fn run(cli: Cli) -> Result<()> {
         | Command::Doctor { .. }
         | Command::Backup { .. }
         | Command::Restore { .. }
+        | Command::Login { .. }
         | Command::Update { .. } => {
             unreachable!("handled before the config is loaded")
         }
@@ -526,28 +560,35 @@ async fn run(cli: Cli) -> Result<()> {
             let bind = bind.unwrap_or_else(|| config.gateway.bind.clone());
             let gateway =
                 gateway::Gateway::new(agent, config.gateway.token(), config.access.clone());
+            let key = config.model_key()?;
+            let guide_config = config::GuideConfig {
+                provider: needs_openrouter(config.guide.provider, !key.is_empty(), "guide"),
+                ..config.guide.clone()
+            };
             if let Some(guide) =
-                guide::Guide::from_config(&config.guide, &config.model, &config.api_key()?)?
+                guide::Guide::from_config(&guide_config, &config.openrouter_model(), &key)?
             {
                 gateway.set_guide(guide);
             }
             if config.qq.enabled {
-                // Auto-review runs commands nobody approved, so it counts as unattended.
-                let reviewed_shell = config.tools.shell == config::Permission::Ask
-                    && config.tools.review.provider != config::ReviewProvider::Off;
-                let strangers = config.access.unnamed("qq");
-                let stranger_runs = (strangers.contains(&access::Capability::Shell)
-                    && (config.tools.shell == config::Permission::Allow || reviewed_shell))
-                    || (strangers.contains(&access::Capability::FilesWrite)
-                        && config.tools.write == config::Permission::Allow);
-                if stranger_runs && config.qq.allow.is_empty() {
-                    bail!(text::QQ_OPEN_TO_STRANGERS.now());
-                }
+                refuse_open_channel(&config, "qq", "QQ", &config.qq.allow)?;
                 let bot = qq::QqBot::new(config.qq.clone())?;
                 gateway.add_notifier(bot.clone());
                 tokio::spawn(qq::run(bot, gateway.clone()));
             }
-            if (config.qq.enabled || config.mail.enabled) && config.access.owners.is_empty() {
+            if config.feishu.enabled {
+                refuse_open_channel(&config, "feishu", "Feishu", &config.feishu.allow)?;
+                let bot = feishu::FeishuBot::new(config.feishu.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(feishu::run(bot, gateway.clone()));
+            }
+            if config.zulip.enabled {
+                refuse_open_channel(&config, "zulip", "Zulip", &config.zulip.allow)?;
+                let bot = zulip::ZulipBot::new(config.zulip.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(zulip::run(bot, gateway.clone()));
+            }
+            if config.any_channel() && config.access.owners.is_empty() {
                 eprintln!(
                     "{}",
                     text::NO_OWNERS.with(&[&format!("{:?}", config.access.guest)])
@@ -711,6 +752,56 @@ fn completions_command(
 
 type CliAgent = Agent<llm::Client, BuiltinTools>;
 
+/// Refuses to start a chat channel that lets anyone run commands or write
+/// files while nothing limits who may talk to it.
+fn refuse_open_channel(
+    config: &config::Config,
+    channel: &str,
+    name: &str,
+    allow: &[String],
+) -> Result<()> {
+    // Auto-review runs commands nobody approved, so it counts as unattended.
+    let reviewed_shell = config.tools.shell == config::Permission::Ask
+        && config.tools.review.provider != config::ReviewProvider::Off;
+    let strangers = config.access.unnamed(channel);
+    let stranger_runs = (strangers.contains(&access::Capability::Shell)
+        && (config.tools.shell == config::Permission::Allow || reviewed_shell))
+        || (strangers.contains(&access::Capability::FilesWrite)
+            && config.tools.write == config::Permission::Allow);
+    if stranger_runs && allow.is_empty() {
+        bail!(text::OPEN_TO_STRANGERS.with(&[channel, name, channel]));
+    }
+    Ok(())
+}
+
+/// Who runs `web_search`: on a ChatGPT subscription without an OpenRouter
+/// key, its own search instead of OpenRouter's.
+fn search_provider(config: &Config) -> config::SearchProvider {
+    match config.search.provider {
+        config::SearchProvider::Openrouter if config.chatgpt() && config.api_key().is_err() => {
+            config::SearchProvider::Chatgpt
+        }
+        provider => provider,
+    }
+}
+
+/// `provider`, or off when it needs an OpenRouter key and there is none (a
+/// ChatGPT subscription alone).
+fn needs_openrouter(
+    provider: config::ReviewProvider,
+    openrouter: bool,
+    section: &str,
+) -> config::ReviewProvider {
+    use config::ReviewProvider::{Off, Openrouter, OpenrouterChat};
+    match provider {
+        Openrouter | OpenrouterChat if !openrouter => {
+            eprintln!("{}", text::NEEDS_OPENROUTER.with(&[section]));
+            Off
+        }
+        provider => provider,
+    }
+}
+
 async fn build_agent(
     config: &Config,
     config_path: &Path,
@@ -725,29 +816,36 @@ async fn build_agent(
         .clone()
         .unwrap_or_else(|| state.join("workspace"));
     config.model_id()?;
-    let api_key = config.api_key()?;
-    let search = search::Searcher::new(&config.search, &config.model, &api_key)?;
-    let review = review::Reviewer::from_config(&config.tools.review, &config.model, &api_key)?;
-    let summarizer = match &config.agent.summary_model {
-        Some(model) if !model.trim().is_empty() => Some(llm::Client::new(
-            &config::ModelConfig {
-                model: model.clone(),
-                ..config.model.clone()
-            },
-            api_key.clone(),
-        )?),
-        _ => None,
+    let api_key = config.model_key()?;
+    // A ChatGPT subscription without an OpenRouter key: what needs
+    // OpenRouter is off rather than failing on every call.
+    let openrouter = !api_key.is_empty();
+    let side = config.openrouter_model();
+    let search_config = config::SearchConfig {
+        provider: search_provider(config),
+        ..config.search.clone()
     };
-    let vision = match &config.agent.vision_model {
-        Some(model) if !model.trim().is_empty() => Some(llm::Client::new(
-            &config::ModelConfig {
-                model: model.clone(),
-                ..config.model.clone()
-            },
-            api_key.clone(),
-        )?),
-        _ => None,
+    let search_model = match search_config.provider {
+        config::SearchProvider::Chatgpt => &config.model,
+        _ => &side,
     };
+    let search = search::Searcher::new(&search_config, search_model, &api_key)?;
+    let review_config = config::ReviewConfig {
+        provider: needs_openrouter(config.tools.review.provider, openrouter, "tools.review"),
+        ..config.tools.review.clone()
+    };
+    let review = review::Reviewer::from_config(&review_config, &side, &api_key)?;
+    let side_client = |model: &Option<String>| -> Result<Option<llm::Client>> {
+        let Some(model) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) else {
+            return Ok(None);
+        };
+        Ok(Some(llm::Client::new(
+            &config.side_model(model),
+            api_key.clone(),
+        )?))
+    };
+    let summarizer = side_client(&config.agent.summary_model)?;
+    let vision = side_client(&config.agent.vision_model)?;
     let mcp = mcp::Mcp::connect(&config.mcp, &workspace).await;
     // `serve` refuses to start on a broken [mail]; elsewhere only send_mail is lost.
     let mail = config
@@ -762,13 +860,14 @@ async fn build_agent(
         config::ContextBudget::Auto => onboard::auto_context(config, state).await,
         config::ContextBudget::Tokens(_) => None,
     };
-    let voice =
-        voice::Transcriber::new(&config.model, config.agent.audio_model.as_deref(), &api_key)?;
+    let voice = openrouter
+        .then(|| voice::Transcriber::new(&side, config.agent.audio_model.as_deref(), &api_key))
+        .transpose()?;
     Ok(Agent {
         model: llm::Client::new(&config.model, api_key)?,
         summarizer,
         vision,
-        voice: Some(voice),
+        voice,
         tools: BuiltinTools::new(workspace.clone(), config.tools.clone(), store.clone())?
             .with_search(search)
             .with_browser(browser::Browser::new(&config.browser, state, &workspace))

@@ -5,6 +5,7 @@
 //! completion reports its token usage, and prompt caching is requested with
 //! `cache_control` breakpoints for providers that need them.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -12,7 +13,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{ModelConfig, PromptCache};
+use crate::config::{DEFAULT_BASE_URL, ModelConfig, PromptCache, Provider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -207,6 +208,10 @@ pub struct Client {
     cache: bool,
     max_retries: u32,
     retry_base: Duration,
+    /// Set for a ChatGPT subscription: requests go to the Responses API
+    /// at `base_url`, signed in rather than keyed.
+    chatgpt: Option<Arc<crate::chatgpt::Auth>>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -241,7 +246,7 @@ enum Failure {
 /// An `error` event inside an otherwise healthy stream, such as a provider
 /// failing mid-answer.
 #[derive(Debug)]
-struct StreamError(String);
+pub(crate) struct StreamError(pub String);
 
 impl std::fmt::Display for StreamError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -363,16 +368,39 @@ impl Client {
                 .chain(&models)
                 .any(|m| needs_cache_breakpoints(m)),
         };
+        let chatgpt = match config.provider {
+            Provider::Chatgpt => Some(crate::chatgpt::Auth::shared(
+                &crate::chatgpt::auth_path(&crate::config::state_dir()?),
+                crate::chatgpt::ISSUER,
+            )),
+            Provider::Openrouter => None,
+        };
+        let base_url = match config.provider {
+            // The default base URL is OpenRouter's; ChatGPT has its own.
+            Provider::Chatgpt if config.base_url.trim_end_matches('/') == DEFAULT_BASE_URL => {
+                crate::chatgpt::ENDPOINT
+            }
+            _ => config.base_url.as_str(),
+        };
         Ok(Self {
             http,
-            base_url: config.base_url.trim_end_matches('/').to_owned(),
+            base_url: base_url.trim_end_matches('/').to_owned(),
             model: config.model.clone(),
             models,
             api_key,
             cache,
             max_retries: config.max_retries,
             retry_base: Duration::from_secs(1),
+            chatgpt,
+            reasoning_effort: config.reasoning_effort.clone(),
         })
+    }
+
+    /// A ChatGPT client signed in through `auth`, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_chatgpt(mut self, auth: Arc<crate::chatgpt::Auth>) -> Self {
+        self.chatgpt = Some(auth);
+        self
     }
 
     /// Streams one completion; `on_text` receives assistant text as it arrives.
@@ -383,16 +411,48 @@ impl Client {
         tools: &[ToolSpec],
         on_text: &mut (dyn for<'t> FnMut(&'t str) + Send),
     ) -> Result<Completion> {
-        let body = serde_json::to_vec(&Request {
-            model: &self.model,
-            models: &self.models,
-            messages: wire_messages(messages, self.cache)?,
-            tools,
-            stream: true,
-            stream_options: StreamOptions {
-                include_usage: true,
-            },
-        })?;
+        let body = if self.chatgpt.is_some() {
+            serde_json::to_vec(&crate::chatgpt::request_body(
+                &self.model,
+                messages,
+                tools,
+                self.reasoning_effort.as_deref(),
+            ))?
+        } else {
+            serde_json::to_vec(&Request {
+                model: &self.model,
+                models: &self.models,
+                messages: wire_messages(messages, self.cache)?,
+                tools,
+                stream: true,
+                stream_options: StreamOptions {
+                    include_usage: true,
+                },
+            })?
+        };
+        self.send(&body, on_text).await
+    }
+
+    /// A web search answered by the ChatGPT backend's own `web_search`
+    /// tool: what was found, with the cited pages.
+    pub async fn web_search(&self, prompt: &str) -> Result<Completion> {
+        anyhow::ensure!(self.chatgpt.is_some(), "web search needs a ChatGPT model");
+        let mut body = crate::chatgpt::request_body(
+            &self.model,
+            &[ChatMessage::user(prompt)],
+            &[],
+            self.reasoning_effort.as_deref(),
+        );
+        body["tools"] = serde_json::json!([{ "type": "web_search" }]);
+        self.send(&serde_json::to_vec(&body)?, &mut |_| {}).await
+    }
+
+    /// Sends `body`, retrying as `max_retries` allows.
+    async fn send(
+        &self,
+        body: &[u8],
+        on_text: &mut (dyn for<'t> FnMut(&'t str) + Send),
+    ) -> Result<Completion> {
         let mut attempt = 0;
         loop {
             let mut shown = false;
@@ -401,7 +461,10 @@ impl Client {
                     shown = true;
                     on_text(text);
                 };
-                self.attempt(&body, &mut forward).await
+                match &self.chatgpt {
+                    Some(auth) => self.attempt_chatgpt(auth, body, &mut forward).await,
+                    None => self.attempt(body, &mut forward).await,
+                }
             };
             let (error, after) = match result {
                 Ok(completion) => return Ok(completion),
@@ -474,6 +537,77 @@ impl Client {
             parser
                 .push(&chunk, &mut |text| on_text(text))
                 .map_err(classify)?;
+            if parser.done {
+                break;
+            }
+        }
+        parser.finish().map_err(Failure::Fatal)
+    }
+}
+
+impl Client {
+    /// One request to the ChatGPT backend. A refused token is refreshed
+    /// and the request sent once more.
+    async fn attempt_chatgpt(
+        &self,
+        auth: &crate::chatgpt::Auth,
+        body: &[u8],
+        on_text: &mut (dyn for<'t> FnMut(&'t str) + Send),
+    ) -> Result<Completion, Failure> {
+        let mut refreshed = false;
+        let response = loop {
+            let (token, account) = auth.access(refreshed).await.map_err(Failure::Fatal)?;
+            let mut request = self
+                .http
+                .post(format!("{}/responses", self.base_url))
+                .bearer_auth(token)
+                .header("OpenAI-Beta", "responses=experimental")
+                .header("originator", "codex_cli_rs")
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.to_vec());
+            if let Some(account) = account {
+                request = request.header("chatgpt-account-id", account);
+            }
+            let response = request.send().await.map_err(|err| Failure::Retry {
+                error: anyhow::Error::new(err).context("model request failed"),
+                after: None,
+            })?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED && !refreshed {
+                refreshed = true;
+                continue;
+            }
+            break response;
+        };
+        let status = response.status();
+        if !status.is_success() {
+            let after = retry_after(&response);
+            let body = response.text().await.unwrap_or_default();
+            let (message, usage_limit) = crate::chatgpt::error_message(status, &body);
+            let error = anyhow::anyhow!(message);
+            // The plan's limit lasts hours; retrying only wastes the wait.
+            return Err(if retryable_status(status) && !usage_limit {
+                Failure::Retry { error, after }
+            } else {
+                Failure::Fatal(error)
+            });
+        }
+        let mut parser = crate::chatgpt::ResponsesParser::default();
+        let mut body = response.bytes_stream();
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|err| Failure::Retry {
+                error: anyhow::Error::new(err).context("model stream interrupted"),
+                after: None,
+            })?;
+            parser
+                .push(&chunk, &mut |text| on_text(text))
+                .map_err(|error| {
+                    if error.downcast_ref::<StreamError>().is_some() {
+                        Failure::Retry { error, after: None }
+                    } else {
+                        Failure::Fatal(error)
+                    }
+                })?;
             if parser.done {
                 break;
             }

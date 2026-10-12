@@ -164,6 +164,13 @@ const COMMANDS: &[(&str, Tr)] = &[
         ),
     ),
     (
+        "login",
+        tr(
+            "Sign in with a ChatGPT plan and run the model on it",
+            "用 ChatGPT 订阅登录，并让模型使用它",
+        ),
+    ),
+    (
         "update",
         tr(
             "Install the latest release from GitHub, or go back to the previous binary",
@@ -314,6 +321,20 @@ const ARGS: &[(&str, &str, Tr)] = &[
         tr("Replace skills with the same name", "替换同名的 skill"),
     ),
     ("skills remove", "name", tr("Skill name", "skill 名")),
+    (
+        "login",
+        "import",
+        tr(
+            "Take the sign-in of the Codex CLI (default ~/.codex/auth.json)",
+            "直接用 Codex CLI 的登录（默认 ~/.codex/auth.json）",
+        ),
+    ),
+    (
+        "login",
+        "status",
+        tr("Show who is signed in", "显示当前登录的账号"),
+    ),
+    ("login", "logout", tr("Forget the sign-in", "退出登录")),
     (
         "update",
         "check",
@@ -634,17 +655,21 @@ pub const NO_MODEL: Tr = tr(
     "no model chosen: run `openclaw-rs init` for guided setup, or set model.model in config.toml to an OpenRouter model id",
     "还没有选择模型：运行 `openclaw-rs init` 按引导设置，或在 config.toml 里把 model.model 设为一个 OpenRouter 模型 id",
 );
-pub const QQ_OPEN_TO_STRANGERS: Tr = tr(
-    "access.guest or access.grants.\"qq:*\" lets any QQ user run commands or write files; list trusted openids in qq.allow (the log shows each sender's openid), or grant those capabilities to named senders only",
-    "access.guest 或 access.grants.\"qq:*\" 让任何 QQ 用户都能运行命令或写文件；请在 qq.allow 里列出可信的 openid（日志会显示每个发送者的 openid），或只把这些权限授予指定的发送者",
+pub const OPEN_TO_STRANGERS: Tr = tr(
+    "access.guest or access.grants.\"{}:*\" lets anyone on {} run commands or write files; list trusted senders in {}.allow (the log shows each sender), or grant those capabilities to named senders only",
+    "access.guest 或 access.grants.\"{}:*\" 让{}上的任何人都能运行命令或写文件；请在 {}.allow 里列出可信的发送者（日志会显示每个发送者），或只把这些权限授予指定的发送者",
+);
+pub const NEEDS_OPENROUTER: Tr = tr(
+    "{}: off, since it needs an OpenRouter key and the model runs on ChatGPT without one (set OPENROUTER_API_KEY to keep it)",
+    "{}：已关闭，因为它需要 OpenRouter key，而模型用的是 ChatGPT 订阅、没有设置 key（设置 OPENROUTER_API_KEY 即可保留）",
 );
 pub const NO_DIARY: Tr = tr(
     "No diary yet: turn on [life] and let the Gateway run through a night.",
     "还没有日记：打开 [life]，让 Gateway 运行过一个夜晚。",
 );
 pub const NO_OWNERS: Tr = tr(
-    "access: no access.owners, so every QQ and email sender is a guest that can only use {}; add yourself as \"qq:<openid>\" or \"mail:<address>\" to use memory, cron, files or shell from there",
-    "权限：没有设置 access.owners，所以每个 QQ 和邮件发送者都是访客，只能使用 {}；把自己加为 \"qq:<openid>\" 或 \"mail:<地址>\"，才能从那里使用记忆、定时任务、文件或 shell",
+    "access: no access.owners, so every chat and email sender is a guest that can only use {}; add yourself as \"qq:<openid>\", \"feishu:<open_id>\", \"zulip:<email>\" or \"mail:<address>\" to use memory, cron, files or shell from there",
+    "权限：没有设置 access.owners，所以每个聊天和邮件发送者都是访客，只能使用 {}；把自己加为 \"qq:<openid>\"、\"feishu:<open_id>\"、\"zulip:<邮箱>\" 或 \"mail:<地址>\"，才能从那里使用记忆、定时任务、文件或 shell",
 );
 pub const NEVER: Tr = tr("never", "从未");
 pub const CRON_ADDED: Tr = tr("added {} · next run {}", "已添加 {} · 下次运行 {}");
@@ -718,7 +743,8 @@ mod tests {
         NO_MAIL,
         MAIL_ENTRY,
         NO_MODEL,
-        QQ_OPEN_TO_STRANGERS,
+        OPEN_TO_STRANGERS,
+        NEEDS_OPENROUTER,
         NO_OWNERS,
         NO_DIARY,
         NEVER,

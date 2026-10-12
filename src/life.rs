@@ -315,7 +315,7 @@ fn owners_conversation<M: Model + 'static, T: Tools + 'static>(
 ) -> bool {
     match crate::heartbeat::sender(session) {
         Some(sender) => gateway.actor(&sender, session).owner,
-        None => !session.starts_with("qq:") && !session.starts_with("mail:"),
+        None => !crate::chat::is_channel_session(session),
     }
 }
 
@@ -498,7 +498,7 @@ pub fn note(store: &Store, inner: &Inner, session: &str, now: DateTime<Local>) -
          something wrong. Keep what you know about them in mind without reciting it."
             .to_owned(),
     );
-    if session.starts_with("qq:") {
+    if crate::chat::is_chat_app(session) {
         out.push(
             "This is a chat app: write the way people text, short, casual and in plain text \
              (no headings, tables or bold), and put distinct thoughts in separate paragraphs, \
