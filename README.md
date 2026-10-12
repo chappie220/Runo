@@ -1322,7 +1322,7 @@ request_timeout_secs = 300
 # fallbacks = ["openai/gpt-x"]       # OpenRouter tries these when `model` fails
 max_retries = 3                      # connection errors, HTTP 408/429/5xx, early stream errors
 prompt_cache = "auto"                # auto | on | off: cache_control breakpoints
-# reasoning_effort = "auto"          # auto | off | none | minimal | low | medium | high | xhigh
+# reasoning_effort = "auto"          # auto | off | none | minimal | low | medium | high | xhigh | max
 
 [agent]
 system_prompt = "You are a helpful personal assistant running on OpenClaw."
@@ -1375,15 +1375,22 @@ browser installed; see [Browser](#browser).
 ## Thinking level
 
 `model.reasoning_effort` sets how hard the model thinks before answering,
-for OpenRouter and ChatGPT alike. Left unset (or `auto`), openclaw-rs reads
-the levels the model supports and takes the lowest from `low` up — usually
-`low`; a model whose lowest level is higher gets that one. With ChatGPT the
-levels come from the Codex model list (falling back to the model name);
-with OpenRouter, a model whose catalog entry lists `reasoning` gets `low`,
-and a model without reasoning gets nothing. `off` sends nothing and leaves
-it to the model; a level (`none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`) is sent as is. Change it in `openclaw-rs config` → Model →
-Provider and sign-in → Thinking level.
+for OpenRouter and ChatGPT alike. Left unset (or `auto`), openclaw-rs asks
+the provider's API which levels the model takes and sends the lowest from
+`low` up — usually `low`; a model whose lowest level is higher gets that
+one.
+
+- ChatGPT: the Codex model list (`supported_reasoning_levels`); when it
+  cannot be read, OpenRouter's catalog entry for `openai/<model>`.
+- OpenRouter: the model catalog (`reasoning.supported_efforts`), cached
+  for a week with the context windows.
+- A model that lists no levels, or whose levels cannot be read, gets
+  nothing: it thinks as it does by default.
+
+`off` sends nothing and leaves it to the model; a level (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is sent as is. Change
+it in `openclaw-rs config` → Model → Provider and sign-in → Thinking
+level.
 
 ## Reliability, caching and cost
 

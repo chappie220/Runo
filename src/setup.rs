@@ -237,6 +237,7 @@ const GROUPS: &[Group] = &[
                         ),
                         kind: Kind::Choice(&[
                             "auto", "off", "none", "minimal", "low", "medium", "high", "xhigh",
+                            "max",
                         ]),
                     },
                     Field {
@@ -3057,7 +3058,7 @@ mod tests {
             audio: false,
             tools: true,
             max_output: None,
-            reasoning: false,
+            efforts: Vec::new(),
         };
         let mut loads = 0;
         let mut models = Models::new(|| {

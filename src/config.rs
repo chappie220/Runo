@@ -518,7 +518,7 @@ pub struct ModelConfig {
     /// How hard reasoning models think: `auto` (unset; the lowest level the
     /// model supports from `low` up), `off` (send nothing, the model
     /// decides), or a level (`none`, `minimal`, `low`, `medium`, `high`,
-    /// `xhigh`).
+    /// `xhigh`, `max`).
     pub reasoning_effort: Option<String>,
 }
 

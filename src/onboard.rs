@@ -38,8 +38,9 @@ pub struct ModelInfo {
     pub tools: bool,
     /// Longest answer the provider allows, when listed.
     pub max_output: Option<u64>,
-    /// Thinks before answering, at a level it can be asked for.
-    pub reasoning: bool,
+    /// The thinking levels it can be asked for (`reasoning.supported_efforts`
+    /// in the catalog); empty when it lists none.
+    pub efforts: Vec<String>,
 }
 
 /// What checking an API key found.
@@ -159,7 +160,14 @@ fn parse_models(body: &Json) -> Vec<ModelInfo> {
                 images: has("/architecture/input_modalities", "image"),
                 audio: has("/architecture/input_modalities", "audio"),
                 tools: has("/supported_parameters", "tools"),
-                reasoning: has("/supported_parameters", "reasoning"),
+                efforts: m
+                    .pointer("/reasoning/supported_efforts")
+                    .and_then(Json::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Json::as_str)
+                    .map(str::to_owned)
+                    .collect(),
                 max_output: m
                     .pointer("/top_provider/max_completion_tokens")
                     .and_then(Json::as_u64),
@@ -470,9 +478,10 @@ struct WindowCache {
     fetched_at: i64,
     /// Model id → (window, longest answer).
     models: std::collections::BTreeMap<String, (u64, Option<u64>)>,
-    /// The models that think; `None` in caches from before it was kept.
+    /// Model id → the thinking levels it takes, for models that list any;
+    /// `None` in caches from before it was kept.
     #[serde(default)]
-    reasoning: Option<std::collections::BTreeSet<String>>,
+    efforts: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 const WINDOW_CACHE: &str = "model-windows.json";
@@ -511,15 +520,22 @@ pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
         .min()
 }
 
-/// Whether OpenRouter lists the main model as one that thinks; `None` when
-/// the catalog does not know it.
-pub async fn reasons(config: &Config, state: &Path) -> Option<bool> {
-    let id = config.model.model.trim().to_owned();
+/// The thinking levels OpenRouter's catalog lists for the main model
+/// (ChatGPT's as `openai/<id>`): empty when it lists none, `None` when the
+/// catalog cannot be read or does not know the model.
+pub async fn efforts(config: &Config, state: &Path) -> Option<Vec<String>> {
+    let id = config.openrouter_model().model.trim().to_owned();
     let cache = catalog_cache(config, state, std::slice::from_ref(&id)).await;
     cache.find(&id)?;
     let base = id.split(':').next().unwrap_or(&id);
-    let thinking = cache.reasoning.as_ref()?;
-    Some(thinking.contains(&id) || thinking.contains(base))
+    let efforts = cache.efforts.as_ref()?;
+    Some(
+        efforts
+            .get(&id)
+            .or_else(|| efforts.get(base))
+            .cloned()
+            .unwrap_or_default(),
+    )
 }
 
 /// The cached catalog, read again from OpenRouter when a week old or when
@@ -531,7 +547,7 @@ async fn catalog_cache(config: &Config, state: &Path, ids: &[String]) -> WindowC
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     let fresh = crate::store::now() - cache.fetched_at < WINDOW_CACHE_SECS;
-    let complete = cache.reasoning.is_some() && ids.iter().all(|id| cache.find(id).is_some());
+    let complete = cache.efforts.is_some() && ids.iter().all(|id| cache.find(id).is_some());
     if !fresh || !complete {
         let fetched = match OpenRouter::new(&config.openrouter_model().base_url) {
             Ok(catalog) => tokio::time::timeout(Duration::from_secs(10), catalog.models())
@@ -543,11 +559,11 @@ async fn catalog_cache(config: &Config, state: &Path, ids: &[String]) -> WindowC
         if let Some(models) = fetched.filter(|m| !m.is_empty()) {
             cache = WindowCache {
                 fetched_at: crate::store::now(),
-                reasoning: Some(
+                efforts: Some(
                     models
                         .iter()
-                        .filter(|m| m.reasoning)
-                        .map(|m| m.id.clone())
+                        .filter(|m| !m.efforts.is_empty())
+                        .map(|m| (m.id.clone(), m.efforts.clone()))
                         .collect(),
                 ),
                 models: models
@@ -1256,7 +1272,7 @@ mod tests {
             audio: false,
             tools,
             max_output: None,
-            reasoning: false,
+            efforts: Vec::new(),
         }
     }
 
@@ -1528,7 +1544,7 @@ mod tests {
         let cache = WindowCache {
             fetched_at: 0,
             models: [("a/b".to_owned(), (131_072, None))].into(),
-            reasoning: Some(["a/b".to_owned()].into()),
+            efforts: Some([("a/b".to_owned(), vec!["low".to_owned()])].into()),
         };
         assert_eq!(cache.find("a/b:free"), Some((131_072, None)));
         assert_eq!(cache.find("c/d"), None);
@@ -1545,19 +1561,21 @@ mod tests {
             {"id": "a/b", "name": "A: B", "context_length": 1_000_000,
              "architecture": {"input_modalities": ["text", "image"]},
              "pricing": {"prompt": "0.000003", "completion": "0.000015"},
-             "supported_parameters": ["tools", "temperature", "reasoning"]},
+             "supported_parameters": ["tools", "temperature", "reasoning"],
+             "reasoning": {"mandatory": false, "supported_efforts": ["high", "medium", "low"]}},
             {"id": "c/d"}
         ]});
         let models = parse_models(&body);
         assert_eq!(models[0].id, "a/b");
-        assert!(models[0].images && models[0].tools && models[0].reasoning);
+        assert!(models[0].images && models[0].tools);
+        assert_eq!(models[0].efforts, ["high", "medium", "low"]);
         let (input, output) = models[0].price.unwrap();
         assert!((input - 3.0).abs() < 1e-9 && (output - 15.0).abs() < 1e-9);
         assert_eq!(
             describe(&models[0], Lang::En),
             "a/b 🖼  (A: B · 1M context · $3 / $15 per M tokens in/out)"
         );
-        assert!(!models[1].tools && !models[1].reasoning && models[1].price.is_none());
+        assert!(!models[1].tools && models[1].efforts.is_empty() && models[1].price.is_none());
         assert_eq!(money(0.004), "0.004");
         let key = serde_json::json!({"data": {"limit_remaining": 4.5, "usage": 5.5}});
         assert_eq!(credit(&key).as_deref(), Some("$4.50 left"));

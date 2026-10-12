@@ -8,11 +8,7 @@ use std::path::Path;
 use crate::config::Config;
 
 /// Every level, from no thinking to the most.
-pub const LEVELS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
-
-/// Levels a reasoning model on OpenRouter accepts (it maps them for models
-/// that take a token budget instead).
-const OPENROUTER_LEVELS: &[&str] = &["minimal", "low", "medium", "high"];
+pub const LEVELS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// The lowest of `levels` from `low` up; below that only when nothing
 /// higher is offered, and never `none`.
@@ -26,19 +22,6 @@ pub fn lowest(levels: &[String]) -> Option<String> {
         .find(|r| **r >= low)
         .or_else(|| known.iter().rev().find(|r| **r > 0))
         .map(|r| LEVELS[*r].to_owned())
-}
-
-/// What ChatGPT's models offer when its list cannot be read.
-fn chatgpt_fallback(model: &str) -> Vec<String> {
-    let model = model.to_ascii_lowercase();
-    let levels: &[&str] = if model.contains("codex") {
-        &["low", "medium", "high"]
-    } else if model.starts_with("gpt-5") || model.starts_with('o') {
-        &["minimal", "low", "medium", "high"]
-    } else {
-        &[]
-    };
-    levels.iter().map(|l| (*l).to_owned()).collect()
 }
 
 /// What `model.reasoning_effort` stands for now: a level to send, or `None`
@@ -58,8 +41,10 @@ pub async fn effort(config: &Config, state: &Path) -> Option<String> {
     }
 }
 
-/// The levels the main model offers; empty when it does not think or it
-/// is not known.
+/// The levels the main model offers, as its provider's API lists them;
+/// empty when it does not think or they cannot be read (nothing is sent
+/// then). ChatGPT's come from the Codex model list, else from OpenRouter's
+/// catalog entry for `openai/<model>`; OpenRouter's from its catalog.
 pub async fn supported(config: &Config, state: &Path) -> Vec<String> {
     let model = config.model.model.trim();
     if config.chatgpt() {
@@ -74,12 +59,13 @@ pub async fn supported(config: &Config, state: &Path) -> Vec<String> {
         .ok()
         .and_then(Result::ok)
         .flatten();
-        return listed.unwrap_or_else(|| chatgpt_fallback(model));
+        if let Some(levels) = listed {
+            return levels;
+        }
     }
-    match crate::onboard::reasons(config, state).await {
-        Some(true) => OPENROUTER_LEVELS.iter().map(|l| (*l).to_owned()).collect(),
-        _ => Vec::new(),
-    }
+    crate::onboard::efforts(config, state)
+        .await
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -116,9 +102,9 @@ mod tests {
         assert_eq!(lowest(&[]), None);
         assert_eq!(lowest(&levels(&["LOW", "turbo"])).as_deref(), Some("low"));
         assert_eq!(
-            lowest(&chatgpt_fallback("gpt-5-codex")).as_deref(),
+            lowest(&levels(&["max", "high", "low"])).as_deref(),
             Some("low")
         );
-        assert_eq!(lowest(&chatgpt_fallback("gpt-4o")), None);
+        assert_eq!(lowest(&levels(&["max", "xhigh"])).as_deref(), Some("xhigh"));
     }
 }
