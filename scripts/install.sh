@@ -15,7 +15,7 @@
 #   --dir DIR          install into DIR (default: /usr/local/bin, or
 #                      ~/.local/bin without root, sudo or doas; on --update,
 #                      where it is now)
-#   --version X.Y.Z    this release instead of the latest
+#   --version X.Y.Z    this release instead of the latest (a0.3.7, b0.3.7: an alpha or beta)
 #   --service USER     also install the Gateway service running as USER
 #                      (another account needs root; without root, only yourself)
 #   --update           update the installed binary (what update.sh does)
@@ -197,6 +197,11 @@ fi
 BINARY="$DIR/$NAME"
 
 [ -n "$VERSION" ] || VERSION=$(latest_version)
+# Releases are tagged v0.3.7; alpha and beta builds as they are (a0.3.7, b0.3.7).
+case "$VERSION" in
+a[0-9]* | b[0-9]*) TAG="$VERSION" ;;
+*) TAG="v$VERSION" ;;
+esac
 have=$(installed_version "$BINARY" || true)
 if [ "$have" = "$VERSION" ] && [ "$FORCE" = 0 ]; then
 	say "$NAME $VERSION is already installed at $BINARY." "$BINARY 已经是 $NAME $VERSION。"
@@ -208,12 +213,12 @@ else
 		say "Installing $NAME $VERSION ($TARGET) to $BINARY ..." "正在安装 $NAME $VERSION（$TARGET）到 $BINARY ..."
 	fi
 	asset="$NAME-$TARGET"
-	fetch "$DOWNLOAD_URL/v$VERSION/SHA256SUMS" "$TMP/SHA256SUMS" ||
+	fetch "$DOWNLOAD_URL/$TAG/SHA256SUMS" "$TMP/SHA256SUMS" ||
 		die "cannot download SHA256SUMS of release $VERSION" "无法下载版本 $VERSION 的 SHA256SUMS"
 	expected=$(awk -v f="$asset" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' "$TMP/SHA256SUMS")
 	[ -n "$expected" ] ||
 		die "release $VERSION has no binary for $TARGET" "版本 $VERSION 没有 $TARGET 的程序"
-	fetch "$DOWNLOAD_URL/v$VERSION/$asset" "$TMP/$NAME" ||
+	fetch "$DOWNLOAD_URL/$TAG/$asset" "$TMP/$NAME" ||
 		die "cannot download $asset" "无法下载 $asset"
 	actual=$(sha256 "$TMP/$NAME")
 	[ "$actual" = "$expected" ] ||

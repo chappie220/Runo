@@ -129,50 +129,42 @@ pub fn asset_name() -> String {
 }
 
 /// Whether version `a` is newer than `b` (`1.2.10` > `1.2.9`, `0.3.5.1` >
-/// `0.3.5`). After a `-`: `a1` (alpha, early test) < `b1` (beta,
-/// pre-release) < the release itself < `1` (a revision), so
-/// `0.3.7-a1` < `0.3.7-b1` < `0.3.7` < `0.3.7-1`.
+/// `0.3.5`). A leading `a` marks an alpha (early test) and `b` a beta
+/// (pre-release) of that version; a number after `-` is a revision of it:
+/// `a0.3.7` < `b0.3.7` < `0.3.7` < `0.3.7-1`. Any other suffix (`-rc1`) is
+/// a pre-release too.
 pub fn newer(a: &str, b: &str) -> bool {
-    /// Where a suffix puts a version next to its release: the stage
-    /// (alpha -2, beta and other pre-releases -1, none 0, revision 1) and
-    /// its number.
-    fn suffix(rest: &str) -> (i8, u64) {
-        let rest = rest.to_ascii_lowercase();
-        if let Ok(revision) = rest.parse() {
-            return (1, revision);
-        }
-        let (stage, number) = if let Some(n) = rest.strip_prefix("alpha") {
-            (-2, n)
-        } else if let Some(n) = rest.strip_prefix("beta") {
-            (-1, n)
-        } else if let Some(n) = rest.strip_prefix('a') {
-            (-2, n)
-        } else if let Some(n) = rest.strip_prefix('b') {
-            (-1, n)
-        } else {
-            (-1, rest.trim_start_matches(|c: char| !c.is_ascii_digit()))
-        };
-        (stage, number.trim_start_matches('.').parse().unwrap_or(0))
-    }
-    fn parts(v: &str) -> (Vec<u64>, (i8, u64)) {
+    /// The numbers, then the stage (alpha -2, beta and other pre-releases
+    /// -1, the release 0) and the revision.
+    fn parts(v: &str) -> (Vec<u64>, i8, u64) {
         let v = v.trim().trim_start_matches('v');
-        let (core, rank) = match v.split_once(['-', '+']) {
+        let (mut stage, v) = match v.as_bytes().first() {
+            Some(b'a' | b'A') => (-2, &v[1..]),
+            Some(b'b' | b'B') => (-1, &v[1..]),
+            _ => (0, v),
+        };
+        let mut revision = 0;
+        let core = match v.split_once(['-', '+']) {
             Some((core, rest)) if v.as_bytes()[core.len()] == b'-' && !rest.is_empty() => {
-                (core, suffix(rest))
+                match rest.parse() {
+                    Ok(n) => revision = n,
+                    Err(_) => stage = stage.min(-1),
+                }
+                core
             }
-            Some((core, _)) => (core, (0, 0)),
-            None => (v, (0, 0)),
+            Some((core, _)) => core,
+            None => v,
         };
         let numbers: Vec<u64> = core.split('.').map(|n| n.parse().unwrap_or(0)).collect();
-        (numbers, rank)
+        (numbers, stage, revision)
     }
-    let (mut a_core, a_rank) = parts(a);
-    let (mut b_core, b_rank) = parts(b);
+    let (mut a_core, a_stage, a_revision) = parts(a);
+    let (mut b_core, b_stage, b_revision) = parts(b);
     // Missing parts are 0: 1.0 is 1.0.0, 0.3.5 is 0.3.5.0.
     let len = a_core.len().max(b_core.len()).max(3);
     a_core.resize(len, 0);
     b_core.resize(len, 0);
-    (a_core, a_rank) > (b_core, b_rank)
+    (a_core, a_stage, a_revision) > (b_core, b_stage, b_revision)
 }
 
 fn http() -> Result<reqwest::Client> {
@@ -552,17 +544,11 @@ mod tests {
         assert!(!newer("0.3.6.1", "0.3.6.1-1"));
         assert!(newer("0.3.6.2", "0.3.6.1-1"));
         assert!(!newer("0.3.6.1-rc1", "0.3.6.1"));
+        assert!(newer("0.3.6.1", "0.3.6.1-rc1"));
         // Alpha, then beta, then the release, then its revisions.
         let order = [
-            "0.3.7-a1",
-            "0.3.7-a2",
-            "0.3.7-alpha3",
-            "0.3.7-b1",
-            "0.3.7-beta.2",
-            "0.3.7",
-            "0.3.7-1",
-            "0.3.7-2",
-            "0.3.7.1-a1",
+            "a0.3.7", "b0.3.7", "0.3.7", "0.3.7-1", "0.3.7-2", "a0.3.7.1", "b0.3.7.1", "0.3.7.1",
+            "a0.3.8",
         ];
         for pair in order.windows(2) {
             assert!(newer(pair[1], pair[0]), "{} > {}", pair[1], pair[0]);
