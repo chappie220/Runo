@@ -1,10 +1,11 @@
 name: Release
 
-# Push a tag such as v0.2.0 (matching Cargo.toml's version) to publish the
-# binaries and SHA256SUMS that `openclaw-rs update` installs.
+# Push a tag such as v0.2.0 (matching Cargo.toml's release) to publish the
+# binaries and SHA256SUMS that `openclaw-rs update` installs; a0.2.0 or
+# b0.2.0 publishes an alpha or beta as a pre-release.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "a[0-9]*", "b[0-9]*"]
 
 permissions:
   contents: read
@@ -26,7 +27,13 @@ jobs:
           # part), else the package version.
           version=$(sed -n 's/^release = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ -n "$version" ] || version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+          # Releases are tagged v<release>; alpha and beta builds
+          # (a0.3.7, b0.3.7) by their release number as it is.
+          case "$version" in
+            a[0-9]*|b[0-9]*) tag="$version" ;;
+            *) tag="v$version" ;;
+          esac
+          if [ "$tag" != "$GITHUB_REF_NAME" ]; then
             echo "tag $GITHUB_REF_NAME does not match Cargo.toml release $version" >&2
             exit 1
           fi
@@ -64,5 +71,11 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+            # Alpha (a0.3.7) and beta (b0.3.7) builds are pre-releases:
+            # `update` follows the latest release, which skips them.
+            prerelease=
+            case "$GITHUB_REF_NAME" in
+              a[0-9]*|b[0-9]*|*-rc*) prerelease=--prerelease ;;
+            esac
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes $prerelease
           fi

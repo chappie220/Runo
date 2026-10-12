@@ -129,28 +129,42 @@ pub fn asset_name() -> String {
 }
 
 /// Whether version `a` is newer than `b` (`1.2.10` > `1.2.9`, `0.3.5.1` >
-/// `0.3.5`; a pre-release such as `1.3.0-rc1` is older than `1.3.0`).
+/// `0.3.5`). A leading `a` marks an alpha (early test) and `b` a beta
+/// (pre-release) of that version; a number after `-` is a revision of it:
+/// `a0.3.7` < `b0.3.7` < `0.3.7` < `0.3.7-1`. Any other suffix (`-rc1`) is
+/// a pre-release too.
 pub fn newer(a: &str, b: &str) -> bool {
-    fn parts(v: &str) -> (Vec<u64>, bool) {
+    /// The numbers, then the stage (alpha -2, beta and other pre-releases
+    /// -1, the release 0) and the revision.
+    fn parts(v: &str) -> (Vec<u64>, i8, u64) {
         let v = v.trim().trim_start_matches('v');
-        let (core, pre) = match v.split_once(['-', '+']) {
-            Some((core, rest)) => (core, v.as_bytes()[core.len()] == b'-' && !rest.is_empty()),
-            None => (v, false),
+        let (mut stage, v) = match v.as_bytes().first() {
+            Some(b'a' | b'A') => (-2, &v[1..]),
+            Some(b'b' | b'B') => (-1, &v[1..]),
+            _ => (0, v),
+        };
+        let mut revision = 0;
+        let core = match v.split_once(['-', '+']) {
+            Some((core, rest)) if v.as_bytes()[core.len()] == b'-' && !rest.is_empty() => {
+                match rest.parse() {
+                    Ok(n) => revision = n,
+                    Err(_) => stage = stage.min(-1),
+                }
+                core
+            }
+            Some((core, _)) => core,
+            None => v,
         };
         let numbers: Vec<u64> = core.split('.').map(|n| n.parse().unwrap_or(0)).collect();
-        (numbers, pre)
+        (numbers, stage, revision)
     }
-    let (mut a_core, a_pre) = parts(a);
-    let (mut b_core, b_pre) = parts(b);
+    let (mut a_core, a_stage, a_revision) = parts(a);
+    let (mut b_core, b_stage, b_revision) = parts(b);
     // Missing parts are 0: 1.0 is 1.0.0, 0.3.5 is 0.3.5.0.
     let len = a_core.len().max(b_core.len()).max(3);
     a_core.resize(len, 0);
     b_core.resize(len, 0);
-    match a_core.cmp(&b_core) {
-        std::cmp::Ordering::Greater => true,
-        std::cmp::Ordering::Less => false,
-        std::cmp::Ordering::Equal => b_pre && !a_pre,
-    }
+    (a_core, a_stage, a_revision) > (b_core, b_stage, b_revision)
 }
 
 fn http() -> Result<reqwest::Client> {
@@ -274,6 +288,9 @@ pub fn old_path(binary: &Path) -> PathBuf {
     binary.with_file_name(name)
 }
 
+/// `errno` for running a file that is still open for writing.
+const ETXTBSY: i32 = 26;
+
 /// Replaces `binary` with `data` once it runs and reports `version`;
 /// the current binary is kept as `<binary>.old`.
 pub fn install(binary: &Path, data: &[u8], version: &str) -> Result<()> {
@@ -296,10 +313,21 @@ pub fn install(binary: &Path, data: &[u8], version: &str) -> Result<()> {
         file.sync_all()?;
         drop(file);
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
-        let output = std::process::Command::new(&staged)
-            .arg("--version")
-            .output()
-            .context("the new binary does not run on this host")?;
+        // A child another thread forked while the file was open for writing
+        // holds it open until its exec ("text file busy"); that passes.
+        let mut tries = 0;
+        let output = loop {
+            match std::process::Command::new(&staged)
+                .arg("--version")
+                .output()
+            {
+                Err(err) if err.raw_os_error() == Some(ETXTBSY) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                result => break result.context("the new binary does not run on this host")?,
+            }
+        };
         let said = String::from_utf8_lossy(&output.stdout);
         if !output.status.success() || !said.contains(version) {
             bail!(
@@ -524,6 +552,22 @@ mod tests {
         assert!(newer("v0.3.6", "0.3.5.1"));
         assert!(!newer("0.3.5", "0.3.5.1"));
         assert!(!newer("0.3.5.0", "0.3.5"));
+        assert!(newer("0.3.6.1-1", "0.3.6.1"));
+        assert!(newer("v0.3.6.1-2", "0.3.6.1-1"));
+        assert!(newer("0.3.6.1-10", "0.3.6.1-9"));
+        assert!(!newer("0.3.6.1", "0.3.6.1-1"));
+        assert!(newer("0.3.6.2", "0.3.6.1-1"));
+        assert!(!newer("0.3.6.1-rc1", "0.3.6.1"));
+        assert!(newer("0.3.6.1", "0.3.6.1-rc1"));
+        // Alpha, then beta, then the release, then its revisions.
+        let order = [
+            "a0.3.7", "b0.3.7", "0.3.7", "0.3.7-1", "0.3.7-2", "a0.3.7.1", "b0.3.7.1", "0.3.7.1",
+            "a0.3.8",
+        ];
+        for pair in order.windows(2) {
+            assert!(newer(pair[1], pair[0]), "{} > {}", pair[1], pair[0]);
+            assert!(!newer(pair[0], pair[1]), "{} < {}", pair[0], pair[1]);
+        }
     }
 
     #[test]

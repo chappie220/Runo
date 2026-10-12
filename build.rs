@@ -9,9 +9,12 @@ fn main() {
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let manifest = std::fs::read_to_string("Cargo.toml").unwrap_or_default();
     let release = release(&manifest).unwrap_or_else(|| version.clone());
+    // An alpha or beta is the release number after an `a` or `b`.
+    let number = release.strip_prefix(['a', 'b']).unwrap_or(&release);
+    let number = number.split_once('-').map_or(number, |(n, _)| n);
     assert!(
-        release == version || release.starts_with(&format!("{version}.")),
-        "package.metadata.openclaw.release {release} must be {version} or {version}.<n>"
+        number == version || number.starts_with(&format!("{version}.")),
+        "package.metadata.openclaw.release {release} must be {version} or {version}.<n>, optionally with a leading a or b and a -<revision>"
     );
     println!("cargo:rustc-env=OPENCLAW_VERSION={release}");
 }
