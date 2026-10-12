@@ -497,6 +497,9 @@ impl GatewayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelConfig {
+    /// Who serves the model: OpenRouter (or any compatible server at
+    /// `base_url`), or a ChatGPT subscription signed in with `login`.
+    pub provider: Provider,
     pub base_url: String,
     /// Required: there is no default model, so the operator always chooses.
     pub model: String,
@@ -510,6 +513,20 @@ pub struct ModelConfig {
     /// stream that fails before any text), with exponential backoff.
     pub max_retries: u32,
     pub prompt_cache: PromptCache,
+    /// ChatGPT only: how hard reasoning models think (`minimal`, `low`,
+    /// `medium`, `high`); unset leaves it to the model.
+    pub reasoning_effort: Option<String>,
+}
+
+/// Who serves the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    /// OpenRouter, or another OpenAI-compatible Chat Completions server.
+    #[default]
+    Openrouter,
+    /// A ChatGPT plan, through the Codex backend's Responses API.
+    Chatgpt,
 }
 
 /// Whether to mark `cache_control` breakpoints for prompt caching.
@@ -777,6 +794,7 @@ impl Default for ToolsConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
+            provider: Provider::Openrouter,
             base_url: DEFAULT_BASE_URL.into(),
             model: String::new(),
             api_key: None,
@@ -784,6 +802,7 @@ impl Default for ModelConfig {
             fallbacks: Vec::new(),
             max_retries: 3,
             prompt_cache: PromptCache::Auto,
+            reasoning_effort: None,
         }
     }
 }
@@ -831,6 +850,54 @@ impl Config {
             anyhow::bail!(crate::cli_text::NO_MODEL.now());
         }
         Ok(model)
+    }
+
+    /// Whether the model is a ChatGPT subscription.
+    pub fn chatgpt(&self) -> bool {
+        self.model.provider == Provider::Chatgpt
+    }
+
+    /// The key the model is called with: the OpenRouter key, or none
+    /// (empty) for a ChatGPT subscription, which signs in instead.
+    pub fn model_key(&self) -> Result<String> {
+        if self.chatgpt() {
+            return Ok(self.api_key().unwrap_or_default());
+        }
+        self.api_key()
+    }
+
+    /// Where the helpers that only speak OpenRouter (search, voice, review
+    /// and guide deciders) go: the model settings as they are, or for a
+    /// ChatGPT subscription the same model at OpenRouter as `openai/<id>`.
+    pub fn openrouter_model(&self) -> ModelConfig {
+        if !self.chatgpt() {
+            return self.model.clone();
+        }
+        let model = self.model.model.trim();
+        ModelConfig {
+            provider: Provider::Openrouter,
+            base_url: DEFAULT_BASE_URL.into(),
+            model: if model.contains('/') {
+                model.to_owned()
+            } else {
+                format!("openai/{model}")
+            },
+            ..self.model.clone()
+        }
+    }
+
+    /// The settings for a side model (summaries, images): on a ChatGPT
+    /// subscription an id with a `/` is an OpenRouter model.
+    pub fn side_model(&self, model: &str) -> ModelConfig {
+        let base = if self.chatgpt() && model.contains('/') {
+            self.openrouter_model()
+        } else {
+            self.model.clone()
+        };
+        ModelConfig {
+            model: model.to_owned(),
+            ..base
+        }
     }
 
     /// Environment wins so secrets never need to live in the config file.

@@ -109,6 +109,18 @@ const KEY_FROM_ENV: Tr = tr(
 );
 const KEY_FROM_FILE: Tr = tr("API key from config.toml", "API key 来自 config.toml");
 const KEY_OK: Tr = tr("the key works", "key 可用");
+const CHATGPT_IN: Tr = tr(
+    "the model runs on a ChatGPT subscription, signed in{}",
+    "模型使用 ChatGPT 订阅，已登录{}",
+);
+const CHATGPT_OUT: Tr = tr(
+    "the model runs on a ChatGPT subscription, but: {}",
+    "模型使用 ChatGPT 订阅，但是：{}",
+);
+const NO_OPENROUTER: Tr = tr(
+    "no OpenRouter key: web search, voice and the guide are off (optional with ChatGPT)",
+    "没有 OpenRouter key：联网搜索、语音和 guide 已关闭（用 ChatGPT 时可以不设置）",
+);
 const KEY_OK_CREDIT: Tr = tr("the key works ({})", "key 可用（{}）");
 const KEY_BAD: Tr = tr(
     "the key was refused ({}): create a new one at https://openrouter.ai/keys and run `openclaw-rs init`",
@@ -392,6 +404,9 @@ pub const ALL: &[Tr] = &[
     KEY_FROM_ENV,
     KEY_FROM_FILE,
     KEY_OK,
+    CHATGPT_IN,
+    CHATGPT_OUT,
+    NO_OPENROUTER,
     KEY_OK_CREDIT,
     KEY_BAD,
     KEY_UNCHECKED,
@@ -547,8 +562,16 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
     report.add([writable(&workspace)]);
 
     report.section(S_MODELS);
-    report.add(key_findings(&config));
+    report.add(key_findings(&config, state));
     let key = config.api_key().ok();
+    // A ChatGPT subscription is called signed in, with no key.
+    let call_key = if config.chatgpt() {
+        crate::chatgpt::read(&crate::chatgpt::auth_path(state))
+            .ok()
+            .map(|_| key.clone().unwrap_or_default())
+    } else {
+        key.clone()
+    };
     let catalog = crate::onboard::OpenRouter::new(&config.model.base_url)?;
     let mut models = None;
     let mut refused = false;
@@ -570,13 +593,14 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
     // Ids on other servers need not be OpenRouter's, so only OpenRouter's list is binding.
     let binding = models
         .as_deref()
-        .filter(|_| config.model.base_url.trim_end_matches('/') == DEFAULT_BASE_URL);
+        .filter(|_| config.model.base_url.trim_end_matches('/') == DEFAULT_BASE_URL)
+        .filter(|_| !config.chatgpt());
     report.add(model_findings(&config, binding));
     report.add([context_finding(&config, state, offline, binding).await]);
     // With a refused key every call fails the same way, so none is made.
     if !offline
         && !refused
-        && let (Some(key), Ok(model)) = (&key, config.model_id())
+        && let (Some(key), Ok(model)) = (&call_key, config.model_id())
     {
         report.add([call_findings(&config, key, model).await]);
         let vision = config
@@ -694,15 +718,24 @@ fn writable(dir: &Path) -> Finding {
     }
 }
 
-fn key_findings(config: &Config) -> Vec<Finding> {
+fn key_findings(config: &Config, state: &Path) -> Vec<Finding> {
     let mut findings = vec![match config.model_id() {
         Ok(model) => ok(MODEL_IS.with(&[model])),
         Err(_) => fail(NO_MODEL.now()),
     }];
+    if config.chatgpt() {
+        findings.push(
+            match crate::chatgpt::read(&crate::chatgpt::auth_path(state)) {
+                Ok(tokens) => ok(CHATGPT_IN.with(&[&tokens.who()])),
+                Err(err) => fail(CHATGPT_OUT.with(&[&format!("{err:#}")])),
+            },
+        );
+    }
     let from_env = std::env::var("OPENROUTER_API_KEY").is_ok_and(|k| !k.trim().is_empty());
     findings.push(match (from_env, config.api_key().is_ok()) {
         (true, _) => info(KEY_FROM_ENV.now()),
         (false, true) => info(KEY_FROM_FILE.now()),
+        (false, false) if config.chatgpt() => info(NO_OPENROUTER.now()),
         (false, false) => fail(NO_KEY.now()),
     });
     findings
@@ -774,11 +807,10 @@ fn model_findings(config: &Config, models: Option<&[ModelInfo]>) -> Vec<Finding>
 fn client(config: &Config, key: &str, model: &str) -> Result<crate::llm::Client> {
     crate::llm::Client::new(
         &crate::config::ModelConfig {
-            model: model.to_owned(),
             fallbacks: Vec::new(),
             max_retries: 0,
             request_timeout_secs: 60,
-            ..config.model.clone()
+            ..config.side_model(model)
         },
         key.to_owned(),
     )
@@ -981,6 +1013,10 @@ async fn mcp_findings(config: &Config, workspace: &Path, offline: bool) -> Vec<F
 async fn search_findings(config: &Config, offline: bool) -> Vec<Finding> {
     match config.search.provider {
         SearchProvider::Off => vec![info(SEARCH_OFF.now())],
+        // Off at start without the key (see the model section).
+        SearchProvider::Openrouter if config.chatgpt() && config.api_key().is_err() => {
+            vec![info(SEARCH_OFF.now())]
+        }
         SearchProvider::Openrouter => vec![info(SEARCH_OPENROUTER.now())],
         SearchProvider::Searxng => {
             let Some(url) = config

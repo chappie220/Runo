@@ -432,7 +432,8 @@ impl WindowCache {
 /// answer. The catalog is read at most once a week; `None` when no window
 /// is known, so the caller falls back.
 pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
-    let mut ids = vec![config.model.model.trim().to_owned()];
+    // OpenRouter's catalog knows ChatGPT's models as `openai/<id>`.
+    let mut ids = vec![config.openrouter_model().model.trim().to_owned()];
     if let Some(vision) = config
         .agent
         .vision_model
@@ -448,7 +449,7 @@ pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
         .unwrap_or_default();
     let fresh = crate::store::now() - cache.fetched_at < WINDOW_CACHE_SECS;
     if !fresh || ids.iter().any(|id| cache.find(id).is_none()) {
-        let fetched = match OpenRouter::new(&config.model.base_url) {
+        let fetched = match OpenRouter::new(&config.openrouter_model().base_url) {
             Ok(catalog) => tokio::time::timeout(Duration::from_secs(10), catalog.models())
                 .await
                 .ok()
@@ -477,7 +478,7 @@ pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
 
 /// Whether `config` lacks what a model call needs, so setup should run.
 pub fn needed(config: &Config) -> bool {
-    config.model_id().is_err() || config.api_key().is_err()
+    config.model_id().is_err() || config.model_key().is_err()
 }
 
 /// Whether both ends of the process are a terminal someone can answer in.

@@ -164,6 +164,13 @@ const COMMANDS: &[(&str, Tr)] = &[
         ),
     ),
     (
+        "login",
+        tr(
+            "Sign in with a ChatGPT plan and run the model on it",
+            "用 ChatGPT 订阅登录，并让模型使用它",
+        ),
+    ),
+    (
         "update",
         tr(
             "Install the latest release from GitHub, or go back to the previous binary",
@@ -314,6 +321,20 @@ const ARGS: &[(&str, &str, Tr)] = &[
         tr("Replace skills with the same name", "替换同名的 skill"),
     ),
     ("skills remove", "name", tr("Skill name", "skill 名")),
+    (
+        "login",
+        "import",
+        tr(
+            "Take the sign-in of the Codex CLI (default ~/.codex/auth.json)",
+            "直接用 Codex CLI 的登录（默认 ~/.codex/auth.json）",
+        ),
+    ),
+    (
+        "login",
+        "status",
+        tr("Show who is signed in", "显示当前登录的账号"),
+    ),
+    ("login", "logout", tr("Forget the sign-in", "退出登录")),
     (
         "update",
         "check",
@@ -638,6 +659,10 @@ pub const OPEN_TO_STRANGERS: Tr = tr(
     "access.guest or access.grants.\"{}:*\" lets anyone on {} run commands or write files; list trusted senders in {}.allow (the log shows each sender), or grant those capabilities to named senders only",
     "access.guest 或 access.grants.\"{}:*\" 让{}上的任何人都能运行命令或写文件；请在 {}.allow 里列出可信的发送者（日志会显示每个发送者），或只把这些权限授予指定的发送者",
 );
+pub const NEEDS_OPENROUTER: Tr = tr(
+    "{}: off, since it needs an OpenRouter key and the model runs on ChatGPT without one (set OPENROUTER_API_KEY to keep it)",
+    "{}：已关闭，因为它需要 OpenRouter key，而模型用的是 ChatGPT 订阅、没有设置 key（设置 OPENROUTER_API_KEY 即可保留）",
+);
 pub const NO_DIARY: Tr = tr(
     "No diary yet: turn on [life] and let the Gateway run through a night.",
     "还没有日记：打开 [life]，让 Gateway 运行过一个夜晚。",
@@ -719,6 +744,7 @@ mod tests {
         MAIL_ENTRY,
         NO_MODEL,
         OPEN_TO_STRANGERS,
+        NEEDS_OPENROUTER,
         NO_OWNERS,
         NO_DIARY,
         NEVER,

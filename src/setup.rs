@@ -137,8 +137,8 @@ const SECTIONS: &[Section] = &[
                 path: &["model", "model"],
                 label: tr("Model", "模型"),
                 help: tr(
-                    "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5.",
-                    "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5。",
+                    "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5; with chatgpt, a model your plan offers in Codex, e.g. gpt-5 or gpt-5-codex.",
+                    "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5；用 chatgpt 时填你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex。",
                 ),
                 kind: Kind::Model(Need::Tools),
             },
@@ -261,6 +261,24 @@ const SECTIONS: &[Section] = &[
                     "输入 - 使用该服务的默认模型，即上一行显示的那个。",
                 ),
                 kind: Kind::Text,
+            },
+            Field {
+                path: &["model", "provider"],
+                label: tr("Provider", "模型提供方"),
+                help: tr(
+                    "openrouter: an OpenRouter key; chatgpt: your ChatGPT plan, signed in with `openclaw-rs login` (which also sets this).",
+                    "openrouter：用 OpenRouter key；chatgpt：用你的 ChatGPT 订阅，先运行 `openclaw-rs login` 登录（登录时会自动设好这一项）。",
+                ),
+                kind: Kind::Choice(&["openrouter", "chatgpt"]),
+            },
+            Field {
+                path: &["model", "reasoning_effort"],
+                label: tr("Reasoning effort (ChatGPT)", "推理强度（ChatGPT）"),
+                help: tr(
+                    "chatgpt only: how hard the model thinks before answering; reset (-) leaves it to the model.",
+                    "只对 chatgpt 有效：模型回答前思考的程度；输入 - 交给模型自己决定。",
+                ),
+                kind: Kind::Choice(&["minimal", "low", "medium", "high"]),
             },
         ],
     },
@@ -1631,7 +1649,12 @@ fn field_with_arrows<R: BufRead, W: Write>(
     let lang = term.lang;
     let label = field.label.get(lang);
     let current = describe(doc, field, lang);
-    if let Kind::Model(need) = field.kind {
+    // ChatGPT's models are not in OpenRouter's list: typed instead.
+    let chatgpt =
+        field.path == ["model", "model"] && parse(doc).is_ok_and(|config| config.chatgpt());
+    if let Kind::Model(need) = field.kind
+        && !chatgpt
+    {
         let list = models.get(term)?;
         if !list.is_empty() {
             let items = [
@@ -2213,8 +2236,9 @@ mod tests {
         .unwrap();
         // Model (section 2): new id, keep key, two fallbacks, keep retries, cache by number,
         // a bad then a good budget, reset summary model, keep image and audio
-        // models, recall, max steps and the three guide fields.
-        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\ns\n";
+        // models, recall, max steps, the three guide fields, provider and
+        // reasoning effort.
+        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -2484,9 +2508,9 @@ mod tests {
             Ok(vec![model("maker/blind", false), model("other/sees", true)])
         });
         // Section 2, the model field, search "sees" and take it; then the
-        // guide provider (third from the end), one down to openrouter-chat;
+        // guide provider (fifth from the end), one down to openrouter-chat;
         // back out and save.
-        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\rj\rqq\r";
+        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\x1b[A\x1b[A\rj\rqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         drop(models);

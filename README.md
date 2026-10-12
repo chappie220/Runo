@@ -117,6 +117,40 @@ Run it again any time to change these; everything else is in
 ./target/release/openclaw-rs memory search chinese
 ```
 
+## ChatGPT subscription
+
+Instead of an OpenRouter key, the model can run on a ChatGPT plan (Plus,
+Pro, Team, …) the way the Codex CLI does: signed in with your ChatGPT
+account and billed to the plan's Codex allowance.
+
+```sh
+openclaw-rs login             # sign in in a browser
+openclaw-rs login --import    # or take the Codex CLI's sign-in (~/.codex/auth.json)
+openclaw-rs login --status    # who is signed in
+openclaw-rs login --logout
+```
+
+`login` prints an address to open in a browser. On the machine itself
+that is all; on a Raspberry Pi over SSH the last page does not load (it
+points at `localhost:1455`), so copy its whole address from the browser
+and paste it into the terminal. Forwarding the port first
+(`ssh -L 1455:localhost:1455 pi`) works too. The sign-in is saved in
+`<state dir>/chatgpt-auth.json` (mode 0600) and refreshed on its own. It
+then sets `model.provider = "chatgpt"`, and `model.model = "gpt-5"` when
+the model was an OpenRouter id, with no editing of config.toml; change
+either in `openclaw-rs config` (any model your plan offers in Codex, e.g.
+`gpt-5-codex`), and `model.reasoning_effort` (`minimal` … `high`).
+
+What only OpenRouter offers (web search with `search.provider =
+"openrouter"`, voice messages, the guide and OpenRouter review deciders)
+still needs `OPENROUTER_API_KEY`; without one they are off and the rest
+works. `summary_model` and `vision_model` ids with a `/` go to OpenRouter,
+others to ChatGPT. An imported sign-in shares its refresh token with
+Codex, and each refresh replaces it, so one of the two gets signed out
+sooner or later: a `login` of its own is better. When the plan's limit is
+reached the reply says so, with the time until it resets. This uses the
+same private backend as the Codex CLI, which OpenAI may change.
+
 ## Terminal UI
 
 `openclaw-rs tui [--session NAME]` is a full-screen chat. Like `chat`, the
@@ -1244,12 +1278,14 @@ and nothing is touched.
 
 ```toml
 [model]
+# provider = "openrouter"            # or "chatgpt": see "ChatGPT subscription"
 model = "..."                        # required: any OpenRouter model id
 base_url = "https://openrouter.ai/api/v1"
 request_timeout_secs = 300
 # fallbacks = ["openai/gpt-x"]       # OpenRouter tries these when `model` fails
 max_retries = 3                      # connection errors, HTTP 408/429/5xx, early stream errors
 prompt_cache = "auto"                # auto | on | off: cache_control breakpoints
+# reasoning_effort = "medium"        # chatgpt only: minimal | low | medium | high
 
 [agent]
 system_prompt = "You are a helpful personal assistant running on OpenClaw."
