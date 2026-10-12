@@ -515,8 +515,10 @@ pub struct ModelConfig {
     /// stream that fails before any text), with exponential backoff.
     pub max_retries: u32,
     pub prompt_cache: PromptCache,
-    /// ChatGPT only: how hard reasoning models think (`minimal`, `low`,
-    /// `medium`, `high`); unset leaves it to the model.
+    /// How hard reasoning models think: `auto` (unset; the lowest level the
+    /// model supports from `low` up), `off` (send nothing, the model
+    /// decides), or a level (`none`, `minimal`, `low`, `medium`, `high`,
+    /// `xhigh`).
     pub reasoning_effort: Option<String>,
 }
 

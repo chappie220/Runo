@@ -849,6 +849,57 @@ pub fn use_in_doc(doc: &mut toml_edit::DocumentMut) -> String {
     }
 }
 
+/// The Codex version named when listing models: the backend lists what a
+/// client of that version may use.
+const CLIENT_VERSION: &str = "0.50.0";
+
+/// The reasoning levels ChatGPT offers for `model`, from the Codex
+/// backend's model list at `base`; `None` when the list does not name it.
+pub async fn reasoning_levels(auth: &Auth, base: &str, model: &str) -> Result<Option<Vec<String>>> {
+    let (token, account) = auth.access(false).await?;
+    let mut request = http()
+        .get(format!(
+            "{}/models?client_version={CLIENT_VERSION}",
+            base.trim_end_matches('/')
+        ))
+        .bearer_auth(token)
+        .header("originator", "codex_cli_rs");
+    if let Some(account) = account {
+        request = request.header("chatgpt-account-id", account);
+    }
+    let response = request
+        .send()
+        .await
+        .context("cannot list ChatGPT's models")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("listing ChatGPT's models failed with HTTP {status}");
+    }
+    let body: Value = response
+        .json()
+        .await
+        .context("ChatGPT's model list is not JSON")?;
+    Ok(listed_levels(&body, model))
+}
+
+/// `model`'s levels in a model list, which names models by `slug`.
+fn listed_levels(body: &Value, model: &str) -> Option<Vec<String>> {
+    let entry = body["models"].as_array()?.iter().find(|m| {
+        m["slug"]
+            .as_str()
+            .or_else(|| m["id"].as_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case(model.trim()))
+    })?;
+    let levels = entry["supported_reasoning_levels"].as_array()?;
+    Some(
+        levels
+            .iter()
+            .filter_map(|l| l["effort"].as_str().or_else(|| l.as_str()))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 /// The Responses API request for a chat: the first system message becomes
 /// the instructions, later ones developer messages.
 pub fn request_body(
@@ -1344,6 +1395,27 @@ mod tests {
             r#"{"detail":"Unsupported model"}"#,
         );
         assert!(!limit && message.contains("Unsupported model"), "{message}");
+    }
+
+    #[test]
+    fn reads_reasoning_levels_from_the_model_list() {
+        let body = json!({"models": [
+            {"slug": "gpt-5", "supported_reasoning_levels": [
+                {"effort": "minimal"}, {"effort": "low"}, {"effort": "medium"}, {"effort": "high"}
+            ]},
+            {"slug": "gpt-5-codex", "supported_reasoning_levels": ["low", "medium", "high"]},
+            {"slug": "plain"}
+        ]});
+        assert_eq!(
+            listed_levels(&body, "gpt-5").unwrap(),
+            ["minimal", "low", "medium", "high"]
+        );
+        assert_eq!(
+            listed_levels(&body, "GPT-5-codex").unwrap(),
+            ["low", "medium", "high"]
+        );
+        assert_eq!(listed_levels(&body, "plain"), None);
+        assert_eq!(listed_levels(&body, "other"), None);
     }
 
     #[tokio::test]

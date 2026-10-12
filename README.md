@@ -150,7 +150,7 @@ and paste it into the terminal. Forwarding the port first
 then sets `model.provider = "chatgpt"`, and `model.model = "gpt-5"` when
 the model was an OpenRouter id, with no editing of config.toml; change
 either in `openclaw-rs config` (any model your plan offers in Codex, e.g.
-`gpt-5-codex`), and `model.reasoning_effort` (`minimal` … `high`).
+`gpt-5-codex`), and `model.reasoning_effort` (see below).
 
 Web search uses the subscription's own search (`search.provider =
 "chatgpt"`, which `openrouter` becomes without an OpenRouter key), and
@@ -1322,7 +1322,7 @@ request_timeout_secs = 300
 # fallbacks = ["openai/gpt-x"]       # OpenRouter tries these when `model` fails
 max_retries = 3                      # connection errors, HTTP 408/429/5xx, early stream errors
 prompt_cache = "auto"                # auto | on | off: cache_control breakpoints
-# reasoning_effort = "medium"        # chatgpt only: minimal | low | medium | high
+# reasoning_effort = "auto"          # auto | off | none | minimal | low | medium | high | xhigh
 
 [agent]
 system_prompt = "You are a helpful personal assistant running on OpenClaw."
@@ -1371,6 +1371,19 @@ the result says how many bytes were omitted. `ask` prompts on the controlling te
 the action is declined and the model is told so. Tools set to `deny` are not
 offered to the model at all. `browser` is offered when the host has a
 browser installed; see [Browser](#browser).
+
+## Thinking level
+
+`model.reasoning_effort` sets how hard the model thinks before answering,
+for OpenRouter and ChatGPT alike. Left unset (or `auto`), openclaw-rs reads
+the levels the model supports and takes the lowest from `low` up — usually
+`low`; a model whose lowest level is higher gets that one. With ChatGPT the
+levels come from the Codex model list (falling back to the model name);
+with OpenRouter, a model whose catalog entry lists `reasoning` gets `low`,
+and a model without reasoning gets nothing. `off` sends nothing and leaves
+it to the model; a level (`none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`) is sent as is. Change it in `openclaw-rs config` → Model →
+Provider and sign-in → Thinking level.
 
 ## Reliability, caching and cost
 

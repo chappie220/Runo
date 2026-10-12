@@ -38,6 +38,8 @@ pub struct ModelInfo {
     pub tools: bool,
     /// Longest answer the provider allows, when listed.
     pub max_output: Option<u64>,
+    /// Thinks before answering, at a level it can be asked for.
+    pub reasoning: bool,
 }
 
 /// What checking an API key found.
@@ -157,6 +159,7 @@ fn parse_models(body: &Json) -> Vec<ModelInfo> {
                 images: has("/architecture/input_modalities", "image"),
                 audio: has("/architecture/input_modalities", "audio"),
                 tools: has("/supported_parameters", "tools"),
+                reasoning: has("/supported_parameters", "reasoning"),
                 max_output: m
                     .pointer("/top_provider/max_completion_tokens")
                     .and_then(Json::as_u64),
@@ -467,6 +470,9 @@ struct WindowCache {
     fetched_at: i64,
     /// Model id → (window, longest answer).
     models: std::collections::BTreeMap<String, (u64, Option<u64>)>,
+    /// The models that think; `None` in caches from before it was kept.
+    #[serde(default)]
+    reasoning: Option<std::collections::BTreeSet<String>>,
 }
 
 const WINDOW_CACHE: &str = "model-windows.json";
@@ -498,13 +504,35 @@ pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
     {
         ids.push(vision.trim().to_owned());
     }
+    let cache = catalog_cache(config, state, &ids).await;
+    ids.iter()
+        .filter_map(|id| cache.find(id))
+        .map(|(window, max_output)| budget_for(window as usize, max_output))
+        .min()
+}
+
+/// Whether OpenRouter lists the main model as one that thinks; `None` when
+/// the catalog does not know it.
+pub async fn reasons(config: &Config, state: &Path) -> Option<bool> {
+    let id = config.model.model.trim().to_owned();
+    let cache = catalog_cache(config, state, std::slice::from_ref(&id)).await;
+    cache.find(&id)?;
+    let base = id.split(':').next().unwrap_or(&id);
+    let thinking = cache.reasoning.as_ref()?;
+    Some(thinking.contains(&id) || thinking.contains(base))
+}
+
+/// The cached catalog, read again from OpenRouter when a week old or when
+/// it does not know one of `ids`.
+async fn catalog_cache(config: &Config, state: &Path, ids: &[String]) -> WindowCache {
     let path = state.join(WINDOW_CACHE);
     let mut cache: WindowCache = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     let fresh = crate::store::now() - cache.fetched_at < WINDOW_CACHE_SECS;
-    if !fresh || ids.iter().any(|id| cache.find(id).is_none()) {
+    let complete = cache.reasoning.is_some() && ids.iter().all(|id| cache.find(id).is_some());
+    if !fresh || !complete {
         let fetched = match OpenRouter::new(&config.openrouter_model().base_url) {
             Ok(catalog) => tokio::time::timeout(Duration::from_secs(10), catalog.models())
                 .await
@@ -515,6 +543,13 @@ pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
         if let Some(models) = fetched.filter(|m| !m.is_empty()) {
             cache = WindowCache {
                 fetched_at: crate::store::now(),
+                reasoning: Some(
+                    models
+                        .iter()
+                        .filter(|m| m.reasoning)
+                        .map(|m| m.id.clone())
+                        .collect(),
+                ),
                 models: models
                     .into_iter()
                     .map(|m| (m.id, (m.context, m.max_output)))
@@ -526,10 +561,7 @@ pub async fn auto_context(config: &Config, state: &Path) -> Option<usize> {
             }
         }
     }
-    ids.iter()
-        .filter_map(|id| cache.find(id))
-        .map(|(window, max_output)| budget_for(window as usize, max_output))
-        .min()
+    cache
 }
 
 /// Whether `config` lacks what a model call needs, so setup should run.
@@ -1224,6 +1256,7 @@ mod tests {
             audio: false,
             tools,
             max_output: None,
+            reasoning: false,
         }
     }
 
@@ -1495,6 +1528,7 @@ mod tests {
         let cache = WindowCache {
             fetched_at: 0,
             models: [("a/b".to_owned(), (131_072, None))].into(),
+            reasoning: Some(["a/b".to_owned()].into()),
         };
         assert_eq!(cache.find("a/b:free"), Some((131_072, None)));
         assert_eq!(cache.find("c/d"), None);
@@ -1511,19 +1545,19 @@ mod tests {
             {"id": "a/b", "name": "A: B", "context_length": 1_000_000,
              "architecture": {"input_modalities": ["text", "image"]},
              "pricing": {"prompt": "0.000003", "completion": "0.000015"},
-             "supported_parameters": ["tools", "temperature"]},
+             "supported_parameters": ["tools", "temperature", "reasoning"]},
             {"id": "c/d"}
         ]});
         let models = parse_models(&body);
         assert_eq!(models[0].id, "a/b");
-        assert!(models[0].images && models[0].tools);
+        assert!(models[0].images && models[0].tools && models[0].reasoning);
         let (input, output) = models[0].price.unwrap();
         assert!((input - 3.0).abs() < 1e-9 && (output - 15.0).abs() < 1e-9);
         assert_eq!(
             describe(&models[0], Lang::En),
             "a/b 🖼  (A: B · 1M context · $3 / $15 per M tokens in/out)"
         );
-        assert!(!models[1].tools && models[1].price.is_none());
+        assert!(!models[1].tools && !models[1].reasoning && models[1].price.is_none());
         assert_eq!(money(0.004), "0.004");
         let key = serde_json::json!({"data": {"limit_remaining": 4.5, "usage": 5.5}});
         assert_eq!(credit(&key).as_deref(), Some("$4.50 left"));

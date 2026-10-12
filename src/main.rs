@@ -30,6 +30,7 @@ mod mcp;
 mod memory;
 mod onboard;
 mod qq;
+mod reasoning;
 mod review;
 mod search;
 mod service;
@@ -880,7 +881,8 @@ async fn build_agent(
         .then(|| voice::Transcriber::new(&side, config.agent.audio_model.as_deref(), &api_key))
         .transpose()?;
     Ok(Agent {
-        model: llm::Client::new(&config.model, api_key)?,
+        model: llm::Client::new(&config.model, api_key)?
+            .with_reasoning(reasoning::effort(config, state).await),
         summarizer,
         vision,
         voice,

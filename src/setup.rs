@@ -230,12 +230,14 @@ const GROUPS: &[Group] = &[
                     },
                     Field {
                         path: &["model", "reasoning_effort"],
-                        label: tr("Reasoning effort (ChatGPT)", "推理强度（ChatGPT）"),
+                        label: tr("Thinking level", "思考档位"),
                         help: tr(
-                            "chatgpt only: how hard the model thinks before answering; reset (-) leaves it to the model.",
-                            "只对 chatgpt 有效：模型回答前思考的程度；输入 - 交给模型自己决定。",
+                            "How hard the model thinks before answering. auto (the default) reads the levels the model supports and takes the lowest from low up; off sends nothing and leaves it to the model; or pick a level.",
+                            "模型回答前思考的程度。auto（默认）读取模型支持的档位，自动选从 low 起最低的一档；off 不发送，交给模型自己决定；也可以指定一档。",
                         ),
-                        kind: Kind::Choice(&["minimal", "low", "medium", "high"]),
+                        kind: Kind::Choice(&[
+                            "auto", "off", "none", "minimal", "low", "medium", "high", "xhigh",
+                        ]),
                     },
                     Field {
                         path: &["model", "fallbacks"],
@@ -3055,6 +3057,7 @@ mod tests {
             audio: false,
             tools: true,
             max_output: None,
+            reasoning: false,
         };
         let mut loads = 0;
         let mut models = Models::new(|| {

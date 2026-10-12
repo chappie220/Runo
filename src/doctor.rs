@@ -1339,6 +1339,7 @@ mod tests {
             audio: images,
             tools,
             max_output: None,
+            reasoning: false,
         }
     }
 
