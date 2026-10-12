@@ -34,6 +34,11 @@ pub fn read<T>(f: impl FnOnce(&Config) -> T) -> Option<T> {
     Some(f(&config))
 }
 
+/// The file the live settings come from; `None` before `init`.
+pub fn path() -> Option<PathBuf> {
+    LIVE.get().map(|live| live.path.clone())
+}
+
 /// Loads the file again after it changed.
 pub fn reload() -> Result<()> {
     let Some(live) = LIVE.get() else {

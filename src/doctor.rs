@@ -348,6 +348,10 @@ const NO_OWNERS: Tr = tr(
     "access.owners 为空，所以在聊天和邮件里你自己也只是访客：把你的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址> 加进去",
 );
 const ACCESS_OK: Tr = tr("owners: {}", "owner：{}");
+const CLAIM_OPEN: Tr = tr(
+    "access.first_chat_owner is on and {} has no owner yet: whoever writes to the bot there first in a private chat gets every tool; write to it yourself, then turn it off",
+    "access.first_chat_owner 已打开，而 {} 还没有所有者：谁先在那里私聊机器人，谁就拿到所有工具；请自己先私聊，然后关掉它",
+);
 const SERVICE_INSTALLED: Tr = tr(
     "{}. A system service runs as its own account with that account's config, which may not be this one",
     "{}。系统服务以自己的账户运行，用的是那个账户的配置，不一定是这一份",
@@ -497,6 +501,7 @@ pub const ALL: &[Tr] = &[
     MAIL_FAILED,
     NO_OWNERS,
     ACCESS_OK,
+    CLAIM_OPEN,
     SERVICE_INSTALLED,
     SERVICE_MISSING,
     SUMMARY_OK,
@@ -1299,15 +1304,25 @@ fn limits_findings(config: &Config) -> Vec<Finding> {
 
 fn access_findings(config: &Config) -> Vec<Finding> {
     let owners = &config.access.owners;
-    if owners.is_empty() {
-        if config.any_channel() {
-            vec![warn(NO_OWNERS.now())]
-        } else {
-            Vec::new()
-        }
-    } else {
-        vec![ok(ACCESS_OK.with(&[&owners.join(", ")]))]
+    let unowned: Vec<&str> = [
+        ("qq", config.qq.enabled),
+        ("feishu", config.feishu.enabled),
+        ("zulip", config.zulip.enabled),
+    ]
+    .into_iter()
+    .filter(|(app, on)| *on && config.access.unowned(app))
+    .map(|(app, _)| app)
+    .collect();
+    let mut findings = Vec::new();
+    if config.access.first_chat_owner && !unowned.is_empty() {
+        findings.push(warn(CLAIM_OPEN.with(&[&unowned.join(", ")])));
+    } else if owners.is_empty() && config.any_channel() {
+        findings.push(warn(NO_OWNERS.now()));
     }
+    if !owners.is_empty() {
+        findings.push(ok(ACCESS_OK.with(&[&owners.join(", ")])));
+    }
+    findings
 }
 
 #[cfg(test)]

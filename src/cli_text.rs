@@ -667,6 +667,10 @@ pub const NO_DIARY: Tr = tr(
     "No diary yet: turn on [life] and let the Gateway run through a night.",
     "还没有日记：打开 [life]，让 Gateway 运行过一个夜晚。",
 );
+pub const CLAIMABLE: Tr = tr(
+    "access: first_chat_owner is on, so the first private chat on {} makes that person its owner; write to the bot yourself, then turn it off with `openclaw-rs config`",
+    "权限：first_chat_owner 已打开，{} 上第一个私聊机器人的人会成为所有者；请自己先私聊机器人，然后用 `openclaw-rs config` 关掉它",
+);
 pub const NO_OWNERS: Tr = tr(
     "access: no access.owners, so every chat and email sender is a guest that can only use {}; add yourself as \"qq:<openid>\", \"feishu:<open_id>\", \"zulip:<email>\" or \"mail:<address>\" to use memory, cron, files or shell from there",
     "权限：没有设置 access.owners，所以每个聊天和邮件发送者都是访客，只能使用 {}；把自己加为 \"qq:<openid>\"、\"feishu:<open_id>\"、\"zulip:<邮箱>\" 或 \"mail:<地址>\"，才能从那里使用记忆、定时任务、文件或 shell",
@@ -746,6 +750,7 @@ mod tests {
         OPEN_TO_STRANGERS,
         NEEDS_OPENROUTER,
         NO_OWNERS,
+        CLAIMABLE,
         NO_DIARY,
         NEVER,
         CRON_ADDED,

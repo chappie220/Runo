@@ -130,6 +130,10 @@ openclaw-rs login --status    # who is signed in
 openclaw-rs login --logout
 ```
 
+`openclaw-rs init` offers the same sign-in as its second step, and
+`openclaw-rs config` has it at the end of "Model and context" ("Sign in to
+ChatGPT"), so there is no separate command to remember.
+
 `login` prints an address to open in a browser. On the machine itself
 that is all; on a Raspberry Pi over SSH the last page does not load (it
 points at `localhost:1455`), so copy its whole address from the browser
@@ -1112,12 +1116,25 @@ not offered (or is talked into it) is still refused:
 ```toml
 [access]
 owners = ["qq:<your openid>", "feishu:<your open_id>", "zulip:me@example.com", "mail:me@example.com"]
+first_chat_owner = false            # true: the first private chat on an app without owner claims it
 guest = ["web_search", "web_fetch"] # what any other sender may use
 [access.grants]                      # more for named senders, sessions or channels
 "qq:<friend openid>" = ["memory", "cron"]
 "qq:group:<group openid>" = ["web_search"]
 "mail:*" = ["memory"]
 ```
+
+Finding your own openid or open_id is the hard part, so with
+`first_chat_owner = true` (off by default; asked by `openclaw-rs init`, and
+"First chat becomes owner" in `openclaw-rs config`, section "Access") the
+first person to write to the bot in a private chat on QQ, Feishu or Zulip
+becomes that app's owner, and is added to `owners` in config.toml. Each app
+has its own: once QQ has an owner, nobody else claims QQ, but Feishu is still
+open. Groups and email never claim anything. Write to the bot yourself right
+after turning it on, and turn it off again afterwards: until you do, whoever
+reaches the bot first gets every tool. "Revoke a chat owner" in the same
+section (also offered by `init`) removes the owner you pick; with
+`first_chat_owner` on, the next private chat on that app claims it again.
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,

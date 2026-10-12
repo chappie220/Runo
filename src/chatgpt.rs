@@ -52,6 +52,14 @@ const BAD_PASTE: Tr = tr(
     "That is not the address the sign-in ended on (or its state does not match); try again.",
     "这不是登录最后跳转到的地址（或 state 不匹配），请再试一次。",
 );
+const FINISH_PROMPT: Tr = tr(
+    "Paste the address, or press Enter once the browser says you are signed in: ",
+    "粘贴地址，或在浏览器显示已登录后直接按回车：",
+);
+const NOT_YET: Tr = tr(
+    "Not signed in yet: finish in the browser, or paste the address the last page ended on.",
+    "还没有登录完成：请在浏览器里完成登录，或粘贴最后一页的地址。",
+);
 const PORT_BUSY: Tr = tr(
     "(Port 1455 is busy, so only pasting works this time.)",
     "（1455 端口被占用，这次只能粘贴地址。）",
@@ -91,6 +99,8 @@ const TEXTS: &[Tr] = &[
     EXPIRED,
     OPEN_URL,
     PASTE,
+    FINISH_PROMPT,
+    NOT_YET,
     BAD_PASTE,
     PORT_BUSY,
     SIGNED_IN,
@@ -445,32 +455,141 @@ async fn exchange(issuer: &str, code: &str, verifier: &str) -> Result<Tokens> {
     Tokens::from_response(&body, None)
 }
 
-/// Signs in in a browser and returns the tokens.
-pub async fn login(issuer: &str) -> Result<Tokens> {
-    let pkce = pkce()?;
-    let state = hex(&random_bytes(16)?);
-    eprintln!(
-        "{}\n",
-        OPEN_URL.with(&[&authorize_url(issuer, &pkce, &state)])
-    );
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
-        .await
-        .ok();
-    if listener.is_none() {
-        eprintln!("{}", PORT_BUSY.now());
+/// A sign-in under way: the address to open, and the local callback that
+/// may receive the code.
+pub struct Pending {
+    issuer: String,
+    url: String,
+    state: String,
+    verifier: String,
+    callback: Option<tokio::task::JoinHandle<Result<String>>>,
+}
+
+impl Pending {
+    /// Starts a sign-in, listening on the callback port when it is free.
+    pub async fn start(issuer: &str) -> Result<Self> {
+        let pkce = pkce()?;
+        let state = hex(&random_bytes(16)?);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
+            .await
+            .ok();
+        Ok(Self {
+            issuer: issuer.to_owned(),
+            url: authorize_url(issuer, &pkce, &state),
+            callback: listener.map(|l| tokio::spawn(callback(l, state.clone()))),
+            state,
+            verifier: pkce.verifier,
+        })
     }
-    let from_browser = async {
-        match listener {
-            Some(listener) => callback(listener, state.clone()).await,
+
+    /// What to show: where to sign in, and how to finish.
+    pub fn instructions(&self, lang: crate::i18n::Lang) -> String {
+        let mut text = OPEN_URL.fill(lang, &[&self.url]);
+        if self.callback.is_none() {
+            text.push('\n');
+            text.push_str(PORT_BUSY.get(lang));
+        }
+        text
+    }
+
+    /// The code in a pasted address; `None` when it is not the right one.
+    pub fn code_from(&self, pasted: &str) -> Option<String> {
+        pasted_code(pasted, &self.state)
+    }
+
+    /// The code the browser already sent to the callback, if it did.
+    pub async fn received(&mut self) -> Result<Option<String>> {
+        match &mut self.callback {
+            Some(handle) if handle.is_finished() => {
+                let code = handle.await??;
+                self.callback = None;
+                Ok(Some(code))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Waits for the browser; forever when the port was busy.
+    async fn browser_code(&mut self) -> Result<String> {
+        match &mut self.callback {
+            Some(handle) => handle.await?,
             None => std::future::pending().await,
         }
-    };
+    }
+
+    /// Trades the code for tokens.
+    pub async fn finish(self, code: &str) -> Result<Tokens> {
+        if let Some(handle) = &self.callback {
+            handle.abort();
+        }
+        exchange(&self.issuer, code, &self.verifier).await
+    }
+}
+
+/// Signs in in a browser and returns the tokens.
+pub async fn login(issuer: &str) -> Result<Tokens> {
+    let mut pending = Pending::start(issuer).await?;
+    eprintln!("{}\n", pending.instructions(crate::i18n::current()));
+    let state = pending.state.clone();
     let code = tokio::select! {
-        code = from_browser => code?,
-        code = pasted(state.clone()) => code?,
+        code = pending.browser_code() => code?,
+        code = pasted(state) => code?,
     };
     eprintln!();
-    exchange(issuer, &code, &pkce.verifier).await
+    pending.finish(&code).await
+}
+
+/// Signs in on `term` (`openclaw-rs init` and `config`) and saves the
+/// sign-in in `state`. Returns who signed in, or `None` when input ended.
+/// Blocks; call it on a runtime worker.
+pub fn sign_in(term: &mut dyn crate::setup::Prompt, state: &Path) -> Result<Option<String>> {
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut pending = Pending::start(ISSUER).await?;
+            term.say(&pending.instructions(term.lang()))?;
+            term.say("")?;
+            let code = loop {
+                let Some(line) = term.ask(FINISH_PROMPT.get(term.lang()))? else {
+                    return Ok(None);
+                };
+                if line.is_empty() {
+                    match pending.received().await? {
+                        Some(code) => break code,
+                        None => term.say(NOT_YET.get(term.lang()))?,
+                    }
+                    continue;
+                }
+                match pending.code_from(&line) {
+                    Some(code) => break code,
+                    None => term.say(BAD_PASTE.get(term.lang()))?,
+                }
+            };
+            let tokens = pending.finish(&code).await?;
+            std::fs::create_dir_all(state)
+                .with_context(|| format!("cannot create {}", state.display()))?;
+            let path = auth_path(state);
+            write(&path, &tokens)?;
+            let line = SIGNED_IN.fill(term.lang(), &[&tokens.who(), &path.display().to_string()]);
+            term.say(&line)?;
+            Ok(Some(who(&tokens)))
+        })
+    })
+}
+
+/// Who is signed in, for menus: the email (and plan), or "ChatGPT".
+fn who(tokens: &Tokens) -> String {
+    let who = tokens.who();
+    let who = who.trim().trim_start_matches('(').trim_end_matches(')');
+    if who.is_empty() {
+        "ChatGPT".to_owned()
+    } else {
+        who.to_owned()
+    }
+}
+
+/// Who is signed in with the sign-in saved in `state`, if anyone.
+pub fn signed_in(state: &Path) -> Option<String> {
+    read(&auth_path(state)).ok().map(|t| who(&t))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -571,6 +690,15 @@ pub fn codex_auth_file() -> PathBuf {
 /// or unset. Returns the model now set.
 pub fn use_in_config(config: &Path) -> Result<String> {
     let mut doc = crate::setup::load(config)?;
+    let chosen = use_in_doc(&mut doc);
+    let text = doc.to_string();
+    toml::from_str::<crate::config::Config>(&text).context("the new settings do not load")?;
+    crate::setup::write_private(config, &text)?;
+    Ok(chosen)
+}
+
+/// `use_in_config` on a document being edited.
+pub fn use_in_doc(doc: &mut toml_edit::DocumentMut) -> String {
     if !doc.contains_table("model") {
         doc["model"] = toml_edit::table();
     }
@@ -582,16 +710,12 @@ pub fn use_in_config(config: &Path) -> Result<String> {
         .unwrap_or("")
         .trim()
         .to_owned();
-    let chosen = if current.is_empty() || current.contains('/') {
+    if current.is_empty() || current.contains('/') {
         model["model"] = toml_edit::value(DEFAULT_MODEL);
         DEFAULT_MODEL.to_owned()
     } else {
         current
-    };
-    let text = doc.to_string();
-    toml::from_str::<crate::config::Config>(&text).context("the new settings do not load")?;
-    crate::setup::write_private(config, &text)?;
-    Ok(chosen)
+    }
 }
 
 /// The Responses API request for a chat: the first system message becomes

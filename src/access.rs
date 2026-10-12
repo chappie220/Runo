@@ -146,6 +146,9 @@ pub struct AccessConfig {
     /// Senders treated like the terminal: `qq:<openid>`, `feishu:<open_id>`,
     /// `zulip:<email>` or `mail:<address>`.
     pub owners: Vec<String>,
+    /// On a chat app (QQ, Feishu, Zulip) with no owner yet, the first
+    /// person to write to the bot in a private chat becomes its owner.
+    pub first_chat_owner: bool,
     /// What any other sender may do.
     pub guest: Vec<Capability>,
     /// Extra capabilities by sender (`qq:<openid>`, `mail:<address>`), by
@@ -158,6 +161,7 @@ impl Default for AccessConfig {
     fn default() -> Self {
         Self {
             owners: Vec::new(),
+            first_chat_owner: false,
             guest: vec![Capability::WebSearch, Capability::WebFetch],
             grants: BTreeMap::new(),
         }
@@ -195,6 +199,27 @@ impl AccessConfig {
         }
     }
 
+    /// Whether `id`, writing in `session`, becomes an owner by writing
+    /// first: `first_chat_owner` is on, `session` is their private chat on a
+    /// chat app, and nobody owns that app yet.
+    pub fn claimable(&self, id: &str, session: &str) -> bool {
+        let Some((channel, _)) = id.split_once(':') else {
+            return false;
+        };
+        self.first_chat_owner
+            && crate::chat::private_sender(session).is_some_and(|s| s.eq_ignore_ascii_case(id))
+            && self.unowned(channel)
+    }
+
+    /// Whether no owner is on `channel` (`qq`, `feishu`, `zulip`, `mail`).
+    pub fn unowned(&self, channel: &str) -> bool {
+        !self.owners.iter().any(|o| {
+            o.trim()
+                .split_once(':')
+                .is_some_and(|(c, _)| c.eq_ignore_ascii_case(channel))
+        })
+    }
+
     /// Capabilities every sender on `channel` gets without being named, which
     /// is what an open allow-list hands to strangers.
     pub fn unnamed(&self, channel: &str) -> BTreeSet<Capability> {
@@ -209,6 +234,25 @@ impl AccessConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_private_chat_on_an_app_without_owner_claims_it() {
+        let mut config: AccessConfig =
+            toml::from_str(r#"owners = ["zulip:me@example.org"]"#).unwrap();
+        // Off by default.
+        assert!(!config.claimable("qq:ALICE", "qq:c2c:ALICE"));
+        config.first_chat_owner = true;
+        assert!(config.claimable("qq:ALICE", "qq:c2c:ALICE"));
+        assert!(config.claimable("feishu:ou_a", "feishu:dm:ou_a"));
+        // Not in a group, not in someone else's chat, not by email.
+        assert!(!config.claimable("qq:ALICE", "qq:group:G"));
+        assert!(!config.claimable("qq:ALICE", "qq:c2c:BOB"));
+        assert!(!config.claimable("mail:a@example.org", "mail:a@example.org"));
+        // Zulip already has its owner.
+        assert!(!config.claimable("zulip:eve@example.org", "zulip:dm:eve@example.org"));
+        config.owners.push("QQ:BOB".into());
+        assert!(!config.claimable("qq:ALICE", "qq:c2c:ALICE"));
+    }
 
     #[test]
     fn channels_resolve_to_owner_guest_or_granted() {

@@ -170,9 +170,45 @@ const WELCOME: Tr = tr(
     "Welcome to OpenClaw. A few questions and you are ready; everything else can be changed later with `openclaw-rs config`.",
     "欢迎使用 OpenClaw。回答几个问题就能开始用；其他设置以后可以用 `openclaw-rs config` 修改。",
 );
-const STEP: Tr = tr("\n[{}/6] {}", "\n[{}/6] {}");
+const STEP: Tr = tr("\n[{}/7] {}", "\n[{}/7] {}");
 const STEP_LANGUAGE: Tr = tr("Language", "语言");
-const STEP_KEY: Tr = tr("OpenRouter API key", "OpenRouter API key");
+const STEP_KEY: Tr = tr("Model provider", "模型提供方");
+const STEP_OWNERS: Tr = tr("Owners on chat apps", "聊天平台的所有者");
+const PROVIDER_TITLE: Tr = tr("Which models?", "用哪里的模型？");
+const PROVIDER_OPENROUTER: Tr = tr("OpenRouter, with an API key", "OpenRouter，用 API key");
+const PROVIDER_CHATGPT: Tr = tr(
+    "My ChatGPT subscription (sign in)",
+    "我的 ChatGPT 订阅（登录）",
+);
+const PICK_PROVIDER: Tr = tr(
+    "1) OpenRouter, with an API key  2) My ChatGPT subscription (sign in) [{}]: ",
+    "1) OpenRouter，用 API key  2) 我的 ChatGPT 订阅（登录）[{}]：",
+);
+const KEEP_SIGN_IN: Tr = tr(
+    "Keep the ChatGPT sign-in ({})? [Y/n]: ",
+    "保留当前的 ChatGPT 登录（{}）？[Y/n]：",
+);
+const SIGN_IN_FAILED: Tr = tr("✗ Could not sign in: {}", "✗ 登录失败：{}");
+const SIGN_IN_RETRY: Tr = tr("Try again? [Y/n]: ", "再试一次？[Y/n]：");
+const SIGNED_IN_AS: Tr = tr("✓ Signed in to ChatGPT: {}", "✓ 已登录 ChatGPT：{}");
+const CHATGPT_MODEL: Tr = tr(
+    "Model your plan offers in Codex, e.g. gpt-5 or gpt-5-codex [{}]: ",
+    "你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex [{}]：",
+);
+const OWNERS_HOW: Tr = tr(
+    "On QQ, Feishu and Zulip only owners may use every tool (memory, files, shell); everyone else is a guest. Owners are listed in access.owners (`openclaw-rs config`, section \"Access\").",
+    "在 QQ、飞书和 Zulip 上，只有所有者能使用全部工具（记忆、文件、shell），其他人都是访客。所有者记在 access.owners 里（`openclaw-rs config` 的“权限”一节）。",
+);
+const OWNERS_NOW: Tr = tr("Owners now: {}", "当前所有者：{}");
+const FIRST_CHAT_ASK: Tr = tr(
+    "Let the first person to write to the bot in a private chat on an app without an owner become its owner? Write to it yourself first, then turn this off in `openclaw-rs config`. [y/N]: ",
+    "让每个还没有所有者的平台上，第一个私聊机器人的人自动成为所有者？请自己先去私聊机器人，之后再到 `openclaw-rs config` 里关掉。[y/N]：",
+);
+const FIRST_CHAT_ON: Tr = tr(
+    "✓ The first private chat on QQ, Feishu or Zulip claims that app. Until you have written, anyone who reaches the bot first gets every tool.",
+    "✓ QQ、飞书或 Zulip 上第一个私聊的人会成为该平台的所有者。在你自己发消息之前，谁先找到机器人谁就拿到所有工具。",
+);
+const REVOKE_ASK: Tr = tr("Revoke one of them? [y/N]: ", "要撤销其中一个吗？[y/N]：");
 const STEP_MODEL: Tr = tr("Main model", "主模型");
 const STEP_IMAGES: Tr = tr("Images", "图片");
 const STEP_GATEWAY: Tr = tr("Gateway", "Gateway");
@@ -340,6 +376,21 @@ pub const ALL: &[Tr] = &[
     STEP,
     STEP_LANGUAGE,
     STEP_KEY,
+    STEP_OWNERS,
+    PROVIDER_TITLE,
+    PROVIDER_OPENROUTER,
+    PROVIDER_CHATGPT,
+    PICK_PROVIDER,
+    KEEP_SIGN_IN,
+    SIGN_IN_FAILED,
+    SIGN_IN_RETRY,
+    SIGNED_IN_AS,
+    CHATGPT_MODEL,
+    OWNERS_HOW,
+    OWNERS_NOW,
+    FIRST_CHAT_ASK,
+    FIRST_CHAT_ON,
+    REVOKE_ASK,
     STEP_MODEL,
     STEP_IMAGES,
     STEP_GATEWAY,
@@ -499,11 +550,14 @@ pub async fn run(path: &Path, lang: Lang, offer_gateway: bool) -> Result<Option<
         crate::elevate::install_packages(&["chromium"])?;
         Ok(crate::browser::find_installed())
     };
+    let (signed_in, sign_in) = setup::chatgpt_sign_in();
     let host = Host {
         browser: crate::browser::find_installed().filter(|_| config.browser.enabled),
         install_browser: (config.browser.enabled && crate::elevate::can_ask())
             .then_some(&mut install as &mut dyn FnMut() -> Result<Option<PathBuf>>),
         gateway: offer_gateway.then_some(&mut start as &mut dyn FnMut() -> Result<()>),
+        sign_in: Some(sign_in),
+        signed_in,
     };
     // Typed answers come from a blocking terminal; that is all this process does now.
     wizard(path, &mut term, &catalog, host).await
@@ -519,6 +573,10 @@ pub struct Host<'a> {
     pub install_browser: Option<&'a mut dyn FnMut() -> Result<Option<PathBuf>>>,
     /// Starts the Gateway in the background once the config is saved.
     pub gateway: Option<&'a mut dyn FnMut() -> Result<()>>,
+    /// Signs in to ChatGPT; without it, only OpenRouter is offered.
+    pub sign_in: Option<setup::SignIn<'a>>,
+    /// Who is signed in to ChatGPT already.
+    pub signed_in: Option<String>,
 }
 
 /// The setup itself, on any terminal and catalog.
@@ -532,6 +590,8 @@ pub async fn wizard<R: BufRead, W: Write>(
         mut browser,
         install_browser,
         gateway,
+        sign_in,
+        signed_in,
     } = host;
     let mut doc = setup::load(path)?;
     let config = setup::parse(&doc).unwrap_or_default();
@@ -568,78 +628,110 @@ pub async fn wizard<R: BufRead, W: Write>(
     };
     setup::set(&mut doc, &["language"], Value::from(lang_name));
 
-    // 2. Key.
+    // 2. Where the models run: OpenRouter with a key, or a ChatGPT plan.
     step(term, 2, STEP_KEY)?;
-    match std::env::var("OPENROUTER_API_KEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty())
-    {
-        Some(key) => {
-            term.tell(KEY_FROM_ENV, &[])?;
-            term.tell(KEY_CHECKING, &[])?;
-            match catalog.check_key(&key).await {
-                KeyCheck::Valid(_) => term.tell(KEY_OK, &[])?,
-                KeyCheck::Invalid(why) => {
-                    term.tell(KEY_ENV_BAD, &[&why])?;
-                    return aborted(term);
-                }
-                KeyCheck::Unknown(why) => term.tell(KEY_UNCHECKED, &[&why])?,
-            }
+    let chatgpt = match sign_in {
+        Some(sign_in) => match provider(term, &config, sign_in, signed_in)? {
+            Some(chatgpt) => chatgpt,
+            None => return aborted(term),
+        },
+        None => false,
+    };
+    if chatgpt {
+        crate::chatgpt::use_in_doc(&mut doc);
+    } else {
+        if config.chatgpt() {
+            setup::set(&mut doc, &["model", "provider"], Value::from("openrouter"));
         }
-        None => {
-            let existing = config
-                .model
-                .api_key
-                .clone()
-                .filter(|k| !k.trim().is_empty());
-            if existing.is_none() {
-                term.tell(KEY_HOW, &[])?;
-            }
-            loop {
-                let prompt = if existing.is_some() {
-                    KEY_KEEP_PROMPT
-                } else {
-                    KEY_PROMPT
-                };
-                let Some(typed) = term.secret(prompt.get(term.lang))? else {
-                    return aborted(term);
-                };
-                let key = match (typed.is_empty(), &existing) {
-                    (false, _) => typed,
-                    (true, Some(key)) => key.clone(),
-                    (true, None) => {
-                        term.tell(KEY_NEEDED, &[])?;
-                        continue;
-                    }
-                };
+        match std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+        {
+            Some(key) => {
+                term.tell(KEY_FROM_ENV, &[])?;
                 term.tell(KEY_CHECKING, &[])?;
                 match catalog.check_key(&key).await {
                     KeyCheck::Valid(_) => term.tell(KEY_OK, &[])?,
                     KeyCheck::Invalid(why) => {
-                        term.tell(KEY_BAD, &[&why])?;
-                        continue;
+                        term.tell(KEY_ENV_BAD, &[&why])?;
+                        return aborted(term);
                     }
                     KeyCheck::Unknown(why) => term.tell(KEY_UNCHECKED, &[&why])?,
                 }
-                setup::set(&mut doc, &["model", "api_key"], Value::from(key.as_str()));
-                break;
+            }
+            None => {
+                let existing = config
+                    .model
+                    .api_key
+                    .clone()
+                    .filter(|k| !k.trim().is_empty());
+                if existing.is_none() {
+                    term.tell(KEY_HOW, &[])?;
+                }
+                loop {
+                    let prompt = if existing.is_some() {
+                        KEY_KEEP_PROMPT
+                    } else {
+                        KEY_PROMPT
+                    };
+                    let Some(typed) = term.secret(prompt.get(term.lang))? else {
+                        return aborted(term);
+                    };
+                    let key = match (typed.is_empty(), &existing) {
+                        (false, _) => typed,
+                        (true, Some(key)) => key.clone(),
+                        (true, None) => {
+                            term.tell(KEY_NEEDED, &[])?;
+                            continue;
+                        }
+                    };
+                    term.tell(KEY_CHECKING, &[])?;
+                    match catalog.check_key(&key).await {
+                        KeyCheck::Valid(_) => term.tell(KEY_OK, &[])?,
+                        KeyCheck::Invalid(why) => {
+                            term.tell(KEY_BAD, &[&why])?;
+                            continue;
+                        }
+                        KeyCheck::Unknown(why) => term.tell(KEY_UNCHECKED, &[&why])?,
+                    }
+                    setup::set(&mut doc, &["model", "api_key"], Value::from(key.as_str()));
+                    break;
+                }
             }
         }
     }
 
     // 3. Main model.
     step(term, 3, STEP_MODEL)?;
-    term.tell(LOADING_MODELS, &[])?;
-    let models = match catalog.models().await {
-        Ok(models) => models,
-        Err(err) => {
-            term.tell(NO_CATALOG, &[&format!("{err:#}")])?;
-            Vec::new()
+    if chatgpt {
+        // Not in OpenRouter's list; ChatGPT's models see images.
+        let current = setup::parse(&doc)
+            .map(|c| c.model.model)
+            .unwrap_or_default();
+        let Some(typed) = term.ask(&CHATGPT_MODEL.fill(term.lang, &[&current]))? else {
+            return aborted(term);
+        };
+        let model = if typed.is_empty() { current } else { typed };
+        setup::set(&mut doc, &["model", "model"], Value::from(model.as_str()));
+        term.tell(CHOSEN, &[&model])?;
+    }
+    let models = if chatgpt {
+        Vec::new()
+    } else {
+        term.tell(LOADING_MODELS, &[])?;
+        match catalog.models().await {
+            Ok(models) => models,
+            Err(err) => {
+                term.tell(NO_CATALOG, &[&format!("{err:#}")])?;
+                Vec::new()
+            }
         }
     };
     let current = config.model.model.trim().to_owned();
     let mut model = None;
-    if !current.is_empty() {
+    if chatgpt {
+        model = setup::parse(&doc).ok().map(|c| c.model.model);
+    } else if !current.is_empty() {
         let Some(keep) = term.confirm(&KEEP_MODEL.fill(term.lang, &[&current]), true)? else {
             return aborted(term);
         };
@@ -654,12 +746,15 @@ pub async fn wizard<R: BufRead, W: Write>(
             None => return aborted(term),
         },
     };
-    setup::set(&mut doc, &["model", "model"], Value::from(model.as_str()));
-    term.tell(CHOSEN, &[&model])?;
+    if !chatgpt {
+        setup::set(&mut doc, &["model", "model"], Value::from(model.as_str()));
+        term.tell(CHOSEN, &[&model])?;
+    }
 
     // 4. Images, and the browser that needs no setting.
     step(term, 4, STEP_IMAGES)?;
     match models.iter().find(|m| m.id == model) {
+        _ if chatgpt => term.tell(SEES_IMAGES, &[&model])?,
         Some(info) if info.images => term.tell(SEES_IMAGES, &[&model])?,
         Some(_) => {
             let Some(wanted) = term.confirm(&BLIND.fill(term.lang, &[&model]), true)? else {
@@ -717,10 +812,14 @@ pub async fn wizard<R: BufRead, W: Write>(
     step(term, 5, STEP_COMPANION)?;
     companion(&mut doc, term)?;
 
-    // 6. The Gateway, in the background.
+    // 6. Owners on chat apps: optional too.
+    step(term, 6, STEP_OWNERS)?;
+    owners(&mut doc, term)?;
+
+    // 7. The Gateway, in the background.
     let mut start = None;
     if let Some(gateway) = gateway {
-        step(term, 6, STEP_GATEWAY)?;
+        step(term, 7, STEP_GATEWAY)?;
         let bind = setup::parse(&doc)
             .map(|c| c.gateway.bind)
             .unwrap_or_else(|_| crate::config::GatewayConfig::default().bind);
@@ -748,6 +847,89 @@ pub async fn wizard<R: BufRead, W: Write>(
         None => term.tell(GATEWAY_LATER, &[])?,
     }
     Ok(Some(term.lang))
+}
+
+/// Asks where the models run. `Some(true)` for a ChatGPT plan, signed in;
+/// `None` when input ended.
+fn provider<R: BufRead, W: Write>(
+    term: &mut Term<R, W>,
+    config: &Config,
+    mut sign_in: setup::SignIn<'_>,
+    signed_in: Option<String>,
+) -> Result<Option<bool>> {
+    let start = usize::from(config.chatgpt());
+    let chatgpt = if term.arrows {
+        let items = [
+            PROVIDER_OPENROUTER.get(term.lang).to_owned(),
+            PROVIDER_CHATGPT.get(term.lang).to_owned(),
+        ];
+        match term.select(PROVIDER_TITLE.get(term.lang), &items, start, &|_| None)? {
+            Picked::Item(i) => i == 1,
+            Picked::Back => start == 1,
+            Picked::End => return Ok(None),
+        }
+    } else {
+        let current = (start + 1).to_string();
+        let Some(answer) = term.ask(&PICK_PROVIDER.fill(term.lang, &[&current]))? else {
+            return Ok(None);
+        };
+        match answer.as_str() {
+            "1" => false,
+            "2" => true,
+            _ => start == 1,
+        }
+    };
+    if !chatgpt {
+        return Ok(Some(false));
+    }
+    if let Some(who) = signed_in {
+        let Some(keep) = term.confirm(&KEEP_SIGN_IN.fill(term.lang, &[&who]), true)? else {
+            return Ok(None);
+        };
+        if keep {
+            return Ok(Some(true));
+        }
+    }
+    loop {
+        match sign_in(term) {
+            Ok(Some(who)) => {
+                term.tell(SIGNED_IN_AS, &[&who])?;
+                return Ok(Some(true));
+            }
+            Ok(None) => return Ok(None),
+            Err(err) => {
+                term.tell(SIGN_IN_FAILED, &[&format!("{err:#}")])?;
+                match term.confirm(SIGN_IN_RETRY.get(term.lang), true)? {
+                    Some(true) => {}
+                    _ => return Ok(None),
+                }
+            }
+        }
+    }
+}
+
+/// Shows the owners on chat apps, offers to let the first private chat
+/// claim an app, and to revoke an owner. Running out of answers skips it.
+fn owners<R: BufRead, W: Write>(doc: &mut DocumentMut, term: &mut Term<R, W>) -> Result<()> {
+    term.tell(OWNERS_HOW, &[])?;
+    let listed = setup::chat_owners(doc);
+    if !listed.is_empty() {
+        term.tell(OWNERS_NOW, &[&listed.join(", ")])?;
+    }
+    let on = setup::parse(doc).is_ok_and(|c| c.access.first_chat_owner);
+    let Some(claim) = term.confirm(FIRST_CHAT_ASK.get(term.lang), on)? else {
+        return Ok(());
+    };
+    if claim != on {
+        setup::set(doc, &["access", "first_chat_owner"], Value::from(claim));
+    }
+    if claim {
+        term.tell(FIRST_CHAT_ON, &[])?;
+    }
+    if !listed.is_empty() && term.confirm(REVOKE_ASK.get(term.lang), false)? == Some(true) {
+        setup::revoke_owner(doc, term)?;
+    }
+    Ok(())
 }
 
 /// Asks whether to turn on the heartbeat and the inner life, and with them
@@ -1139,11 +1321,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let catalog = fake();
-        // English (already highlighted); key; search "sees", pick the first;
-        // yes (highlighted) to installing a browser; yes to the companion,
-        // a city, a bad then a good birthday, default quiet hours; yes to
-        // the Gateway.
-        let script = "\rsk-good\nsees\n\r\r\rShanghai\n31-02\n03-14\n\n\r";
+        // English (already highlighted); OpenRouter (highlighted) and a key;
+        // search "sees", pick the first; yes (highlighted) to installing a
+        // browser; yes to the companion, a city, a bad then a good birthday,
+        // default quiet hours; no (highlighted) to the first chat claiming
+        // ownership; yes to the Gateway.
+        let script = "\r\rsk-good\nsees\n\r\r\rShanghai\n31-02\n03-14\n\n\r\r";
+        let unused = || -> Option<setup::SignIn<'static>> {
+            Some(Box::new(|_: &mut dyn setup::Prompt| unreachable!()))
+        };
         let mut term = Term {
             input: script.as_bytes(),
             out: Vec::new(),
@@ -1162,6 +1348,8 @@ mod tests {
             browser: None,
             install_browser: Some(&mut install),
             gateway: Some(&mut start),
+            sign_in: unused(),
+            signed_in: None,
         };
         let done = wizard(&path, &mut term, &catalog, host).await.unwrap();
         let out = String::from_utf8(term.out).unwrap();
@@ -1169,7 +1357,7 @@ mod tests {
         assert_eq!(started, 1);
         assert!(out.contains("Install Chromium"), "{out}");
         assert!(out.contains("Browser: /usr/bin/chromium"), "{out}");
-        assert!(out.contains("[6/6] Gateway"), "{out}");
+        assert!(out.contains("[7/7] Gateway"), "{out}");
         assert!(out.contains("http://127.0.0.1:18789"), "{out}");
         assert!(out.contains("Pick a model › other/sees"), "{out}");
         let config = Config::load(&path).unwrap();
@@ -1180,6 +1368,12 @@ mod tests {
         assert_eq!(config.life.dates[0].name, "my birthday");
         assert!(out.contains("31-02 is not right"), "{out}");
         assert_eq!(config.heartbeat.quiet_hours, "23:00-08:00");
+        assert!(!config.access.first_chat_owner);
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("first_chat_owner")
+        );
 
         // A Gateway that does not start leaves the saved config and says how.
         let path = dir.path().join("second.toml");
@@ -1197,6 +1391,8 @@ mod tests {
             browser: None,
             install_browser: Some(&mut install),
             gateway: Some(&mut fail),
+            sign_in: unused(),
+            signed_in: None,
         };
         wizard(&path, &mut term, &catalog, host).await.unwrap();
         let out = String::from_utf8(term.out).unwrap();
@@ -1210,6 +1406,73 @@ mod tests {
             "{out}"
         );
         assert!(path.exists());
+    }
+
+    async fn drive_with(path: &Path, script: &str, host: Host<'_>) -> (Option<Lang>, String) {
+        let mut term = Term {
+            input: script.as_bytes(),
+            out: Vec::new(),
+            hide_secrets: false,
+            arrows: false,
+            raw: false,
+            lang: Lang::En,
+        };
+        let done = wizard(path, &mut term, &fake(), host).await.unwrap();
+        (done, String::from_utf8(term.out).unwrap())
+    }
+
+    #[tokio::test]
+    async fn signs_in_to_chatgpt_and_sets_up_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut signed = 0;
+        let host = Host {
+            sign_in: Some(Box::new(|term: &mut dyn setup::Prompt| {
+                signed += 1;
+                term.say("open this")?;
+                Ok(Some("me@example.org".into()))
+            })),
+            ..Host::default()
+        };
+        // English; ChatGPT; a model; no companion; the first chat claims.
+        let script = "2\n2\ngpt-5-codex\nn\ny\n";
+        let (done, out) = drive_with(&path, script, host).await;
+        assert_eq!(done, Some(Lang::En), "{out}");
+        assert_eq!(signed, 1);
+        assert!(
+            out.contains("Signed in to ChatGPT: me@example.org"),
+            "{out}"
+        );
+        assert!(!out.contains("API key: "), "{out}");
+        assert!(out.contains("claims that app"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert!(config.chatgpt());
+        assert_eq!(config.model.model, "gpt-5-codex");
+        assert_eq!(config.model.api_key, None);
+        assert!(config.access.first_chat_owner);
+
+        // Signed in already: keep it and the model; revoke the QQ owner.
+        std::fs::write(
+            &path,
+            "[model]\nprovider = \"chatgpt\"\nmodel = \"gpt-5\"\n[access]\nowners = [\"qq:ME\", \"feishu:ou_x\"]\nfirst_chat_owner = true\n",
+        )
+        .unwrap();
+        let host = Host {
+            sign_in: Some(Box::new(|_: &mut dyn setup::Prompt| unreachable!())),
+            signed_in: Some("me@example.org".into()),
+            ..Host::default()
+        };
+        // English; ChatGPT (the default); keep the sign-in and model; no
+        // companion; keep claiming on; revoke the first.
+        let script = "2\n\n\n\nn\n\ny\n1\n";
+        let (done, out) = drive_with(&path, script, host).await;
+        assert_eq!(done, Some(Lang::En), "{out}");
+        assert!(out.contains("Owners now: qq:ME, feishu:ou_x"), "{out}");
+        assert!(out.contains("Revoked qq:ME"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.model.model, "gpt-5");
+        assert_eq!(config.access.owners, ["feishu:ou_x"]);
+        assert!(config.access.first_chat_owner);
     }
 
     #[test]

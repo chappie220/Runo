@@ -43,6 +43,10 @@ enum Kind {
         env: &'static str,
         generate: bool,
     },
+    /// Signs in to ChatGPT, then sets the provider at `path` to it.
+    SignIn,
+    /// Removes one chat app's owner from the list at `path`.
+    Revoke,
 }
 
 const BROKEN: Tr = tr(
@@ -100,6 +104,28 @@ const NONE: Tr = tr("none", "无");
 const FROM_ENV: Tr = tr("from ${}", "来自 ${}");
 const IN_FILE: Tr = tr("set in this file", "已在本文件中设置");
 const NOT_SET: Tr = tr("not set", "未设置");
+const NOT_SIGNED_IN: Tr = tr("not signed in", "未登录");
+const NO_SIGN_IN: Tr = tr(
+    "Signing in is not possible here; run `openclaw-rs login`.",
+    "这里无法登录，请运行 `openclaw-rs login`。",
+);
+const SIGN_IN_FAILED: Tr = tr("Could not sign in: {}", "登录失败：{}");
+const USE_SIGN_IN: Tr = tr("Use this sign-in: {}", "使用当前登录：{}");
+const SIGN_IN_AGAIN: Tr = tr("Sign in again", "重新登录");
+const ON_CHATGPT: Tr = tr(
+    "The model runs on your ChatGPT subscription once saved: model.provider = \"chatgpt\", model.model = \"{}\".",
+    "保存后模型使用你的 ChatGPT 订阅：model.provider = \"chatgpt\"，model.model = \"{}\"。",
+);
+const NO_CHAT_OWNERS: Tr = tr(
+    "No chat app (QQ, Feishu, Zulip) has an owner.",
+    "QQ、飞书、Zulip 都还没有所有者。",
+);
+const REVOKED: Tr = tr("Revoked {}.", "已撤销 {}。");
+const REVOKE_TITLE: Tr = tr("Revoke which owner?", "撤销哪个所有者？");
+const REVOKE_WHICH: Tr = tr(
+    "Revoke which? A number or id, Enter for none: ",
+    "撤销哪一个？输入编号或 id，回车跳过：",
+);
 
 struct Field {
     path: &'static [&'static str],
@@ -279,6 +305,15 @@ const SECTIONS: &[Section] = &[
                     "只对 chatgpt 有效：模型回答前思考的程度；输入 - 交给模型自己决定。",
                 ),
                 kind: Kind::Choice(&["minimal", "low", "medium", "high"]),
+            },
+            Field {
+                path: &["model", "provider"],
+                label: tr("Sign in to ChatGPT", "登录 ChatGPT"),
+                help: tr(
+                    "Signs in with your ChatGPT account in a browser (as `openclaw-rs login`) and switches the model to your subscription.",
+                    "在浏览器里用你的 ChatGPT 账号登录（和 `openclaw-rs login` 一样），并把模型切换到你的订阅。",
+                ),
+                kind: Kind::SignIn,
             },
         ],
     },
@@ -855,15 +890,35 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         title: tr("Access", "权限"),
-        fields: &[Field {
-            path: &["access", "owners"],
-            label: tr("Owners", "Owner"),
-            help: tr(
-                "Comma-separated qq:<openid>, feishu:<open_id>, zulip:<email> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
-                "用逗号分隔的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
-            ),
-            kind: Kind::List,
-        }],
+        fields: &[
+            Field {
+                path: &["access", "owners"],
+                label: tr("Owners", "Owner"),
+                help: tr(
+                    "Comma-separated qq:<openid>, feishu:<open_id>, zulip:<email> or mail:<address> treated like the terminal: every tool, /compact, identity approval.",
+                    "用逗号分隔的 qq:<openid>、feishu:<open_id>、zulip:<邮箱> 或 mail:<地址>，和终端同等权限：所有工具、/compact、批准身份。",
+                ),
+                kind: Kind::List,
+            },
+            Field {
+                path: &["access", "first_chat_owner"],
+                label: tr("First chat becomes owner", "第一个私聊的人成为所有者"),
+                help: tr(
+                    "On QQ, Feishu or Zulip with no owner yet, the first person to write to the bot in a private chat becomes its owner and is added to the list above. Turn it on, write to the bot yourself, then turn it off again: until then, anyone who reaches the bot first gets every tool.",
+                    "QQ、飞书或 Zulip 上还没有所有者时，第一个私聊机器人的人会成为该平台的所有者，并加进上面的列表。建议打开后自己先给机器人发消息，然后再关掉：在那之前，谁先找到机器人谁就拿到所有工具。",
+                ),
+                kind: Kind::Bool,
+            },
+            Field {
+                path: &["access", "owners"],
+                label: tr("Revoke a chat owner", "撤销聊天平台的所有者"),
+                help: tr(
+                    "Removes the owner you pick (QQ, Feishu or Zulip). With \"first chat becomes owner\" on, the next person to write privately on that app becomes its owner.",
+                    "移除你选中的所有者（QQ、飞书或 Zulip）。如果开着“第一个私聊的人成为所有者”，之后第一个私聊该平台机器人的人会成为新的所有者。",
+                ),
+                kind: Kind::Revoke,
+            },
+        ],
     },
     Section {
         title: tr(
@@ -1401,6 +1456,47 @@ impl Drop for EchoOff {
     }
 }
 
+/// A terminal to talk on, for steps done outside this module (signing in).
+pub trait Prompt {
+    fn say(&mut self, text: &str) -> Result<()>;
+    /// One trimmed line, or `None` at end of input.
+    fn ask(&mut self, prompt: &str) -> Result<Option<String>>;
+    fn lang(&self) -> Lang;
+}
+
+impl<R: BufRead, W: Write> Prompt for Term<R, W> {
+    fn say(&mut self, text: &str) -> Result<()> {
+        Term::say(self, text)?;
+        self.out.flush()?;
+        Ok(())
+    }
+
+    fn ask(&mut self, prompt: &str) -> Result<Option<String>> {
+        Term::ask(self, prompt)
+    }
+
+    fn lang(&self) -> Lang {
+        self.lang
+    }
+}
+
+/// Signs in to ChatGPT on a terminal: who signed in, or `None` when input ended.
+pub type SignIn<'a> = Box<dyn FnMut(&mut dyn Prompt) -> Result<Option<String>> + 'a>;
+
+/// Signing in for real, saved in the state directory.
+pub fn chatgpt_sign_in() -> (Option<String>, SignIn<'static>) {
+    match crate::config::state_dir() {
+        Ok(state) => (
+            crate::chatgpt::signed_in(&state),
+            Box::new(move |term: &mut dyn Prompt| crate::chatgpt::sign_in(term, &state)),
+        ),
+        Err(err) => {
+            let why = format!("{err:#}");
+            (None, Box::new(move |_: &mut dyn Prompt| bail!("{why}")))
+        }
+    }
+}
+
 /// The process's own terminal.
 pub fn terminal(lang: Lang) -> Term<std::io::StdinLock<'static>, std::io::Stdout> {
     // SAFETY: isatty has no preconditions.
@@ -1442,21 +1538,29 @@ fn run_on<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<bo
             tokio::runtime::Handle::current().block_on(crate::onboard::Catalog::models(&catalog))
         })
     });
+    let (signed_in, sign_in) = chatgpt_sign_in();
+    models.signed_in = signed_in;
+    models.sign_in = Some(sign_in);
     edit_with(path, term, &mut models)
 }
 
-/// OpenRouter's model list for the model fields, loaded once, when first needed.
+/// OpenRouter's model list for the model fields, loaded once, when first
+/// needed, and the ChatGPT sign-in.
 #[derive(Default)]
 pub struct Models<'a> {
     load: Option<Box<dyn FnMut() -> Result<Vec<ModelInfo>> + 'a>>,
     list: Option<Vec<ModelInfo>>,
+    /// Signs in to ChatGPT; without it, the sign-in field cannot be used.
+    pub sign_in: Option<SignIn<'a>>,
+    /// Who is signed in to ChatGPT now.
+    pub signed_in: Option<String>,
 }
 
 impl<'a> Models<'a> {
     pub fn new(load: impl FnMut() -> Result<Vec<ModelInfo>> + 'a) -> Self {
         Self {
             load: Some(Box::new(load)),
-            list: None,
+            ..Self::default()
         }
     }
 
@@ -1535,7 +1639,7 @@ pub fn edit_with<R: BufRead, W: Write>(
                 .and_then(|n| SECTIONS.get(n.wrapping_sub(1)))
             {
                 Some(section) => {
-                    if !edit_section(&mut doc, section, term)? {
+                    if !edit_section(&mut doc, section, term, models)? {
                         return finish(path, &doc, &original, term, false);
                     }
                 }
@@ -1621,7 +1725,7 @@ fn section_with_arrows<R: BufRead, W: Write>(
             .map(|f| {
                 let label = f.label.get(lang);
                 let pad = " ".repeat(label_width - text_width(label));
-                format!("{label}{pad}  {}", describe(doc, f, lang))
+                format!("{label}{pad}  {}", shown(doc, f, lang, models))
             })
             .collect();
         items.push(BACK.get(lang).into());
@@ -1648,6 +1752,29 @@ fn field_with_arrows<R: BufRead, W: Write>(
 ) -> Result<bool> {
     let lang = term.lang;
     let label = field.label.get(lang);
+    if let Kind::Revoke = field.kind {
+        return revoke_owner(doc, term);
+    }
+    if let Kind::SignIn = field.kind {
+        if let Some(who) = models.signed_in.clone() {
+            let items = [
+                USE_SIGN_IN.fill(lang, &[&who]),
+                SIGN_IN_AGAIN.get(lang).to_owned(),
+            ];
+            let help = |_| Some(field.help.get(lang).to_owned());
+            match term.select(label, &items, 0, &help)? {
+                Picked::Item(0) => {
+                    let model = crate::chatgpt::use_in_doc(doc);
+                    term.tell(ON_CHATGPT, &[&model])?;
+                    return Ok(true);
+                }
+                Picked::Item(_) => {}
+                Picked::Back => return Ok(true),
+                Picked::End => return Ok(false),
+            }
+        }
+        return sign_in(doc, term, models);
+    }
     let current = describe(doc, field, lang);
     // ChatGPT's models are not in OpenRouter's list: typed instead.
     let chatgpt =
@@ -1882,11 +2009,19 @@ fn edit_section<R: BufRead, W: Write>(
     doc: &mut DocumentMut,
     section: &Section,
     term: &mut Term<R, W>,
+    models: &mut Models<'_>,
 ) -> Result<bool> {
     term.say(&format!("\n[{}]", section.title.get(term.lang)))?;
     let mut index = 0;
     while let Some(field) = section.fields.get(index) {
-        let current = describe(doc, field, term.lang);
+        if let Kind::Revoke = field.kind {
+            if !revoke_owner(doc, term)? {
+                return Ok(false);
+            }
+            index += 1;
+            continue;
+        }
+        let current = shown(doc, field, term.lang, models);
         let kind = match field.kind {
             Kind::Decider { .. } => Kind::Choice(DECIDERS),
             kind => kind,
@@ -1901,7 +2036,7 @@ fn edit_section<R: BufRead, W: Write>(
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            Kind::Bool => match term.lang {
+            Kind::Bool | Kind::SignIn => match term.lang {
                 Lang::En => " (y/n)".into(),
                 Lang::Zh => " (y/n，是/否)".into(),
             },
@@ -1921,6 +2056,19 @@ fn edit_section<R: BufRead, W: Write>(
             "?" => {
                 term.say(&format!("  {}", field.help.get(term.lang)))?;
                 continue;
+            }
+            text if matches!(field.kind, Kind::SignIn) => {
+                match value_for(Kind::Bool, text, term.lang) {
+                    Ok(yes) => {
+                        if yes.as_bool() == Some(true) && !sign_in(doc, term, models)? {
+                            return Ok(false);
+                        }
+                    }
+                    Err(err) => {
+                        term.say(&format!("  {err:#}"))?;
+                        continue;
+                    }
+                }
             }
             "-" => {
                 if !change(doc, field.path, None, term)? {
@@ -2073,6 +2221,7 @@ fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
             }
             Value::Array(array)
         }
+        Kind::SignIn | Kind::Revoke => bail!("{text:?} cannot be typed here"),
         Kind::Secret { generate, .. } => {
             if generate && text == "+" {
                 Value::from(random_token()?)
@@ -2126,6 +2275,145 @@ fn remove(doc: &mut DocumentMut, path: &[&str]) {
     }
 }
 
+/// What the menus show for `field`: who is signed in for the sign-in.
+fn shown(doc: &DocumentMut, field: &Field, lang: Lang, models: &Models<'_>) -> String {
+    match field.kind {
+        Kind::SignIn => models
+            .signed_in
+            .clone()
+            .unwrap_or_else(|| NOT_SIGNED_IN.get(lang).into()),
+        _ => describe(doc, field, lang),
+    }
+}
+
+/// Signs in to ChatGPT and points the model at it. `false` when input ended.
+fn sign_in<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    term: &mut Term<R, W>,
+    models: &mut Models<'_>,
+) -> Result<bool> {
+    let Some(sign_in) = models.sign_in.as_mut() else {
+        term.tell(NO_SIGN_IN, &[])?;
+        return Ok(true);
+    };
+    match sign_in(term) {
+        Ok(Some(who)) => {
+            models.signed_in = Some(who);
+            let model = crate::chatgpt::use_in_doc(doc);
+            term.tell(ON_CHATGPT, &[&model])?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(err) => {
+            term.tell(SIGN_IN_FAILED, &[&format!("{err:#}")])?;
+            Ok(true)
+        }
+    }
+}
+
+fn owners_array(doc: &DocumentMut) -> Option<&Array> {
+    doc.get("access")?.get("owners")?.as_array()
+}
+
+/// The owners on a chat app (`qq:`, `feishu:`, `zulip:`) listed in `doc`.
+pub(crate) fn chat_owners(doc: &DocumentMut) -> Vec<String> {
+    owners_array(doc)
+        .into_iter()
+        .flat_map(|a| a.iter())
+        .filter_map(|v| v.as_str())
+        .map(str::trim)
+        .filter(|o| crate::chat::private_chat(o).is_some())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Removes `owner` from `access.owners`.
+fn revoke(doc: &mut DocumentMut, owner: &str) {
+    if let Some(array) = doc
+        .get_mut("access")
+        .and_then(|a| a.get_mut("owners"))
+        .and_then(Item::as_array_mut)
+    {
+        array.retain(|v| v.as_str().map(str::trim) != Some(owner));
+    }
+}
+
+/// Lets the person pick a chat app's owner to revoke. `false` when input ended.
+pub(crate) fn revoke_owner<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    term: &mut Term<R, W>,
+) -> Result<bool> {
+    let owners = chat_owners(doc);
+    if owners.is_empty() {
+        term.tell(NO_CHAT_OWNERS, &[])?;
+        return Ok(true);
+    }
+    let picked = if term.arrows {
+        let mut items = owners.clone();
+        items.push(BACK.get(term.lang).into());
+        let title = REVOKE_TITLE.get(term.lang);
+        match term.select(title, &items, 0, &|_| None)? {
+            Picked::Item(i) => owners.get(i).cloned(),
+            Picked::Back => None,
+            Picked::End => return Ok(false),
+        }
+    } else {
+        for (i, owner) in owners.iter().enumerate() {
+            term.say(&format!("  {}) {owner}", i + 1))?;
+        }
+        loop {
+            let Some(answer) = term.ask(REVOKE_WHICH.get(term.lang))? else {
+                return Ok(false);
+            };
+            if answer.is_empty() {
+                break None;
+            }
+            let found = answer
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| owners.get(n.wrapping_sub(1)))
+                .or_else(|| owners.iter().find(|o| o.eq_ignore_ascii_case(&answer)));
+            match found {
+                Some(owner) => break Some(owner.clone()),
+                None => term.tell(PICK_ONE, &[&owners.join(", ")])?,
+            }
+        }
+    };
+    if let Some(owner) = picked {
+        revoke(doc, &owner);
+        term.tell(REVOKED, &[&owner])?;
+    }
+    Ok(true)
+}
+
+/// Adds `id` to `access.owners` in the file at `path`, unless it is there.
+pub(crate) fn add_owner(path: &Path, id: &str) -> Result<()> {
+    let mut doc = load(path)?;
+    let listed = owners_array(&doc).is_some_and(|a| {
+        a.iter()
+            .filter_map(|v| v.as_str())
+            .any(|o| o.trim().eq_ignore_ascii_case(id))
+    });
+    if listed {
+        return Ok(());
+    }
+    match doc
+        .get_mut("access")
+        .and_then(|a| a.get_mut("owners"))
+        .and_then(Item::as_array_mut)
+    {
+        Some(array) => array.push(id),
+        None => {
+            let mut array = Array::new();
+            array.push(id);
+            set(&mut doc, &["access", "owners"], Value::Array(array));
+        }
+    }
+    let text = doc.to_string();
+    toml::from_str::<Config>(&text).context("the new settings do not load")?;
+    write_private(path, &text)
+}
+
 /// The value in effect for `field`, defaults included; secrets are never shown.
 /// A string set at `path`, as the config loads it.
 fn describe_path(doc: &DocumentMut, path: &[&str]) -> Option<String> {
@@ -2170,6 +2458,14 @@ fn describe(doc: &DocumentMut, field: &Field, lang: Lang) -> String {
             (true, _) => FROM_ENV.fill(lang, &[env]),
             (false, true) => IN_FILE.get(lang).into(),
             (false, false) => NOT_SET.get(lang).into(),
+        };
+    }
+    if let Kind::Revoke = field.kind {
+        let owners = chat_owners(doc);
+        return if owners.is_empty() {
+            NONE.get(lang).into()
+        } else {
+            owners.join(", ")
         };
     }
     if let Kind::Decider { model, base_url } = field.kind {
@@ -2236,9 +2532,9 @@ mod tests {
         .unwrap();
         // Model (section 2): new id, keep key, two fallbacks, keep retries, cache by number,
         // a bad then a good budget, reset summary model, keep image and audio
-        // models, recall, max steps, the three guide fields, provider and
-        // reasoning effort.
-        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\ns\n";
+        // models, recall, max steps, the three guide fields, provider,
+        // reasoning effort and the ChatGPT sign-in.
+        let script = "2\na/new\n\nb/one, c/two ,\n\n3\nlots\n32000\n-\n\n\n\n\n\n\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -2465,6 +2761,16 @@ mod tests {
             UNSAVED,
             KEEP_EDITING,
             TYPE_HOW,
+            NOT_SIGNED_IN,
+            NO_SIGN_IN,
+            SIGN_IN_FAILED,
+            USE_SIGN_IN,
+            SIGN_IN_AGAIN,
+            ON_CHATGPT,
+            NO_CHAT_OWNERS,
+            REVOKED,
+            REVOKE_TITLE,
+            REVOKE_WHICH,
         ];
         for section in SECTIONS {
             texts.push(section.title);
@@ -2474,6 +2780,100 @@ mod tests {
         }
         crate::i18n::assert_complete(&texts);
         assert_eq!(SAVED.fill(Lang::Zh, &["a.toml"]), "已保存 a.toml。");
+    }
+
+    fn section(title: &str) -> usize {
+        1 + SECTIONS
+            .iter()
+            .position(|s| s.title.get(Lang::En) == title)
+            .unwrap()
+    }
+
+    #[test]
+    fn lets_the_first_chat_claim_ownership_and_revokes_a_chat_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[access]\nowners = [\"mail:me@example.org\", \"qq:ME\", \"zulip:z@example.org\"]\n",
+        )
+        .unwrap();
+        // Keep the owners, turn claiming on, revoke the second chat owner.
+        let script = format!("{}\n\ny\n2\ns\n", section("Access"));
+        let out = drive(&path, &script);
+        assert!(
+            out.contains("1) qq:ME") && out.contains("2) zulip:z@example.org"),
+            "{out}"
+        );
+        assert!(out.contains("Revoked zulip:z@example.org"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert!(config.access.first_chat_owner);
+        assert_eq!(config.access.owners, ["mail:me@example.org", "qq:ME"]);
+
+        // With arrows: Access, the revoke field (third), the only chat owner.
+        // (Access is the section above the last; below them, save and quit.)
+        let mut term = keys("\x1b[F\x1b[A\x1b[A\x1b[A\r\x1b[B\x1b[B\r\rqq\r");
+        edit_with(&path, &mut term, &mut Models::default()).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.access.owners, ["mail:me@example.org"]);
+        // Nothing left to revoke.
+        let out = drive(&path, &format!("{}\n\n\nq\n", section("Access")));
+        assert!(out.contains("No chat app"), "{out}");
+    }
+
+    #[test]
+    fn adds_a_claimed_owner_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# mine\n[model]\nmodel = \"a/b\"\n").unwrap();
+        add_owner(&path, "qq:ALICE").unwrap();
+        add_owner(&path, "feishu:ou_b").unwrap();
+        add_owner(&path, "qq:alice").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine"), "{text}");
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.access.owners, ["qq:ALICE", "feishu:ou_b"]);
+    }
+
+    #[test]
+    fn signs_in_to_chatgpt_from_the_model_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[model]\nmodel = \"x/y\"\n").unwrap();
+        let mut asked = 0;
+        let mut models = Models {
+            sign_in: Some(Box::new(|term: &mut dyn Prompt| {
+                asked += 1;
+                let code = term.ask("code: ")?;
+                assert_eq!(code.as_deref(), Some("abc"));
+                Ok(Some("me@example.org".into()))
+            })),
+            ..Models::default()
+        };
+        // Model section, last field (sign-in), the code; back out and save.
+        let script = "2\r\x1b[F\x1b[A\rabc\nqq\r";
+        let mut term = keys(script);
+        edit_with(&path, &mut term, &mut models).unwrap();
+        assert_eq!(models.signed_in.as_deref(), Some("me@example.org"));
+        drop(models);
+        assert_eq!(asked, 1);
+        let config = Config::load(&path).unwrap();
+        assert!(config.chatgpt());
+        assert_eq!(config.model.model, crate::chatgpt::DEFAULT_MODEL);
+
+        // Signed in already: just use it, here typed.
+        std::fs::write(&path, "[model]\nmodel = \"gpt-5-codex\"\n").unwrap();
+        let mut models = Models {
+            signed_in: Some("me@example.org".into()),
+            ..Models::default()
+        };
+        let mut term = keys("2\r\x1b[F\x1b[A\r\rqq\r");
+        edit_with(&path, &mut term, &mut models).unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(out.contains("me@example.org"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert!(config.chatgpt());
+        assert_eq!(config.model.model, "gpt-5-codex");
     }
 
     fn keys(script: &str) -> Term<&[u8], Vec<u8>> {
@@ -2508,9 +2908,9 @@ mod tests {
             Ok(vec![model("maker/blind", false), model("other/sees", true)])
         });
         // Section 2, the model field, search "sees" and take it; then the
-        // guide provider (fifth from the end), one down to openrouter-chat;
+        // guide provider (sixth from the end), one down to openrouter-chat;
         // back out and save.
-        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\x1b[A\x1b[A\rj\rqq\r";
+        let script = "2\r\r\rsees\n\r\x1b[F\x1b[A\x1b[A\x1b[A\x1b[A\x1b[A\rj\rqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         drop(models);
