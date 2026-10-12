@@ -77,27 +77,31 @@ cargo build --release
 ./target/release/openclaw-rs chat
 ```
 
-`init` asks five things and saves `<state dir>/config.toml` (mode 0600).
-In a terminal every menu is picked with ↑/↓ and Enter (Esc goes back);
-piped input still takes typed numbers:
+`init` takes eight short steps and saves `<state dir>/config.toml` (mode
+0600). In a terminal every menu is picked with ↑/↓ and Enter (Esc goes
+back); piped input still takes typed numbers:
 
 1. the language (中文 or English);
-2. your OpenRouter API key (from https://openrouter.ai/keys), checked with
-   OpenRouter before it is kept; `OPENROUTER_API_KEY`, when set, is used
-   and checked instead;
-3. the main model: search OpenRouter's live model list by name or maker
-   and pick one with ↑/↓. Each line shows the context size, the price per
-   million tokens and 🖼 for models that see images. Only models that can
-   call tools are listed, since the agent needs them; any other id can be
-   typed in full;
-4. if that model cannot see images, whether to pick an image model for
-   pictures people send and browser screenshots (`agent.vision_model`);
-5. whether to turn on the companion ([heartbeat](#heartbeat) and
+2. where the models run. First it asks whether to go through a network
+   proxy; say yes and type its address (see [Network proxy](#network-proxy)),
+   used at once for the sign-in and the model lists. Then: your ChatGPT subscription (sign in in a browser
+   or with a code on a phone, see [ChatGPT subscription](#chatgpt-subscription))
+   or OpenRouter (an API key from https://openrouter.ai/keys, checked
+   before it is kept; `OPENROUTER_API_KEY`, when set, is used instead);
+3. the main model, picked from that provider's live list (ChatGPT's
+   models your plan offers, or OpenRouter's searched by name or maker,
+   with context size, price and 🖼 for models that see images). Only
+   models that can call tools are listed;
+4. if that model cannot see images, whether to pick an image model;
+5. tools and the web: web search (following the main model's provider,
+   your own SearXNG, or off), reading pages without a browser, and the
+   browser itself;
+6. permissions: whether shell commands and file writes run on their own,
+   ask you each time, or never run; and owners on chat apps;
+7. whether to turn on the companion ([heartbeat](#heartbeat) and
    [inner life](#inner-life)), and if so your city, birthday and quiet hours;
-6. whether to start the Gateway (Web UI, QQ, email) now, as with
-   `openclaw-rs gateway install`: at boot where the system allows, asking
-   for your password through sudo/doas for the system service (see
-   [Gateway service](#gateway-service)).
+8. whether to start the Gateway (Web UI, QQ, email) now, as with
+   `openclaw-rs gateway install` (see [Gateway service](#gateway-service)).
 
 It also says whether a browser was found, and when none is, offers to
 install Chromium with the system's package manager (apk, apt-get, dnf,
@@ -131,10 +135,10 @@ openclaw-rs login --status    # who is signed in
 openclaw-rs login --logout
 ```
 
-`openclaw-rs init` offers both sign-ins as its second step, and
-`openclaw-rs config` has them under Model › Provider and sign-in ("Sign in
-to ChatGPT (browser)" and "(device code)"), so there is no separate command
-to remember.
+`openclaw-rs init` offers the sign-in as its second step, and
+`openclaw-rs config` has it under Model › Provider and sign-in › ChatGPT
+account (in a browser, or with a code), so there is no separate command to
+remember.
 
 `--device` needs nothing from this machine's localhost: it shows a code to
 enter at `auth.openai.com/codex/device` in a browser on any device, a phone
@@ -147,18 +151,30 @@ points at `localhost:1455`), so copy its whole address from the browser
 and paste it into the terminal. Forwarding the port first
 (`ssh -L 1455:localhost:1455 pi`) works too. The sign-in is saved in
 `<state dir>/chatgpt-auth.json` (mode 0600) and refreshed on its own. It
-then sets `model.provider = "chatgpt"`, and `model.model = "gpt-5"` when
-the model was an OpenRouter id, with no editing of config.toml; change
-either in `openclaw-rs config` (any model your plan offers in Codex, e.g.
-`gpt-5-codex`), and `model.reasoning_effort` (see below).
+then sets `model.provider = "chatgpt"` with no editing of config.toml.
+No model name is written into the program: the models come from ChatGPT's
+own list of what your plan offers (the one Codex reads). When the model
+was an OpenRouter id, `login` takes the list's default (its first), and
+`init` and `openclaw-rs config` (Model › Provider and sign-in › Model)
+let you pick from the list. The model is typed only when the list
+cannot be read. The thinking level is picked the same way (see
+[Thinking level](#thinking-level)).
 
-Web search uses the subscription's own search (`search.provider =
-"chatgpt"`, which `openrouter` becomes without an OpenRouter key), and
+Web search follows the main model (`search.provider = "auto"`): on the
+subscription it is ChatGPT's own search, with no OpenRouter involved, and
 compacting long conversations runs on the subscription's model like
 everything else. What only OpenRouter offers (voice messages, the guide and
 OpenRouter review deciders) still needs `OPENROUTER_API_KEY`; without one
-they are off and the rest works. `summary_model` and `vision_model` ids with a `/` go to OpenRouter,
-others to ChatGPT. An imported sign-in shares its refresh token with
+they are off and the rest works.
+
+**Mixing ChatGPT and OpenRouter.** Sign in to ChatGPT and set an
+OpenRouter key, and every model list in `config` shows both: ChatGPT's
+models first (marked "ChatGPT ·"), then OpenRouter's. Whichever you pick
+runs it: the main model's provider follows the pick (ids with a `/` are
+OpenRouter's, the rest ChatGPT's), and the summary, image and audio models
+can each come from either, e.g. the main model on your ChatGPT plan and
+the audio model on OpenRouter. Signing in does not move a main model that
+already runs on OpenRouter; pick a ChatGPT model for that. An imported sign-in shares its refresh token with
 Codex, and each refresh replaces it, so one of the two gets signed out
 sooner or later: a `login` of its own is better. When the plan's limit is
 reached the reply says so, with the time until it resets. This uses the
@@ -230,7 +246,8 @@ the screen.
 `openclaw-rs config` (or `/config` in the terminal UI) edits
 `<state dir>/config.toml` interactively in three levels: a category, then
 its section, then the settings. The categories are language; model
-(provider and sign-in, context and model calls, messages during a reply);
+(network proxy, ChatGPT account, OpenRouter key, main model and thinking level; context
+and model calls; messages during a reply);
 chat apps and email (QQ, Feishu, Zulip, email); tools and the web (tools,
 web search, browser, reading web pages, skills); access and spending; the
 companion (time sense, heartbeat, inner life); and Gateway and updates. Every
@@ -240,9 +257,12 @@ may restart it; otherwise it says how).
 Sections and fields are picked with ↑/↓ and Enter, Esc goes back; each field
 shows the value in effect and its help. Choices and yes/no fields are menus
 (with "Default" to reset); for typed fields Enter keeps the value and `-`
-resets it. Model fields (main, summary, image, audio and search model)
-search OpenRouter's model list like `init` does, showing only models that
-fit (tools, image or audio input). The decision model choices for guided
+resets it. Model fields (main, summary, image and audio model) search
+ChatGPT's and OpenRouter's lists like `init` does, showing only models
+that fit (tools, image or audio input). Settings that do not apply to
+the current setup are left out (fallback models and cache breakpoints on
+ChatGPT, the SearXNG address unless it searches with SearXNG, and so on),
+and the web search menu offers only what this setup can use. The decision model choices for guided
 conversation and command review show the model each one runs, e.g.
 `openrouter/typesafe/jev-1.13`; the field below sets another model id. Without a terminal (piped input) it walks every field of a
 section instead: Enter keeps, `-` resets, `?` explains. Secrets are typed without echo and the prompt says
@@ -251,6 +271,32 @@ Comments and keys the editor does not know are kept, every change is checked
 before it is accepted, and the file is saved with mode 0600. It also opens a
 file that currently fails to load, so it can be repaired. The full list of
 options is under [Memory](#memory) below.
+
+## Network proxy
+
+Where the model providers cannot be reached directly, everything that talks
+to them can go through an HTTP proxy: the models (ChatGPT and OpenRouter),
+ChatGPT's sign-in, the model lists, web search, voice, MCP servers over HTTP
+and updates. QQ, Feishu and Zulip connect directly unless their own
+`proxy = true` is set ("Use the network proxy" in their `config` section,
+shown once a proxy is set); then their WebSocket long connections go
+through it too, in an HTTP `CONNECT` tunnel. `init` asks before signing in; later it is
+**Model › Provider and sign-in › Network proxy** in `openclaw-rs config`
+(`-` goes direct again).
+
+```toml
+[network]
+proxy = "http://127.0.0.1:7890"   # Clash, v2rayN and the like: their HTTP port
+# proxy = "http://user:password@proxy.lan:8080"
+
+[feishu]
+proxy = true   # Lark from abroad, say; QQ, Feishu and Zulip default to direct
+```
+
+Only `http://` proxies work (the address may be typed without it). These
+always go direct: addresses on this host and the local network (a local
+SearXNG, a browser's debugging port), `web_fetch`, which checks every
+address it connects to, and email (IMAP/SMTP).
 
 ## Checking the setup
 
@@ -1233,17 +1279,17 @@ into `chat` and the Web UI.
 ## Web search
 
 The model gets `web_search` for current information and character research.
-By default it runs through OpenRouter's [web plugin](https://openrouter.ai/docs/guides/features/plugins/web-search)
-with the same API key, which works wherever OpenRouter does and is billed per
-search. On a [ChatGPT subscription](#chatgpt-subscription), `chatgpt` uses
-its own web search, within the plan; it is what `openrouter` becomes there
-when no OpenRouter key is set. A self-hosted
+By default (`auto`) it follows the main model: on a
+[ChatGPT subscription](#chatgpt-subscription) it is ChatGPT's own web
+search, within the plan; on OpenRouter it is OpenRouter's
+[web plugin](https://openrouter.ai/docs/guides/features/plugins/web-search)
+with the same API key, billed per search. A self-hosted
 [SearXNG](https://docs.searxng.org) instance (with the `json` format
 enabled) is free:
 
 ```toml
 [search]
-provider = "openrouter"   # openrouter | chatgpt | searxng | off
+provider = "auto"         # auto | chatgpt | openrouter | searxng | off
 # model = "..."           # model that runs OpenRouter searches (default: model.model)
 # searxng_url = "http://127.0.0.1:8888"
 max_results = 5
@@ -1387,10 +1433,10 @@ one.
 - A model that lists no levels, or whose levels cannot be read, gets
   nothing: it thinks as it does by default.
 
-`off` sends nothing and leaves it to the model; a level (`none`,
-`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is sent as is. Change
-it in `openclaw-rs config` → Model → Provider and sign-in → Thinking
-level.
+`off` sends nothing and leaves it to the model; a level is sent as is.
+`openclaw-rs config` → Model → Provider and sign-in → Thinking level
+offers `auto` (showing the level it stands for now), `off`, and only the
+levels the current model lists; all of them when its list cannot be read.
 
 ## Reliability, caching and cost
 

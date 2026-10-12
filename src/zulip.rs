@@ -134,7 +134,7 @@ impl ZulipBot {
         let key = config
             .api_key()
             .context("no Zulip API key: set ZULIP_API_KEY or zulip.api_key")?;
-        let http = reqwest::Client::builder()
+        let http = crate::net::builder_for(config.proxy)
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(60))
             .build()?;

@@ -154,7 +154,7 @@ pub fn newer(a: &str, b: &str) -> bool {
 }
 
 fn http() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::net::builder()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(300))
         .user_agent(format!("openclaw-rs/{VERSION}"))

@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use crate::i18n::{Tr, tr};
 use crate::llm::{ChatMessage, Completion, FunctionCall, Role, ToolCall, ToolSpec, Usage};
+use crate::onboard::ModelInfo;
 
 pub const ISSUER: &str = "https://auth.openai.com";
 /// The Codex CLI's public OAuth client.
@@ -28,8 +29,6 @@ pub const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
 const CALLBACK_PORT: u16 = 1455;
 const REDIRECT: &str = "http://localhost:1455/auth/callback";
 pub const AUTH_FILE: &str = "chatgpt-auth.json";
-/// The model set by `login` when none fits the ChatGPT backend yet.
-pub const DEFAULT_MODEL: &str = "gpt-5";
 /// Renew this long before the access token expires.
 const EARLY: i64 = 300;
 /// Without a readable expiry, renew after this long, as Codex does.
@@ -86,6 +85,10 @@ pub const SWITCHED: Tr = tr(
     "The model now runs on your ChatGPT subscription: model.provider = \"chatgpt\", model.model = \"{}\" (change it with `openclaw-rs config`).",
     "模型现在使用你的 ChatGPT 订阅：model.provider = \"chatgpt\"，model.model = \"{}\"（可以用 `openclaw-rs config` 修改）。",
 );
+pub const SWITCHED_NO_MODEL: Tr = tr(
+    "The model now runs on your ChatGPT subscription (model.provider = \"chatgpt\"); pick its model with `openclaw-rs config` → Model → Provider and sign-in → Model. ChatGPT's model list could not be read now: {}",
+    "模型现在使用你的 ChatGPT 订阅（model.provider = \"chatgpt\"）；请用 `openclaw-rs config` → 模型 → 模型提供方与登录 → 模型 选择模型。现在读不到 ChatGPT 的模型列表：{}",
+);
 pub const IMPORTED_WARNING: Tr = tr(
     "Imported from Codex. Each refresh replaces the refresh token, so whichever program refreshes second is signed out; prefer `openclaw-rs login` for a login of its own.",
     "已从 Codex 导入。每次刷新都会换掉 refresh token，所以两个程序共用时后刷新的那个会被登出；最好用 `openclaw-rs login` 单独登录一次。",
@@ -120,6 +123,7 @@ const TEXTS: &[Tr] = &[
     PORT_BUSY,
     SIGNED_IN,
     SWITCHED,
+    SWITCHED_NO_MODEL,
     IMPORTED_WARNING,
     SIGNED_OUT,
     STATUS,
@@ -290,7 +294,7 @@ impl Auth {
 }
 
 fn http() -> reqwest::Client {
-    reqwest::Client::builder()
+    crate::net::builder()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
         .build()
@@ -799,8 +803,20 @@ pub async fn run(action: Action, config: &Path, state: &Path) -> Result<()> {
         "{}",
         SIGNED_IN.with(&[&tokens.who(), &path.display().to_string()])
     );
-    let model = use_in_config(config)?;
-    println!("{}", SWITCHED.with(&[&model]));
+    let settings = crate::config::Config::load(config).unwrap_or_default();
+    let listed = model_list(&settings, state).await;
+    let first = listed
+        .as_ref()
+        .ok()
+        .and_then(|m| m.first())
+        .map(|m| m.id.clone());
+    match use_in_config(config, || first)? {
+        Some(model) => println!("{}", SWITCHED.with(&[&model])),
+        None => {
+            let why = listed.err().map(|e| format!("{e:#}")).unwrap_or_default();
+            println!("{}", SWITCHED_NO_MODEL.with(&[&why]));
+        }
+    }
     if matches!(action, Action::Import(_)) {
         println!("{}", IMPORTED_WARNING.now());
     }
@@ -817,11 +833,15 @@ pub fn codex_auth_file() -> PathBuf {
 }
 
 /// Points `model` at the ChatGPT subscription in `config`: the provider,
-/// and a model the backend knows when the current one is an OpenRouter id
-/// or unset. Returns the model now set.
-pub fn use_in_config(config: &Path) -> Result<String> {
+/// and `default` (the backend's default model) when the current one is an
+/// OpenRouter id or unset. Returns the model now set; `None` when there was
+/// none to set, which leaves the model to be picked.
+pub fn use_in_config(
+    config: &Path,
+    default: impl FnOnce() -> Option<String>,
+) -> Result<Option<String>> {
     let mut doc = crate::setup::load(config)?;
-    let chosen = use_in_doc(&mut doc);
+    let chosen = use_in_doc(&mut doc, default);
     let text = doc.to_string();
     toml::from_str::<crate::config::Config>(&text).context("the new settings do not load")?;
     crate::setup::write_private(config, &text)?;
@@ -829,7 +849,10 @@ pub fn use_in_config(config: &Path) -> Result<String> {
 }
 
 /// `use_in_config` on a document being edited.
-pub fn use_in_doc(doc: &mut toml_edit::DocumentMut) -> String {
+pub fn use_in_doc(
+    doc: &mut toml_edit::DocumentMut,
+    default: impl FnOnce() -> Option<String>,
+) -> Option<String> {
     if !doc.contains_table("model") {
         doc["model"] = toml_edit::table();
     }
@@ -841,21 +864,53 @@ pub fn use_in_doc(doc: &mut toml_edit::DocumentMut) -> String {
         .unwrap_or("")
         .trim()
         .to_owned();
-    if current.is_empty() || current.contains('/') {
-        model["model"] = toml_edit::value(DEFAULT_MODEL);
-        DEFAULT_MODEL.to_owned()
-    } else {
-        current
+    if !current.is_empty() && !current.contains('/') {
+        return Some(current);
     }
+    let Some(chosen) = default() else {
+        if let Some(table) = model.as_table_like_mut() {
+            table.remove("model");
+        }
+        return None;
+    };
+    model["model"] = toml_edit::value(chosen.as_str());
+    Some(chosen)
 }
 
-/// The Codex version named when listing models: the backend lists what a
-/// client of that version may use.
-const CLIENT_VERSION: &str = "0.50.0";
+/// The Codex version named when listing models: the backend leaves out
+/// models that need a newer client, so a version ahead of any release
+/// lists them all.
+const CLIENT_VERSION: &str = "99.0.0";
+
+/// The models the subscription offers, read with the saved sign-in from
+/// the Codex backend: the ones it shows, its default first.
+pub async fn model_list(config: &crate::config::Config, state: &Path) -> Result<Vec<ModelInfo>> {
+    let auth = Auth::shared(&auth_path(state), ISSUER);
+    let base = crate::llm::chatgpt_base(&config.model);
+    let body = tokio::time::timeout(Duration::from_secs(15), list_body(&auth, base))
+        .await
+        .context("listing ChatGPT's models timed out")??;
+    let models = listed_models(&body, false);
+    if models.is_empty() {
+        bail!("ChatGPT's model list is empty");
+    }
+    Ok(models)
+}
 
 /// The reasoning levels ChatGPT offers for `model`, from the Codex
-/// backend's model list at `base`; `None` when the list does not name it.
+/// backend's model list at `base`; `None` when the list does not name it
+/// or lists no levels for it.
 pub async fn reasoning_levels(auth: &Auth, base: &str, model: &str) -> Result<Option<Vec<String>>> {
+    let body = list_body(auth, base).await?;
+    Ok(listed_models(&body, true)
+        .into_iter()
+        .find(|m| m.id.eq_ignore_ascii_case(model.trim()))
+        .map(|m| m.efforts)
+        .filter(|levels| !levels.is_empty()))
+}
+
+/// The Codex backend's model list at `base`.
+async fn list_body(auth: &Auth, base: &str) -> Result<Value> {
     let (token, account) = auth.access(false).await?;
     let mut request = http()
         .get(format!(
@@ -875,29 +930,51 @@ pub async fn reasoning_levels(auth: &Auth, base: &str, model: &str) -> Result<Op
     if !status.is_success() {
         bail!("listing ChatGPT's models failed with HTTP {status}");
     }
-    let body: Value = response
+    response
         .json()
         .await
-        .context("ChatGPT's model list is not JSON")?;
-    Ok(listed_levels(&body, model))
+        .context("ChatGPT's model list is not JSON")
 }
 
-/// `model`'s levels in a model list, which names models by `slug`.
-fn listed_levels(body: &Value, model: &str) -> Option<Vec<String>> {
-    let entry = body["models"].as_array()?.iter().find(|m| {
-        m["slug"]
-            .as_str()
-            .or_else(|| m["id"].as_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case(model.trim()))
-    })?;
-    let levels = entry["supported_reasoning_levels"].as_array()?;
-    Some(
-        levels
-            .iter()
-            .filter_map(|l| l["effort"].as_str().or_else(|| l.as_str()))
-            .map(str::to_owned)
-            .collect(),
-    )
+/// The models in a Codex model list, which names them by `slug`, in the
+/// backend's order (`priority`, lowest first). Hidden ones only with `all`.
+fn listed_models(body: &Value, all: bool) -> Vec<ModelInfo> {
+    let mut models: Vec<(i64, ModelInfo)> = body["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| all || m["visibility"].as_str().is_none_or(|v| v == "list"))
+        .filter_map(|m| {
+            let id = m["slug"].as_str().or_else(|| m["id"].as_str())?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let efforts = m["supported_reasoning_levels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|l| l["effort"].as_str().or_else(|| l.as_str()))
+                .map(str::to_owned)
+                .collect();
+            let info = ModelInfo {
+                id: id.to_owned(),
+                name: format!("ChatGPT · {}", m["display_name"].as_str().unwrap_or(id)),
+                context: m["context_window"].as_u64().unwrap_or(0),
+                price: None,
+                // Unlisted means the usual text and images.
+                images: m["input_modalities"]
+                    .as_array()
+                    .is_none_or(|a| a.iter().any(|v| v == "image")),
+                audio: false,
+                tools: true,
+                max_output: None,
+                efforts,
+            };
+            Some((m["priority"].as_i64().unwrap_or(i64::MAX), info))
+        })
+        .collect();
+    models.sort_by_key(|(priority, _)| *priority);
+    models.into_iter().map(|(_, m)| m).collect()
 }
 
 /// The Responses API request for a chat: the first system message becomes
@@ -1279,13 +1356,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "# mine\n[model]\nmodel = \"anthropic/claude-x\"\n").unwrap();
-        assert_eq!(use_in_config(&path).unwrap(), DEFAULT_MODEL);
+        assert_eq!(
+            use_in_config(&path, || Some("gpt-x".into()))
+                .unwrap()
+                .as_deref(),
+            Some("gpt-x")
+        );
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("# mine"), "{text}");
         let config: crate::config::Config = toml::from_str(&text).unwrap();
         assert_eq!(config.model.provider, crate::config::Provider::Chatgpt);
         std::fs::write(&path, "[model]\nmodel = \"gpt-5-codex\"\n").unwrap();
-        assert_eq!(use_in_config(&path).unwrap(), "gpt-5-codex");
+        assert_eq!(
+            use_in_config(&path, || panic!("kept")).unwrap().as_deref(),
+            Some("gpt-5-codex")
+        );
+        std::fs::write(&path, "[model]\nmodel = \"a/b\"\n").unwrap();
+        assert_eq!(use_in_config(&path, || None).unwrap(), None);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("chatgpt") && !text.contains("a/b"), "{text}");
     }
 
     #[test]
@@ -1398,24 +1487,28 @@ mod tests {
     }
 
     #[test]
-    fn reads_reasoning_levels_from_the_model_list() {
+    fn reads_models_and_their_levels_from_the_model_list() {
         let body = json!({"models": [
-            {"slug": "gpt-5", "supported_reasoning_levels": [
+            {"slug": "gpt-5", "display_name": "GPT-5", "priority": 2,
+             "context_window": 272000, "visibility": "list",
+             "supported_reasoning_levels": [
                 {"effort": "minimal"}, {"effort": "low"}, {"effort": "medium"}, {"effort": "high"}
             ]},
-            {"slug": "gpt-5-codex", "supported_reasoning_levels": ["low", "medium", "high"]},
-            {"slug": "plain"}
+            {"slug": "gpt-5-codex", "priority": 1, "input_modalities": ["text"],
+             "supported_reasoning_levels": ["low", "medium", "high"]},
+            {"slug": "hidden", "visibility": "hide", "priority": 0},
+            {"slug": "plain", "priority": 3}
         ]});
-        assert_eq!(
-            listed_levels(&body, "gpt-5").unwrap(),
-            ["minimal", "low", "medium", "high"]
-        );
-        assert_eq!(
-            listed_levels(&body, "GPT-5-codex").unwrap(),
-            ["low", "medium", "high"]
-        );
-        assert_eq!(listed_levels(&body, "plain"), None);
-        assert_eq!(listed_levels(&body, "other"), None);
+        let shown = listed_models(&body, false);
+        let ids: Vec<&str> = shown.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-5-codex", "gpt-5", "plain"]);
+        assert_eq!(shown[1].name, "ChatGPT · GPT-5");
+        assert_eq!(shown[1].context, 272_000);
+        assert_eq!(shown[1].efforts, ["minimal", "low", "medium", "high"]);
+        assert_eq!(shown[0].efforts, ["low", "medium", "high"]);
+        assert!(shown[1].images && !shown[0].images && shown[0].tools);
+        assert!(shown[2].efforts.is_empty());
+        assert_eq!(listed_models(&body, true)[0].id, "hidden");
     }
 
     #[tokio::test]

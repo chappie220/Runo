@@ -771,7 +771,7 @@ fn model_findings(config: &Config, models: Option<&[ModelInfo]>) -> Vec<Finding>
         return findings;
     };
     let find = |id: &str| models.iter().find(|m| m.id == id);
-    let search = (config.search.provider == SearchProvider::Openrouter)
+    let search = (config.search_provider() == SearchProvider::Openrouter)
         .then(|| set(&config.search.model))
         .flatten();
     for (role, id) in [
@@ -1026,15 +1026,13 @@ async fn mcp_findings(config: &Config, workspace: &Path, offline: bool) -> Vec<F
 }
 
 async fn search_findings(config: &Config, offline: bool) -> Vec<Finding> {
-    match config.search.provider {
+    match config.search_provider() {
         SearchProvider::Off => vec![info(SEARCH_OFF.now())],
-        // Without the key a subscription searches on its own.
-        SearchProvider::Openrouter if config.chatgpt() && config.api_key().is_err() => {
-            vec![info(SEARCH_CHATGPT.now())]
-        }
         SearchProvider::Chatgpt if !config.chatgpt() => vec![fail(SEARCH_NOT_CHATGPT.now())],
         SearchProvider::Chatgpt => vec![info(SEARCH_CHATGPT.now())],
-        SearchProvider::Openrouter => vec![info(SEARCH_OPENROUTER.now())],
+        SearchProvider::Openrouter | SearchProvider::Auto => {
+            vec![info(SEARCH_OPENROUTER.now())]
+        }
         SearchProvider::Searxng => {
             let Some(url) = config
                 .search
@@ -1049,7 +1047,8 @@ async fn search_findings(config: &Config, offline: bool) -> Vec<Finding> {
                 return Vec::new();
             }
             let answer = async {
-                let response = reqwest::Client::new()
+                let response = crate::net::builder()
+                    .build()?
                     .get(reqwest::Url::parse_with_params(
                         &format!("{url}/search"),
                         [("q", "openclaw"), ("format", "json")],
