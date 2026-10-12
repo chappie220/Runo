@@ -207,8 +207,8 @@ const SIGN_IN_FAILED: Tr = tr("✗ Could not sign in: {}", "✗ 登录失败：{
 const SIGN_IN_RETRY: Tr = tr("Try again? [Y/n]: ", "再试一次？[Y/n]：");
 const SIGNED_IN_AS: Tr = tr("✓ Signed in to ChatGPT: {}", "✓ 已登录 ChatGPT：{}");
 const CHATGPT_MODEL: Tr = tr(
-    "Model your plan offers in Codex, e.g. gpt-5 or gpt-5-codex [{}]: ",
-    "你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex [{}]：",
+    "Model your plan offers in Codex [{}]: ",
+    "你的套餐在 Codex 里能用的模型 [{}]：",
 );
 const OWNERS_HOW: Tr = tr(
     "On QQ, Feishu and Zulip only owners may use every tool (memory, files, shell); everyone else is a guest. Owners are listed in access.owners (`openclaw-rs config`, Access and spending › Access).",
@@ -611,6 +611,7 @@ pub async fn run(path: &Path, lang: Lang, offer_gateway: bool) -> Result<Option<
         gateway: offer_gateway.then_some(&mut start as &mut dyn FnMut() -> Result<()>),
         sign_in: Some(sign_in),
         signed_in,
+        chatgpt_models: Some(setup::chatgpt_models(path)),
     };
     // Typed answers come from a blocking terminal; that is all this process does now.
     wizard(path, &mut term, &catalog, host).await
@@ -630,6 +631,8 @@ pub struct Host<'a> {
     pub sign_in: Option<setup::SignIn<'a>>,
     /// Who is signed in to ChatGPT already.
     pub signed_in: Option<String>,
+    /// Reads the models the ChatGPT plan offers.
+    pub chatgpt_models: Option<setup::Loader<'a>>,
 }
 
 /// The setup itself, on any terminal and catalog.
@@ -645,6 +648,7 @@ pub async fn wizard<R: BufRead, W: Write>(
         gateway,
         sign_in,
         signed_in,
+        mut chatgpt_models,
     } = host;
     let mut doc = setup::load(path)?;
     let config = setup::parse(&doc).unwrap_or_default();
@@ -691,7 +695,8 @@ pub async fn wizard<R: BufRead, W: Write>(
         None => false,
     };
     if chatgpt {
-        crate::chatgpt::use_in_doc(&mut doc);
+        // The model is picked from ChatGPT's list in the next step.
+        crate::chatgpt::use_in_doc(&mut doc, || None);
     } else {
         if config.chatgpt() {
             setup::set(&mut doc, &["model", "provider"], Value::from("openrouter"));
@@ -757,14 +762,48 @@ pub async fn wizard<R: BufRead, W: Write>(
     // 3. Main model.
     step(term, 3, STEP_MODEL)?;
     if chatgpt {
-        // Not in OpenRouter's list; ChatGPT's models see images.
-        let current = setup::parse(&doc)
-            .map(|c| c.model.model)
-            .unwrap_or_default();
-        let Some(typed) = term.ask(&CHATGPT_MODEL.fill(term.lang, &[&current]))? else {
-            return aborted(term);
+        // ChatGPT's own list of what the plan offers, not OpenRouter's.
+        let list = match chatgpt_models.as_mut() {
+            Some(load) => {
+                term.tell(LOADING_MODELS, &[])?;
+                load().or_else(|err| {
+                    term.tell(NO_CATALOG, &[&format!("{err:#}")])?;
+                    anyhow::Ok(Vec::new())
+                })?
+            }
+            None => Vec::new(),
         };
-        let model = if typed.is_empty() { current } else { typed };
+        let current = setup::parse(&doc)
+            .map(|c| c.model.model.trim().to_owned())
+            .unwrap_or_default();
+        let listed = list.iter().any(|m| m.id == current);
+        let mut model = None;
+        if listed {
+            let Some(keep) = term.confirm(&KEEP_MODEL.fill(term.lang, &[&current]), true)? else {
+                return aborted(term);
+            };
+            model = keep.then(|| current.clone());
+        }
+        let model = match model {
+            Some(model) => model,
+            None if !list.is_empty() => match pick(term, &list, Need::Tools)? {
+                Some(model) => model,
+                None => return aborted(term),
+            },
+            None => loop {
+                let Some(typed) = term.ask(&CHATGPT_MODEL.fill(term.lang, &[&current]))? else {
+                    return aborted(term);
+                };
+                let typed = if typed.is_empty() {
+                    current.clone()
+                } else {
+                    typed
+                };
+                if !typed.is_empty() {
+                    break typed;
+                }
+            },
+        };
         setup::set(&mut doc, &["model", "model"], Value::from(model.as_str()));
         term.tell(CHOSEN, &[&model])?;
     }
@@ -1408,6 +1447,7 @@ mod tests {
             gateway: Some(&mut start),
             sign_in: unused(),
             signed_in: None,
+            chatgpt_models: None,
         };
         let done = wizard(&path, &mut term, &catalog, host).await.unwrap();
         let out = String::from_utf8(term.out).unwrap();
@@ -1451,6 +1491,7 @@ mod tests {
             gateway: Some(&mut fail),
             sign_in: unused(),
             signed_in: None,
+            chatgpt_models: None,
         };
         wizard(&path, &mut term, &catalog, host).await.unwrap();
         let out = String::from_utf8(term.out).unwrap();
@@ -1533,6 +1574,27 @@ mod tests {
         assert_eq!(config.model.model, "gpt-5");
         assert_eq!(config.access.owners, ["feishu:ou_x"]);
         assert!(config.access.first_chat_owner);
+
+        // A model the plan no longer offers: picked from ChatGPT's list.
+        std::fs::write(&path, "[model]\nprovider = \"chatgpt\"\nmodel = \"gone\"\n").unwrap();
+        let host = Host {
+            sign_in: Some(Box::new(|_: &mut dyn setup::Prompt, _| unreachable!())),
+            signed_in: Some("me@example.org".into()),
+            chatgpt_models: Some(Box::new(|| {
+                Ok(vec![model("gpt-a", true, true), model("gpt-b", true, true)])
+            })),
+            ..Host::default()
+        };
+        // English; ChatGPT; keep the sign-in; list all, take the second; no
+        // companion; no claiming.
+        let script = "2\n\n\n\n2\nn\nn\n";
+        let (done, out) = drive_with(&path, script, host).await;
+        assert_eq!(done, Some(Lang::En), "{out}");
+        assert!(
+            out.contains("gpt-a") && !out.contains("Keep the model"),
+            "{out}"
+        );
+        assert_eq!(Config::load(&path).unwrap().model.model, "gpt-b");
     }
 
     #[test]

@@ -147,10 +147,14 @@ points at `localhost:1455`), so copy its whole address from the browser
 and paste it into the terminal. Forwarding the port first
 (`ssh -L 1455:localhost:1455 pi`) works too. The sign-in is saved in
 `<state dir>/chatgpt-auth.json` (mode 0600) and refreshed on its own. It
-then sets `model.provider = "chatgpt"`, and `model.model = "gpt-5"` when
-the model was an OpenRouter id, with no editing of config.toml; change
-either in `openclaw-rs config` (any model your plan offers in Codex, e.g.
-`gpt-5-codex`), and `model.reasoning_effort` (see below).
+then sets `model.provider = "chatgpt"` with no editing of config.toml.
+No model name is written into the program: the models come from ChatGPT's
+own list of what your plan offers (the one Codex reads). When the model
+was an OpenRouter id, `login` takes the list's default (its first), and
+`init` and `openclaw-rs config` (Model › Provider and sign-in › Model)
+let you pick from the list. The model is typed only when the list
+cannot be read. The thinking level is picked the same way (see
+[Thinking level](#thinking-level)).
 
 Web search uses the subscription's own search (`search.provider =
 "chatgpt"`, which `openrouter` becomes without an OpenRouter key), and
@@ -1387,10 +1391,10 @@ one.
 - A model that lists no levels, or whose levels cannot be read, gets
   nothing: it thinks as it does by default.
 
-`off` sends nothing and leaves it to the model; a level (`none`,
-`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is sent as is. Change
-it in `openclaw-rs config` → Model → Provider and sign-in → Thinking
-level.
+`off` sends nothing and leaves it to the model; a level is sent as is.
+`openclaw-rs config` → Model → Provider and sign-in → Thinking level
+offers `auto` (showing the level it stands for now), `off`, and only the
+levels the current model lists; all of them when its list cannot be read.
 
 ## Reliability, caching and cost
 

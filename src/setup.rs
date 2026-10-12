@@ -50,7 +50,15 @@ enum Kind {
     },
     /// Removes one chat app's owner from the list at `path`.
     Revoke,
+    /// How hard the main model thinks: `auto`, `off`, or one of the levels
+    /// the model's list says it takes.
+    Effort,
 }
+
+/// Every value `model.reasoning_effort` takes, for typed answers.
+const EFFORTS: &[&str] = &[
+    "auto", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+];
 
 const BROKEN: Tr = tr(
     "warning: the current file does not load ({}); fix the field it names below",
@@ -119,6 +127,18 @@ const SIGN_IN_AGAIN: Tr = tr("Sign in again", "重新登录");
 const ON_CHATGPT: Tr = tr(
     "The model runs on your ChatGPT subscription once saved: model.provider = \"chatgpt\", model.model = \"{}\".",
     "保存后模型使用你的 ChatGPT 订阅：model.provider = \"chatgpt\"，model.model = \"{}\"。",
+);
+const ON_CHATGPT_PICK: Tr = tr(
+    "The model runs on your ChatGPT subscription once saved (model.provider = \"chatgpt\"); ChatGPT's model list could not be read, so pick the model under Model.",
+    "保存后模型使用你的 ChatGPT 订阅（model.provider = \"chatgpt\"）；读不到 ChatGPT 的模型列表，请在「模型」里选择模型。",
+);
+const AUTO_EFFORT: Tr = tr(
+    "auto (the model's lowest from low up: {})",
+    "auto（模型从 low 起最低的一档：{}）",
+);
+const OFF_EFFORT: Tr = tr(
+    "off (send nothing; the model decides)",
+    "off（不发送，由模型自己决定）",
 );
 const NO_CHAT_OWNERS: Tr = tr(
     "No chat app (QQ, Feishu, Zulip) has an owner.",
@@ -223,8 +243,8 @@ const GROUPS: &[Group] = &[
                         path: &["model", "model"],
                         label: tr("Model", "模型"),
                         help: tr(
-                            "Required, there is no default: any OpenRouter model id, e.g. anthropic/claude-sonnet-4.5; with chatgpt, a model your plan offers in Codex, e.g. gpt-5 or gpt-5-codex.",
-                            "必填，没有默认值：任意 OpenRouter 模型 id，例如 anthropic/claude-sonnet-4.5；用 chatgpt 时填你的套餐在 Codex 里能用的模型，例如 gpt-5 或 gpt-5-codex。",
+                            "Required: picked from the list read from the provider (OpenRouter's catalog, or with chatgpt the models your plan offers); typed only when the list cannot be read.",
+                            "必填：从提供方读到的列表里选（OpenRouter 的模型目录；用 chatgpt 时是你的套餐能用的模型）；只有读不到列表时才需要手动输入。",
                         ),
                         kind: Kind::Model(Need::Tools),
                     },
@@ -232,13 +252,10 @@ const GROUPS: &[Group] = &[
                         path: &["model", "reasoning_effort"],
                         label: tr("Thinking level", "思考档位"),
                         help: tr(
-                            "How hard the model thinks before answering. auto (the default) reads the levels the model supports and takes the lowest from low up; off sends nothing and leaves it to the model; or pick a level.",
-                            "模型回答前思考的程度。auto（默认）读取模型支持的档位，自动选从 low 起最低的一档；off 不发送，交给模型自己决定；也可以指定一档。",
+                            "How hard the model thinks before answering. auto (the default) reads the levels the model supports and takes the lowest from low up; off sends nothing and leaves it to the model; or pick one of the model's levels.",
+                            "模型回答前思考的程度。auto（默认）读取模型支持的档位，自动选从 low 起最低的一档；off 不发送，交给模型自己决定；也可以选模型支持的某一档。",
                         ),
-                        kind: Kind::Choice(&[
-                            "auto", "off", "none", "minimal", "low", "medium", "high", "xhigh",
-                            "max",
-                        ]),
+                        kind: Kind::Effort,
                     },
                     Field {
                         path: &["model", "fallbacks"],
@@ -1609,18 +1626,37 @@ fn run_on<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<bo
             tokio::runtime::Handle::current().block_on(crate::onboard::Catalog::models(&catalog))
         })
     });
+    models.chatgpt = Some(chatgpt_models(path));
     let (signed_in, sign_in) = chatgpt_sign_in();
     models.signed_in = signed_in;
     models.sign_in = Some(sign_in);
     edit_with(path, term, &mut models)
 }
 
+/// Loads a model list.
+pub type Loader<'a> = Box<dyn FnMut() -> Result<Vec<ModelInfo>> + 'a>;
+
+/// ChatGPT's model list, read with the saved sign-in.
+pub fn chatgpt_models(path: &Path) -> Loader<'static> {
+    let config = Config::load(path).unwrap_or_default();
+    Box::new(move || {
+        let state = crate::config::state_dir()?;
+        // The editor runs on a runtime worker; let it wait for the request.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(crate::chatgpt::model_list(&config, &state))
+        })
+    })
+}
+
 /// OpenRouter's model list for the model fields, loaded once, when first
-/// needed, and the ChatGPT sign-in.
+/// needed; ChatGPT's, once read; and the ChatGPT sign-in.
 #[derive(Default)]
 pub struct Models<'a> {
-    load: Option<Box<dyn FnMut() -> Result<Vec<ModelInfo>> + 'a>>,
+    load: Option<Loader<'a>>,
     list: Option<Vec<ModelInfo>>,
+    /// Reads the models the ChatGPT plan offers.
+    pub chatgpt: Option<Loader<'a>>,
+    chatgpt_list: Option<Vec<ModelInfo>>,
     /// Signs in to ChatGPT; without it, the sign-in field cannot be used.
     pub sign_in: Option<SignIn<'a>>,
     /// Who is signed in to ChatGPT now.
@@ -1652,6 +1688,55 @@ impl<'a> Models<'a> {
             self.list = Some(list);
         }
         Ok(self.list.as_deref().unwrap_or_default())
+    }
+
+    /// ChatGPT's list; empty when it cannot be read (not kept, so it is
+    /// read again, e.g. after signing in).
+    fn chatgpt<R: BufRead, W: Write>(&mut self, term: &mut Term<R, W>) -> Result<&[ModelInfo]> {
+        if self.chatgpt_list.is_none()
+            && let Some(load) = self.chatgpt.as_mut()
+        {
+            term.tell(LOADING_MODELS, &[])?;
+            match load() {
+                Ok(list) => self.chatgpt_list = Some(list),
+                Err(err) => term.tell(NO_MODEL_LIST, &[&format!("{err:#}")])?,
+            }
+        }
+        Ok(self.chatgpt_list.as_deref().unwrap_or_default())
+    }
+
+    /// The list the main model is picked from: ChatGPT's on a ChatGPT plan.
+    fn main<R: BufRead, W: Write>(
+        &mut self,
+        term: &mut Term<R, W>,
+        config: &Config,
+    ) -> Result<Vec<ModelInfo>> {
+        Ok(if config.chatgpt() {
+            self.chatgpt(term)?.to_vec()
+        } else {
+            self.get(term)?.to_vec()
+        })
+    }
+
+    /// The thinking levels the main model's list gives it; for a ChatGPT
+    /// model without any, OpenRouter's entry for it. Empty when unknown.
+    fn efforts<R: BufRead, W: Write>(
+        &mut self,
+        term: &mut Term<R, W>,
+        config: &Config,
+    ) -> Result<Vec<String>> {
+        let find = |list: &[ModelInfo], id: &str| {
+            let base = id.split(':').next().unwrap_or(id);
+            list.iter()
+                .find(|m| m.id.eq_ignore_ascii_case(id) || m.id.eq_ignore_ascii_case(base))
+                .map(|m| m.efforts.clone())
+                .unwrap_or_default()
+        };
+        let mut levels = find(&self.main(term, config)?, config.model.model.trim());
+        if levels.is_empty() && config.chatgpt() {
+            levels = find(self.get(term)?, config.openrouter_model().model.trim());
+        }
+        Ok(levels)
     }
 }
 
@@ -1904,8 +1989,7 @@ fn field_with_arrows<R: BufRead, W: Write>(
             let help = |_| Some(field.help.get(lang).to_owned());
             match term.select(label, &items, 0, &help)? {
                 Picked::Item(0) => {
-                    let model = crate::chatgpt::use_in_doc(doc);
-                    term.tell(ON_CHATGPT, &[&model])?;
+                    on_chatgpt(doc, term, models)?;
                     return Ok(true);
                 }
                 Picked::Item(_) => {}
@@ -1916,13 +2000,13 @@ fn field_with_arrows<R: BufRead, W: Write>(
         return sign_in(doc, term, models, device);
     }
     let current = describe(doc, field, lang);
-    // ChatGPT's models are not in OpenRouter's list: typed instead.
-    let chatgpt =
-        field.path == ["model", "model"] && parse(doc).is_ok_and(|config| config.chatgpt());
-    if let Kind::Model(need) = field.kind
-        && !chatgpt
-    {
-        let list = models.get(term)?;
+    if let Kind::Model(need) = field.kind {
+        // The main model on a ChatGPT plan comes from ChatGPT's own list.
+        let list = if field.path == ["model", "model"] {
+            models.main(term, &parse(doc).unwrap_or_default())?
+        } else {
+            models.get(term)?.to_vec()
+        };
         if !list.is_empty() {
             let items = [
                 SEARCH_MODELS.get(lang).to_owned(),
@@ -1931,7 +2015,6 @@ fn field_with_arrows<R: BufRead, W: Write>(
             let help = |_| Some(field.help.get(lang).to_owned());
             match term.select(&format!("{label} [{current}]"), &items, 0, &help)? {
                 Picked::Item(0) => {
-                    let list = list.to_vec();
                     let Some(id) = crate::onboard::pick(term, &list, need)? else {
                         return Ok(false);
                     };
@@ -1991,6 +2074,36 @@ fn field_with_arrows<R: BufRead, W: Write>(
         return Ok(true);
     }
     let menu: Option<(Vec<String>, Vec<Value>)> = match field.kind {
+        Kind::Effort => {
+            let config = parse(doc).unwrap_or_default();
+            let levels = models.efforts(term, &config)?;
+            let auto = crate::reasoning::lowest(&levels).unwrap_or_else(|| "-".into());
+            let levels = if levels.is_empty() {
+                // Not listed: every level, for the model to accept or not.
+                crate::reasoning::LEVELS
+                    .iter()
+                    .map(|l| (*l).to_owned())
+                    .collect()
+            } else {
+                levels
+            };
+            let values: Vec<String> = ["auto", "off"]
+                .iter()
+                .map(|v| (*v).to_owned())
+                .chain(levels)
+                .collect();
+            Some((
+                values
+                    .iter()
+                    .map(|v| match v.as_str() {
+                        "auto" => AUTO_EFFORT.fill(lang, &[&auto]),
+                        "off" => OFF_EFFORT.get(lang).to_owned(),
+                        level => level.to_owned(),
+                    })
+                    .collect(),
+                values.iter().map(|v| Value::from(v.as_str())).collect(),
+            ))
+        }
         Kind::Choice(choices) => Some((
             choices.iter().map(|c| (*c).to_owned()).collect(),
             choices.iter().map(|c| Value::from(*c)).collect(),
@@ -2164,6 +2277,7 @@ fn edit_section<R: BufRead, W: Write>(
         let current = shown(doc, field, term.lang, models);
         let kind = match field.kind {
             Kind::Decider { .. } => Kind::Choice(DECIDERS),
+            Kind::Effort => Kind::Choice(EFFORTS),
             kind => kind,
         };
         let options = match kind {
@@ -2297,6 +2411,7 @@ fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
     Ok(match kind {
         Kind::Text | Kind::Model(_) => Value::from(text),
         Kind::Decider { .. } => return value_for(Kind::Choice(DECIDERS), text, lang),
+        Kind::Effort => return value_for(Kind::Choice(EFFORTS), text, lang),
         Kind::Int => {
             let n: u32 = text
                 .replace('_', "")
@@ -2427,6 +2542,26 @@ fn shown(doc: &DocumentMut, field: &Field, lang: Lang, models: &Models<'_>) -> S
     }
 }
 
+/// Points the model at ChatGPT; an OpenRouter model gives way to ChatGPT's
+/// default (the first in its list).
+fn on_chatgpt<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    term: &mut Term<R, W>,
+    models: &mut Models<'_>,
+) -> Result<()> {
+    let chosen = crate::chatgpt::use_in_doc(doc, || {
+        models
+            .chatgpt(term)
+            .ok()
+            .and_then(|l| l.first())
+            .map(|m| m.id.clone())
+    });
+    match chosen {
+        Some(model) => term.tell(ON_CHATGPT, &[&model]),
+        None => term.tell(ON_CHATGPT_PICK, &[]),
+    }
+}
+
 /// Signs in to ChatGPT and points the model at it. `false` when input ended.
 fn sign_in<R: BufRead, W: Write>(
     doc: &mut DocumentMut,
@@ -2441,8 +2576,9 @@ fn sign_in<R: BufRead, W: Write>(
     match sign_in(term, device) {
         Ok(Some(who)) => {
             models.signed_in = Some(who);
-            let model = crate::chatgpt::use_in_doc(doc);
-            term.tell(ON_CHATGPT, &[&model])?;
+            // Read again now that it can be.
+            models.chatgpt_list = None;
+            on_chatgpt(doc, term, models)?;
             Ok(true)
         }
         Ok(None) => Ok(false),
@@ -2911,6 +3047,9 @@ mod tests {
             USE_SIGN_IN,
             SIGN_IN_AGAIN,
             ON_CHATGPT,
+            ON_CHATGPT_PICK,
+            AUTO_EFFORT,
+            OFF_EFFORT,
             NO_CHAT_OWNERS,
             REVOKED,
             REVOKE_TITLE,
@@ -2991,6 +3130,51 @@ mod tests {
         assert_eq!(config.access.owners, ["qq:ALICE", "feishu:ou_b"]);
     }
 
+    fn listed(id: &str, efforts: &[&str]) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            name: id.into(),
+            context: 0,
+            price: None,
+            images: true,
+            audio: false,
+            tools: true,
+            max_output: None,
+            efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn offers_the_thinking_levels_the_model_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[model]\nprovider = \"chatgpt\"\nmodel = \"gpt-x\"\n",
+        )
+        .unwrap();
+        let mut models = Models {
+            chatgpt: Some(Box::new(|| {
+                Ok(vec![
+                    listed("gpt-y", &["minimal"]),
+                    listed("gpt-x", &["low", "medium", "high"]),
+                ])
+            })),
+            ..Models::default()
+        };
+        // Model › provider › thinking level (6th): auto, off, low, medium.
+        let mut term = keys("2\r1\r6\r4\rqqq\r");
+        edit_with(&path, &mut term, &mut models).unwrap();
+        let out = String::from_utf8(term.out).unwrap();
+        assert!(
+            out.contains("auto (the model's lowest from low up: low)"),
+            "{out}"
+        );
+        assert!(!out.contains("minimal"), "{out}");
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.model.reasoning_effort.as_deref(), Some("medium"));
+    }
+
     #[test]
     fn signs_in_to_chatgpt_from_the_model_section() {
         let dir = tempfile::tempdir().unwrap();
@@ -2998,6 +3182,7 @@ mod tests {
         std::fs::write(&path, "[model]\nmodel = \"x/y\"\n").unwrap();
         let mut asked = Vec::new();
         let mut models = Models {
+            chatgpt: Some(Box::new(|| Ok(vec![listed("gpt-x", &[])]))),
             sign_in: Some(Box::new(|term: &mut dyn Prompt, device| {
                 asked.push(device);
                 let code = term.ask("code: ")?;
@@ -3016,7 +3201,7 @@ mod tests {
         assert_eq!(asked, [false, true]);
         let config = Config::load(&path).unwrap();
         assert!(config.chatgpt());
-        assert_eq!(config.model.model, crate::chatgpt::DEFAULT_MODEL);
+        assert_eq!(config.model.model, "gpt-x");
 
         // Signed in already: just use it, here typed.
         std::fs::write(&path, "[model]\nmodel = \"gpt-5-codex\"\n").unwrap();
