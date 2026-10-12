@@ -93,6 +93,9 @@ impl GuideConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchProvider {
+    /// What the main model runs on: ChatGPT's own search on a ChatGPT
+    /// plan, else OpenRouter's.
+    Auto,
     /// OpenRouter's `web` plugin with the configured key; billed per search.
     Openrouter,
     /// A SearXNG instance with the JSON format enabled (`searxng_url`).
@@ -116,7 +119,7 @@ pub struct SearchConfig {
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
-            provider: SearchProvider::Openrouter,
+            provider: SearchProvider::Auto,
             model: None,
             searxng_url: None,
             max_results: 5,
@@ -890,11 +893,33 @@ impl Config {
         }
     }
 
-    /// The settings for a side model (summaries, images): on a ChatGPT
-    /// subscription an id with a `/` is an OpenRouter model.
+    /// Who runs `web_search`: `auto` follows the main model, and so does
+    /// OpenRouter's on a ChatGPT plan without an OpenRouter key.
+    pub fn search_provider(&self) -> SearchProvider {
+        match self.search.provider {
+            SearchProvider::Auto if self.chatgpt() => SearchProvider::Chatgpt,
+            SearchProvider::Auto => SearchProvider::Openrouter,
+            SearchProvider::Openrouter if self.chatgpt() && self.api_key().is_err() => {
+                SearchProvider::Chatgpt
+            }
+            provider => provider,
+        }
+    }
+
+    /// The settings for a side model (summaries, images, voice), which may
+    /// run elsewhere than the main model: an id with a `/` is OpenRouter's,
+    /// one without is ChatGPT's (unless the main model is on a server of
+    /// its own, whose ids are its own).
     pub fn side_model(&self, model: &str) -> ModelConfig {
-        let base = if self.chatgpt() && model.contains('/') {
+        let own_server = self.model.base_url.trim_end_matches('/') != DEFAULT_BASE_URL;
+        let base = if model.contains('/') {
             self.openrouter_model()
+        } else if !self.chatgpt() && !own_server {
+            ModelConfig {
+                provider: Provider::Chatgpt,
+                fallbacks: Vec::new(),
+                ..self.model.clone()
+            }
         } else {
             self.model.clone()
         };
@@ -935,6 +960,33 @@ pub fn state_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn side_models_run_where_their_ids_live() {
+        let mut config = Config::default();
+        config.model.model = "a/main".into();
+        assert_eq!(config.side_model("gpt-x").provider, Provider::Chatgpt);
+        assert_eq!(config.side_model("b/side").provider, Provider::Openrouter);
+        config.model.provider = Provider::Chatgpt;
+        config.model.model = "gpt-x".into();
+        assert_eq!(config.side_model("gpt-y").provider, Provider::Chatgpt);
+        assert_eq!(config.side_model("b/side").provider, Provider::Openrouter);
+        // A server of one's own names its models its own way.
+        config.model.provider = Provider::Openrouter;
+        config.model.base_url = "http://127.0.0.1:11434/v1".into();
+        assert_eq!(config.side_model("llama3").provider, Provider::Openrouter);
+    }
+
+    #[test]
+    fn search_follows_the_main_model_by_default() {
+        let mut config = Config::default();
+        assert_eq!(config.search.provider, SearchProvider::Auto);
+        assert_eq!(config.search_provider(), SearchProvider::Openrouter);
+        config.model.provider = Provider::Chatgpt;
+        assert_eq!(config.search_provider(), SearchProvider::Chatgpt);
+        config.search.provider = SearchProvider::Off;
+        assert_eq!(config.search_provider(), SearchProvider::Off);
+    }
 
     #[test]
     fn context_budgets_read_and_write_with_k_and_m() {

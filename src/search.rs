@@ -37,7 +37,7 @@ impl Searcher {
         let model_settings = model;
         let backend = match config.provider {
             SearchProvider::Off => return Ok(None),
-            SearchProvider::Openrouter => Backend::OpenRouter {
+            SearchProvider::Openrouter | SearchProvider::Auto => Backend::OpenRouter {
                 base_url: model.base_url.trim_end_matches('/').to_owned(),
                 model: config.model.clone().unwrap_or_else(|| model.model.clone()),
                 api_key: api_key.to_owned(),

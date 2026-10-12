@@ -958,7 +958,7 @@ fn listed_models(body: &Value, all: bool) -> Vec<ModelInfo> {
                 .collect();
             let info = ModelInfo {
                 id: id.to_owned(),
-                name: m["display_name"].as_str().unwrap_or(id).to_owned(),
+                name: format!("ChatGPT · {}", m["display_name"].as_str().unwrap_or(id)),
                 context: m["context_window"].as_u64().unwrap_or(0),
                 price: None,
                 // Unlisted means the usual text and images.
@@ -1502,7 +1502,7 @@ mod tests {
         let shown = listed_models(&body, false);
         let ids: Vec<&str> = shown.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["gpt-5-codex", "gpt-5", "plain"]);
-        assert_eq!(shown[1].name, "GPT-5");
+        assert_eq!(shown[1].name, "ChatGPT · GPT-5");
         assert_eq!(shown[1].context, 272_000);
         assert_eq!(shown[1].efforts, ["minimal", "low", "medium", "high"]);
         assert_eq!(shown[0].efforts, ["low", "medium", "high"]);

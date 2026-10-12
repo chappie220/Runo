@@ -43,11 +43,10 @@ enum Kind {
         env: &'static str,
         generate: bool,
     },
-    /// Signs in to ChatGPT, in a browser or with a device code, then sets
-    /// the provider at `path` to it.
-    SignIn {
-        device: bool,
-    },
+    /// Signs in to ChatGPT, in a browser or with a device code.
+    SignIn,
+    /// Where `web_search` looks: `auto` and what this setup can use.
+    Search,
     /// Removes one chat app's owner from the list at `path`.
     Revoke,
     /// How hard the main model thinks: `auto`, `off`, or one of the levels
@@ -56,6 +55,20 @@ enum Kind {
 }
 
 /// Every value `model.reasoning_effort` takes, for typed answers.
+const SEARCHES: &[&str] = &["auto", "chatgpt", "openrouter", "searxng", "off"];
+
+/// Whether `field` means anything with `config`; the rest stay hidden.
+fn relevant(field: &Field, config: &Config) -> bool {
+    use crate::config::SearchProvider;
+    match field.path {
+        ["model", "fallbacks"] | ["model", "prompt_cache"] => !config.chatgpt(),
+        ["search", "searxng_url"] => config.search.provider == SearchProvider::Searxng,
+        ["search", "model"] => config.search_provider() == SearchProvider::Openrouter,
+        ["tools", "review", "model"] => config.tools.review.provider != ReviewProvider::Off,
+        _ => true,
+    }
+}
+
 const EFFORTS: &[&str] = &[
     "auto", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max",
 ];
@@ -122,8 +135,15 @@ const NO_SIGN_IN: Tr = tr(
     "这里无法登录，请运行 `openclaw-rs login`。",
 );
 const SIGN_IN_FAILED: Tr = tr("Could not sign in: {}", "登录失败：{}");
-const USE_SIGN_IN: Tr = tr("Use this sign-in: {}", "使用当前登录：{}");
-const SIGN_IN_AGAIN: Tr = tr("Sign in again", "重新登录");
+const SIGN_IN_BROWSER: Tr = tr("Sign in in a browser", "在浏览器里登录");
+const SIGN_IN_DEVICE: Tr = tr(
+    "Sign in with a code (on a phone or another device)",
+    "用验证码登录（在手机或其他设备上输入）",
+);
+const SIGNED_IN_PICK: Tr = tr(
+    "Signed in. ChatGPT's models are now in the model lists; the main model stays as it is until you pick one.",
+    "已登录。ChatGPT 的模型已经出现在模型列表里；主模型保持不变，需要时在「模型」里选。",
+);
 const ON_CHATGPT: Tr = tr(
     "The model runs on your ChatGPT subscription once saved: model.provider = \"chatgpt\", model.model = \"{}\".",
     "保存后模型使用你的 ChatGPT 订阅：model.provider = \"chatgpt\"，model.model = \"{}\"。",
@@ -202,19 +222,19 @@ const GROUPS: &[Group] = &[
                 fields: &[
                     Field {
                         path: &["model", "provider"],
-                        label: tr("Provider", "模型提供方"),
+                        label: tr("ChatGPT account", "ChatGPT 账号"),
                         help: tr(
-                            "openrouter: an OpenRouter key; chatgpt: your ChatGPT plan, signed in below (which also sets this).",
-                            "openrouter：用 OpenRouter key；chatgpt：用你的 ChatGPT 订阅，用下面的登录（登录时会自动设好这一项）。",
+                            "Sign in with your ChatGPT plan: in a browser, or with a code entered on any device (a phone too). Its models then appear in the model lists.",
+                            "用你的 ChatGPT 订阅登录：在浏览器里登录，或者在任意设备（手机也行）上输入一个码。登录后它的模型会出现在模型列表里。",
                         ),
-                        kind: Kind::Choice(&["openrouter", "chatgpt"]),
+                        kind: Kind::SignIn,
                     },
                     Field {
                         path: &["model", "api_key"],
                         label: tr("OpenRouter API key", "OpenRouter API key"),
                         help: tr(
-                            "Stored in plain text in config.toml (mode 0600); OPENROUTER_API_KEY wins when set.",
-                            "以明文存在 config.toml（权限 0600）；设了 OPENROUTER_API_KEY 时以环境变量为准。",
+                            "For OpenRouter's models (ids with a /). Stored in config.toml (mode 0600); OPENROUTER_API_KEY wins when set.",
+                            "用 OpenRouter 的模型（id 里带 /）时需要。存在 config.toml（权限 0600）；设了 OPENROUTER_API_KEY 时以它为准。",
                         ),
                         kind: Kind::Secret {
                             env: "OPENROUTER_API_KEY",
@@ -222,29 +242,11 @@ const GROUPS: &[Group] = &[
                         },
                     },
                     Field {
-                        path: &["model", "provider"],
-                        label: tr("Sign in to ChatGPT (browser)", "登录 ChatGPT（浏览器）"),
-                        help: tr(
-                            "Signs in with your ChatGPT account in a browser (as `openclaw-rs login`) and switches the model to your subscription.",
-                            "在浏览器里用你的 ChatGPT 账号登录（和 `openclaw-rs login` 一样），并把模型切换到你的订阅。",
-                        ),
-                        kind: Kind::SignIn { device: false },
-                    },
-                    Field {
-                        path: &["model", "provider"],
-                        label: tr("Sign in to ChatGPT (device code)", "登录 ChatGPT（设备码）"),
-                        help: tr(
-                            "Shows a code to enter at auth.openai.com/codex/device in a browser on any device, a phone too, so nothing has to reach this machine (as `openclaw-rs login --device`); then switches the model to your subscription.",
-                            "显示一个码，在任意设备（手机也行）的浏览器里打开 auth.openai.com/codex/device 输入即可，不需要访问这台机器（和 `openclaw-rs login --device` 一样）；然后把模型切换到你的订阅。",
-                        ),
-                        kind: Kind::SignIn { device: true },
-                    },
-                    Field {
                         path: &["model", "model"],
                         label: tr("Model", "模型"),
                         help: tr(
-                            "Required: picked from the list read from the provider (OpenRouter's catalog, or with chatgpt the models your plan offers); typed only when the list cannot be read.",
-                            "必填：从提供方读到的列表里选（OpenRouter 的模型目录；用 chatgpt 时是你的套餐能用的模型）；只有读不到列表时才需要手动输入。",
+                            "Picked from your ChatGPT plan's models and OpenRouter's; the pick decides which one runs it.",
+                            "从你的 ChatGPT 订阅和 OpenRouter 的模型里选；选了哪家的模型就用哪家。",
                         ),
                         kind: Kind::Model(Need::Tools),
                     },
@@ -743,10 +745,10 @@ const GROUPS: &[Group] = &[
                         path: &["search", "provider"],
                         label: tr("Provider", "搜索服务"),
                         help: tr(
-                            "openrouter: billed per search with the OpenRouter key (on a ChatGPT subscription without that key, ChatGPT's search is used instead); searxng: your own instance; off: no web_search tool; chatgpt: the ChatGPT subscription's own search.",
-                            "openrouter：用 OpenRouter key 按次计费（用 ChatGPT 订阅又没有这个 key 时，自动改用 ChatGPT 的搜索）；searxng：自己的实例；off：不提供 web_search 工具；chatgpt：用 ChatGPT 订阅自带的搜索。",
+                            "auto uses what the main model runs on: ChatGPT's own search, or OpenRouter's (billed per search). searxng: your own instance; off: no web search.",
+                            "auto 跟随主模型：用 ChatGPT 自带的搜索，或 OpenRouter 的搜索（按次计费）。searxng：自己的实例；off：不搜索。",
                         ),
-                        kind: Kind::Choice(&["openrouter", "searxng", "off", "chatgpt"]),
+                        kind: Kind::Search,
                     },
                     Field {
                         path: &["search", "searxng_url"],
@@ -1705,17 +1707,20 @@ impl<'a> Models<'a> {
         Ok(self.chatgpt_list.as_deref().unwrap_or_default())
     }
 
-    /// The list the main model is picked from: ChatGPT's on a ChatGPT plan.
-    fn main<R: BufRead, W: Write>(
+    /// Every model this setup can run: ChatGPT's (when signed in) first,
+    /// then OpenRouter's.
+    fn all<R: BufRead, W: Write>(
         &mut self,
         term: &mut Term<R, W>,
         config: &Config,
     ) -> Result<Vec<ModelInfo>> {
-        Ok(if config.chatgpt() {
+        let mut list = if config.chatgpt() || self.signed_in.is_some() {
             self.chatgpt(term)?.to_vec()
         } else {
-            self.get(term)?.to_vec()
-        })
+            Vec::new()
+        };
+        list.extend(self.get(term)?.iter().cloned());
+        Ok(list)
     }
 
     /// The thinking levels the main model's list gives it; for a ChatGPT
@@ -1732,7 +1737,7 @@ impl<'a> Models<'a> {
                 .map(|m| m.efforts.clone())
                 .unwrap_or_default()
         };
-        let mut levels = find(&self.main(term, config)?, config.model.model.trim());
+        let mut levels = find(&self.all(term, config)?, config.model.model.trim());
         if levels.is_empty() && config.chatgpt() {
             levels = find(self.get(term)?, config.openrouter_model().model.trim());
         }
@@ -1944,8 +1949,13 @@ fn section_with_arrows<R: BufRead, W: Write>(
         .unwrap_or(0);
     let mut cur = 0;
     loop {
-        let mut items: Vec<String> = section
+        let config = parse(doc).unwrap_or_default();
+        let fields: Vec<&Field> = section
             .fields
+            .iter()
+            .filter(|f| relevant(f, &config))
+            .collect();
+        let mut items: Vec<String> = fields
             .iter()
             .map(|f| {
                 let label = f.label.get(lang);
@@ -1954,10 +1964,10 @@ fn section_with_arrows<R: BufRead, W: Write>(
             })
             .collect();
         items.push(BACK.get(lang).into());
-        let help = |i: usize| section.fields.get(i).map(|f| f.help.get(lang).to_owned());
+        let help = |i: usize| fields.get(i).map(|f| f.help.get(lang).to_owned());
         match term.select(title, &items, cur, &help)? {
-            Picked::Item(i) if i < section.fields.len() => {
-                if !field_with_arrows(doc, &section.fields[i], term, models)? {
+            Picked::Item(i) if i < fields.len() => {
+                if !field_with_arrows(doc, fields[i], term, models)? {
                     return Ok(false);
                 }
                 cur = i;
@@ -1980,32 +1990,29 @@ fn field_with_arrows<R: BufRead, W: Write>(
     if let Kind::Revoke = field.kind {
         return revoke_owner(doc, term);
     }
-    if let Kind::SignIn { device } = field.kind {
-        if let Some(who) = models.signed_in.clone() {
-            let items = [
-                USE_SIGN_IN.fill(lang, &[&who]),
-                SIGN_IN_AGAIN.get(lang).to_owned(),
-            ];
-            let help = |_| Some(field.help.get(lang).to_owned());
-            match term.select(label, &items, 0, &help)? {
-                Picked::Item(0) => {
-                    on_chatgpt(doc, term, models)?;
-                    return Ok(true);
-                }
-                Picked::Item(_) => {}
-                Picked::Back => return Ok(true),
-                Picked::End => return Ok(false),
-            }
-        }
-        return sign_in(doc, term, models, device);
+    if let Kind::SignIn = field.kind {
+        let title = match &models.signed_in {
+            Some(who) => format!("{label} [{who}]"),
+            None => format!("{label} [{}]", NOT_SIGNED_IN.get(lang)),
+        };
+        let items = [
+            SIGN_IN_BROWSER.get(lang).to_owned(),
+            SIGN_IN_DEVICE.get(lang).to_owned(),
+        ];
+        let help = |_| Some(field.help.get(lang).to_owned());
+        return match term.select(&title, &items, 0, &help)? {
+            Picked::Item(i) => sign_in(doc, term, models, i == 1),
+            Picked::Back => Ok(true),
+            Picked::End => Ok(false),
+        };
     }
     let current = describe(doc, field, lang);
     if let Kind::Model(need) = field.kind {
-        // The main model on a ChatGPT plan comes from ChatGPT's own list.
-        let list = if field.path == ["model", "model"] {
-            models.main(term, &parse(doc).unwrap_or_default())?
-        } else {
+        // OpenRouter's search runs on OpenRouter; the rest may run on either.
+        let list = if field.path == ["search", "model"] {
             models.get(term)?.to_vec()
+        } else {
+            models.all(term, &parse(doc).unwrap_or_default())?
         };
         if !list.is_empty() {
             let items = [
@@ -2018,6 +2025,9 @@ fn field_with_arrows<R: BufRead, W: Write>(
                     let Some(id) = crate::onboard::pick(term, &list, need)? else {
                         return Ok(false);
                     };
+                    if field.path == ["model", "model"] {
+                        set_provider_for(doc, &id);
+                    }
                     change(doc, field.path, Some(Value::from(id)), term)?;
                 }
                 Picked::Item(_) => {
@@ -2102,6 +2112,29 @@ fn field_with_arrows<R: BufRead, W: Write>(
                     })
                     .collect(),
                 values.iter().map(|v| Value::from(v.as_str())).collect(),
+            ))
+        }
+        Kind::Search => {
+            let config = parse(doc).unwrap_or_default();
+            let auto = format!("{:?}", config.search_provider()).to_lowercase();
+            let values: Vec<&str> = SEARCHES
+                .iter()
+                .copied()
+                .filter(|v| match *v {
+                    "chatgpt" => config.chatgpt(),
+                    "openrouter" => config.api_key().is_ok(),
+                    _ => true,
+                })
+                .collect();
+            Some((
+                values
+                    .iter()
+                    .map(|v| match *v {
+                        "auto" => format!("auto ({auto})"),
+                        v => v.to_owned(),
+                    })
+                    .collect(),
+                values.iter().map(|v| Value::from(*v)).collect(),
             ))
         }
         Kind::Choice(choices) => Some((
@@ -2267,6 +2300,10 @@ fn edit_section<R: BufRead, W: Write>(
     term.say(&format!("\n[{}]", section.title.get(term.lang)))?;
     let mut index = 0;
     while let Some(field) = section.fields.get(index) {
+        if !relevant(field, &parse(doc).unwrap_or_default()) {
+            index += 1;
+            continue;
+        }
         if let Kind::Revoke = field.kind {
             if !revoke_owner(doc, term)? {
                 return Ok(false);
@@ -2278,6 +2315,7 @@ fn edit_section<R: BufRead, W: Write>(
         let kind = match field.kind {
             Kind::Decider { .. } => Kind::Choice(DECIDERS),
             Kind::Effort => Kind::Choice(EFFORTS),
+            Kind::Search => Kind::Choice(SEARCHES),
             kind => kind,
         };
         let options = match kind {
@@ -2290,9 +2328,13 @@ fn edit_section<R: BufRead, W: Write>(
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            Kind::Bool | Kind::SignIn { .. } => match term.lang {
+            Kind::Bool => match term.lang {
                 Lang::En => " (y/n)".into(),
                 Lang::Zh => " (y/n，是/否)".into(),
+            },
+            Kind::SignIn => match term.lang {
+                Lang::En => " (1=browser 2=device code)".into(),
+                Lang::Zh => " (1=浏览器 2=设备码)".into(),
             },
             Kind::Tokens => " (auto, 128k, 1m)".into(),
             _ => String::new(),
@@ -2311,17 +2353,17 @@ fn edit_section<R: BufRead, W: Write>(
                 term.say(&format!("  {}", field.help.get(term.lang)))?;
                 continue;
             }
-            text if let Kind::SignIn { device } = field.kind => {
-                match value_for(Kind::Bool, text, term.lang) {
-                    Ok(yes) => {
-                        if yes.as_bool() == Some(true) && !sign_in(doc, term, models, device)? {
-                            return Ok(false);
-                        }
-                    }
-                    Err(err) => {
-                        term.say(&format!("  {err:#}"))?;
+            text if let Kind::SignIn = field.kind => {
+                let device = match text {
+                    "1" => false,
+                    "2" => true,
+                    _ => {
+                        term.say(&format!("  {}", PICK_ONE.fill(term.lang, &["1, 2"])))?;
                         continue;
                     }
+                };
+                if !sign_in(doc, term, models, device)? {
+                    return Ok(false);
                 }
             }
             "-" => {
@@ -2337,6 +2379,9 @@ fn edit_section<R: BufRead, W: Write>(
                         continue;
                     }
                 };
+                if field.path == ["model", "model"] {
+                    set_provider_for(doc, text);
+                }
                 if !change(doc, field.path, Some(value), term)? {
                     continue;
                 }
@@ -2412,6 +2457,7 @@ fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
         Kind::Text | Kind::Model(_) => Value::from(text),
         Kind::Decider { .. } => return value_for(Kind::Choice(DECIDERS), text, lang),
         Kind::Effort => return value_for(Kind::Choice(EFFORTS), text, lang),
+        Kind::Search => return value_for(Kind::Choice(SEARCHES), text, lang),
         Kind::Int => {
             let n: u32 = text
                 .replace('_', "")
@@ -2477,7 +2523,7 @@ fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
             }
             Value::Array(array)
         }
-        Kind::SignIn { .. } | Kind::Revoke => bail!("{text:?} cannot be typed here"),
+        Kind::SignIn | Kind::Revoke => bail!("{text:?} cannot be typed here"),
         Kind::Secret { generate, .. } => {
             if generate && text == "+" {
                 Value::from(random_token()?)
@@ -2534,11 +2580,25 @@ fn remove(doc: &mut DocumentMut, path: &[&str]) {
 /// What the menus show for `field`: who is signed in for the sign-in.
 fn shown(doc: &DocumentMut, field: &Field, lang: Lang, models: &Models<'_>) -> String {
     match field.kind {
-        Kind::SignIn { .. } => models
+        Kind::SignIn => models
             .signed_in
             .clone()
             .unwrap_or_else(|| NOT_SIGNED_IN.get(lang).into()),
         _ => describe(doc, field, lang),
+    }
+}
+
+/// Runs the main model where `id` lives: OpenRouter's ids have a `/`,
+/// ChatGPT's do not (a server of one's own keeps its provider).
+fn set_provider_for(doc: &mut DocumentMut, id: &str) {
+    let config = parse(doc).unwrap_or_default();
+    if config.model.base_url.trim_end_matches('/') != crate::config::DEFAULT_BASE_URL {
+        return;
+    }
+    let chatgpt = !id.contains('/');
+    if chatgpt != config.chatgpt() {
+        let provider = if chatgpt { "chatgpt" } else { "openrouter" };
+        set(doc, &["model", "provider"], Value::from(provider));
     }
 }
 
@@ -2578,7 +2638,14 @@ fn sign_in<R: BufRead, W: Write>(
             models.signed_in = Some(who);
             // Read again now that it can be.
             models.chatgpt_list = None;
-            on_chatgpt(doc, term, models)?;
+            // Moved to ChatGPT only when nothing else runs the model yet.
+            let config = parse(doc).unwrap_or_default();
+            if config.chatgpt() || config.model.model.trim().is_empty() || config.api_key().is_err()
+            {
+                on_chatgpt(doc, term, models)?;
+            } else {
+                term.tell(SIGNED_IN_PICK, &[])?;
+            }
             Ok(true)
         }
         Ok(None) => Ok(false),
@@ -2808,12 +2875,11 @@ mod tests {
             "# my notes\n[model]\nmodel = \"x/old\"  # keep me\n\n[custom]\nthing = 1\n",
         )
         .unwrap();
-        // Model › provider: keep provider and key, skip both sign-ins, new
-        // id, keep reasoning effort, two fallbacks. Model › context: keep
+        // Model › provider: skip the sign-in, keep the key, new id, keep
+        // the thinking level, two fallbacks. Model › context: keep
         // retries, cache by number, a bad then a good budget, reset summary
         // model, keep image and audio models, recall and max steps.
-        let script =
-            "2\n1\n\n\n\n\na/new\n\nb/one, c/two ,\n2\n2\n\n3\nlots\n32000\n-\n\n\n\n\ns\n";
+        let script = "2\n1\n\n\na/new\n\nb/one, c/two ,\n2\n2\n\n3\nlots\n32000\n-\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -3044,8 +3110,9 @@ mod tests {
             NOT_SIGNED_IN,
             NO_SIGN_IN,
             SIGN_IN_FAILED,
-            USE_SIGN_IN,
-            SIGN_IN_AGAIN,
+            SIGN_IN_BROWSER,
+            SIGN_IN_DEVICE,
+            SIGNED_IN_PICK,
             ON_CHATGPT,
             ON_CHATGPT_PICK,
             AUTO_EFFORT,
@@ -3162,8 +3229,9 @@ mod tests {
             })),
             ..Models::default()
         };
-        // Model › provider › thinking level (6th): auto, off, low, medium.
-        let mut term = keys("2\r1\r6\r4\rqqq\r");
+        // Model › provider › thinking level (4th; no fallbacks on ChatGPT):
+        // auto, off, low, medium.
+        let mut term = keys("2\r1\r4\r4\rqqq\r");
         edit_with(&path, &mut term, &mut models).unwrap();
         let out = String::from_utf8(term.out).unwrap();
         assert!(
@@ -3191,31 +3259,34 @@ mod tests {
             })),
             ..Models::default()
         };
-        // Model › provider, the browser sign-in (3rd); then the device code
-        // (4th), signing in again; back out and save.
-        let script = "2\r1\r3\rabc\n4\r\x1b[B\rabc\nqqq\r";
+        // Model › provider › ChatGPT account, in a browser; then again
+        // with a code; back out and save.
+        let script = "2\r1\r1\r\rabc\n1\r\x1b[B\rabc\nqqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         assert_eq!(models.signed_in.as_deref(), Some("me@example.org"));
         drop(models);
         assert_eq!(asked, [false, true]);
         let config = Config::load(&path).unwrap();
+        // Nothing else ran the model (no OpenRouter key): ChatGPT's default.
         assert!(config.chatgpt());
         assert_eq!(config.model.model, "gpt-x");
 
-        // Signed in already: just use it, here typed.
-        std::fs::write(&path, "[model]\nmodel = \"gpt-5-codex\"\n").unwrap();
-        let mut models = Models {
-            signed_in: Some("me@example.org".into()),
-            ..Models::default()
-        };
-        let mut term = keys("2\r1\r3\r\rqqq\r");
+        // With an OpenRouter key the main model stays until one is picked;
+        // picking ChatGPT's moves it there.
+        std::fs::write(&path, "[model]\napi_key = \"sk\"\nmodel = \"x/y\"\n").unwrap();
+        let mut models = Models::new(|| Ok(vec![listed("x/y", &[])]));
+        models.chatgpt = Some(Box::new(|| Ok(vec![listed("gpt-x", &[])])));
+        models.sign_in = Some(Box::new(|_: &mut dyn Prompt, _| {
+            Ok(Some("me@example.org".into()))
+        }));
+        let mut term = keys("2\r1\r1\r\r3\r\rgpt\n\rqqq\r");
         edit_with(&path, &mut term, &mut models).unwrap();
         let out = String::from_utf8(term.out).unwrap();
-        assert!(out.contains("me@example.org"), "{out}");
+        assert!(out.contains("the main model stays"), "{out}");
         let config = Config::load(&path).unwrap();
         assert!(config.chatgpt());
-        assert_eq!(config.model.model, "gpt-5-codex");
+        assert_eq!(config.model.model, "gpt-x");
     }
 
     fn keys(script: &str) -> Term<&[u8], Vec<u8>> {
@@ -3250,10 +3321,10 @@ mod tests {
             loads += 1;
             Ok(vec![model("maker/blind", false), model("other/sees", true)])
         });
-        // Model › provider, the model field (5th), search "sees" and take
+        // Model › provider, the model field (3rd), search "sees" and take
         // it; back, then Model › messages during a reply, its provider, one
         // down to openrouter-chat; back out and save.
-        let script = "2\r1\r5\r\rsees\n\rq3\r2\rj\rqqq\r";
+        let script = "2\r1\r3\r\rsees\n\rq3\r2\rj\rqqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         drop(models);
