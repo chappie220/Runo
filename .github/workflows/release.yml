@@ -64,5 +64,11 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+            # Alpha (-a1) and beta (-b1) tags are pre-releases: `update`
+            # follows the latest release, which skips them.
+            prerelease=
+            case "$GITHUB_REF_NAME" in
+              *-a[0-9]*|*-alpha*|*-b[0-9]*|*-beta*|*-rc*) prerelease=--prerelease ;;
+            esac
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes $prerelease
           fi

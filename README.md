@@ -931,11 +931,14 @@ number: `package.metadata.openclaw.release` when set, which may add a fourth
 part such as `0.3.5.1` to the three Cargo allows, else `version`
 (`git tag v0.3.5.1 && git push origin v0.3.5.1`). Binaries before 0.3.5.1
 compare only three parts, so they reach a four-part release with
-`scripts/update.sh` rather than `update`. A revision after `-`, such as
-`0.3.6.1-1`, is newer than the release without it (`-rc1` and other
-non-numeric suffixes are pre-releases, older); binaries before 0.3.6.1-1
-read every suffix as a pre-release, so they too reach the first revision
-with `scripts/update.sh`. The Release workflow builds
+`scripts/update.sh` rather than `update`. After a `-` comes the stage:
+`-a1` is an alpha (early test), `-b1` a beta (pre-release), and a plain
+number such as `0.3.6.1-1` a revision of that release, so
+`0.3.7-a1` < `0.3.7-b1` < `0.3.7` < `0.3.7-1`. Alpha and beta tags are
+published as GitHub pre-releases, which `update` does not offer (it follows
+the latest release); install one with `scripts/update.sh --version 0.3.7-b1`. Binaries
+before 0.3.6.1-1 read every suffix as a pre-release, so they reach the
+first revision with `scripts/update.sh` too. The Release workflow builds
 the aarch64 and x86_64 musl binaries and their `SHA256SUMS`. A release
 already made for the tag (e.g. on the website, which also creates the tag)
 gets the files added; otherwise the workflow creates it with generated notes.

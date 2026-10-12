@@ -129,23 +129,39 @@ pub fn asset_name() -> String {
 }
 
 /// Whether version `a` is newer than `b` (`1.2.10` > `1.2.9`, `0.3.5.1` >
-/// `0.3.5`; a pre-release such as `1.3.0-rc1` is older than `1.3.0`, and a
-/// revision, a number after `-` such as `0.3.6.1-1`, is newer than it).
+/// `0.3.5`). After a `-`: `a1` (alpha, early test) < `b1` (beta,
+/// pre-release) < the release itself < `1` (a revision), so
+/// `0.3.7-a1` < `0.3.7-b1` < `0.3.7` < `0.3.7-1`.
 pub fn newer(a: &str, b: &str) -> bool {
-    /// The numbers, then where the suffix puts it: a pre-release below the
-    /// release (-1), none at 0, a revision above it.
-    fn parts(v: &str) -> (Vec<u64>, i64) {
+    /// Where a suffix puts a version next to its release: the stage
+    /// (alpha -2, beta and other pre-releases -1, none 0, revision 1) and
+    /// its number.
+    fn suffix(rest: &str) -> (i8, u64) {
+        let rest = rest.to_ascii_lowercase();
+        if let Ok(revision) = rest.parse() {
+            return (1, revision);
+        }
+        let (stage, number) = if let Some(n) = rest.strip_prefix("alpha") {
+            (-2, n)
+        } else if let Some(n) = rest.strip_prefix("beta") {
+            (-1, n)
+        } else if let Some(n) = rest.strip_prefix('a') {
+            (-2, n)
+        } else if let Some(n) = rest.strip_prefix('b') {
+            (-1, n)
+        } else {
+            (-1, rest.trim_start_matches(|c: char| !c.is_ascii_digit()))
+        };
+        (stage, number.trim_start_matches('.').parse().unwrap_or(0))
+    }
+    fn parts(v: &str) -> (Vec<u64>, (i8, u64)) {
         let v = v.trim().trim_start_matches('v');
         let (core, rank) = match v.split_once(['-', '+']) {
             Some((core, rest)) if v.as_bytes()[core.len()] == b'-' && !rest.is_empty() => {
-                let rank = match rest.parse::<u32>() {
-                    Ok(revision) => i64::from(revision),
-                    Err(_) => -1,
-                };
-                (core, rank)
+                (core, suffix(rest))
             }
-            Some((core, _)) => (core, 0),
-            None => (v, 0),
+            Some((core, _)) => (core, (0, 0)),
+            None => (v, (0, 0)),
         };
         let numbers: Vec<u64> = core.split('.').map(|n| n.parse().unwrap_or(0)).collect();
         (numbers, rank)
@@ -536,6 +552,22 @@ mod tests {
         assert!(!newer("0.3.6.1", "0.3.6.1-1"));
         assert!(newer("0.3.6.2", "0.3.6.1-1"));
         assert!(!newer("0.3.6.1-rc1", "0.3.6.1"));
+        // Alpha, then beta, then the release, then its revisions.
+        let order = [
+            "0.3.7-a1",
+            "0.3.7-a2",
+            "0.3.7-alpha3",
+            "0.3.7-b1",
+            "0.3.7-beta.2",
+            "0.3.7",
+            "0.3.7-1",
+            "0.3.7-2",
+            "0.3.7.1-a1",
+        ];
+        for pair in order.windows(2) {
+            assert!(newer(pair[1], pair[0]), "{} > {}", pair[1], pair[0]);
+            assert!(!newer(pair[0], pair[1]), "{} < {}", pair[0], pair[1]);
+        }
     }
 
     #[test]
