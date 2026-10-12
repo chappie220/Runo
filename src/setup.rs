@@ -72,6 +72,7 @@ fn relevant(field: &Field, config: &Config) -> bool {
         ["search", "searxng_url"] => config.search.provider == SearchProvider::Searxng,
         ["search", "model"] => config.search_provider() == SearchProvider::Openrouter,
         ["tools", "review", "model"] => config.tools.review.provider != ReviewProvider::Off,
+        ["image", "model" | "timeout_secs"] => config.image.enabled,
         _ => true,
     }
 }
@@ -887,6 +888,38 @@ const GROUPS: &[Group] = &[
                 ],
             },
             Section {
+                title: tr("Image generation", "生图"),
+                fields: &[
+                    Field {
+                        path: &["image", "enabled"],
+                        label: tr("image_generate tool", "image_generate 工具"),
+                        help: tr(
+                            "Draws pictures when asked and sends them to the chat (QQ, Feishu, Zulip, Web UI); elsewhere they are saved in workspace/images.",
+                            "按要求画图并直接发到聊天里（QQ、飞书、Zulip、Web UI）；其他地方会保存在 workspace/images。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["image", "model"],
+                        label: tr("Image generation model", "生图模型"),
+                        help: tr(
+                            "Picked from the lists: gpt-image-2 on the ChatGPT plan (uses its image quota), or one of OpenRouter's image models (billed per picture). Reset (-) to use gpt-image-2 on a ChatGPT plan and none otherwise.",
+                            "从列表中选择：ChatGPT 套餐的 gpt-image-2（占用套餐的生图额度），或 OpenRouter 的生图模型（按张计费）。输入 - 恢复默认：ChatGPT 套餐用 gpt-image-2，否则不生图。",
+                        ),
+                        kind: Kind::Model(Need::Text),
+                    },
+                    Field {
+                        path: &["image", "timeout_secs"],
+                        label: tr("Seconds per picture", "每张图最长秒数"),
+                        help: tr(
+                            "How long one picture may take before it is given up.",
+                            "一张图最多等待多少秒，超时就放弃。",
+                        ),
+                        kind: Kind::Int,
+                    },
+                ],
+            },
+            Section {
                 title: tr("Skills", "Skills"),
                 fields: &[Field {
                     path: &["skills", "enabled"],
@@ -1672,6 +1705,16 @@ fn run_on<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<bo
         })
     });
     models.chatgpt = Some(chatgpt_models(path));
+    let image_base = Config::load(path)
+        .unwrap_or_default()
+        .openrouter_model()
+        .base_url;
+    models.images = Some(Box::new(move || {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(crate::imagegen::openrouter_models(&image_base))
+        })
+    }));
     let (signed_in, sign_in) = chatgpt_sign_in();
     models.signed_in = signed_in;
     models.sign_in = Some(sign_in);
@@ -1702,6 +1745,9 @@ pub struct Models<'a> {
     /// Reads the models the ChatGPT plan offers.
     pub chatgpt: Option<Loader<'a>>,
     chatgpt_list: Option<Vec<ModelInfo>>,
+    /// Reads OpenRouter's image models.
+    pub images: Option<Loader<'a>>,
+    images_list: Option<Vec<ModelInfo>>,
     /// Signs in to ChatGPT; without it, the sign-in field cannot be used.
     pub sign_in: Option<SignIn<'a>>,
     /// Who is signed in to ChatGPT now.
@@ -1763,6 +1809,34 @@ impl<'a> Models<'a> {
             Vec::new()
         };
         list.extend(self.get(term)?.iter().cloned());
+        Ok(list)
+    }
+
+    /// The models that draw: the ChatGPT plan's (when signed in) first,
+    /// then OpenRouter's image models.
+    fn images<R: BufRead, W: Write>(
+        &mut self,
+        term: &mut Term<R, W>,
+        config: &Config,
+    ) -> Result<Vec<ModelInfo>> {
+        if self.images_list.is_none() {
+            let list = match self.images.as_mut() {
+                None => Vec::new(),
+                Some(load) => {
+                    term.tell(LOADING_MODELS, &[])?;
+                    load().or_else(|err| {
+                        term.tell(NO_MODEL_LIST, &[&format!("{err:#}")])?;
+                        anyhow::Ok(Vec::new())
+                    })?
+                }
+            };
+            self.images_list = Some(list);
+        }
+        let mut list = Vec::new();
+        if config.chatgpt() || self.signed_in.is_some() {
+            list.push(crate::imagegen::chatgpt_entry());
+        }
+        list.extend(self.images_list.iter().flatten().cloned());
         Ok(list)
     }
 
@@ -2054,6 +2128,8 @@ fn field_with_arrows<R: BufRead, W: Write>(
         // OpenRouter's search runs on OpenRouter; the rest may run on either.
         let list = if field.path == ["search", "model"] {
             models.get(term)?.to_vec()
+        } else if field.path == ["image", "model"] {
+            models.images(term, &parse(doc).unwrap_or_default())?
         } else {
             models.all(term, &parse(doc).unwrap_or_default())?
         };

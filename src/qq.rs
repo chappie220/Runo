@@ -62,6 +62,14 @@ impl Target {
         }
     }
 
+    /// Where pictures are uploaded before they are sent.
+    fn files_path(&self) -> String {
+        match self {
+            Target::User(id) => format!("/v2/users/{id}/files"),
+            Target::Group(id) => format!("/v2/groups/{id}/files"),
+        }
+    }
+
     fn max_replies(&self) -> usize {
         match self {
             Target::User(_) => C2C_REPLIES,
@@ -292,6 +300,43 @@ impl QqBot {
         Ok(())
     }
 
+    /// Uploads a picture and sends it as a media message, replying to
+    /// `reply_to` while QQ still accepts that.
+    async fn send_image(
+        &self,
+        target: &Target,
+        data: &[u8],
+        reply_to: &str,
+        seq: &AtomicUsize,
+    ) -> Result<()> {
+        use base64::Engine;
+        let upload = json!({
+            "file_type": 1,
+            "file_data": base64::engine::general_purpose::STANDARD.encode(data),
+            "srv_send_msg": false,
+        });
+        let uploaded = self
+            .api(reqwest::Method::POST, &target.files_path(), Some(upload))
+            .await?;
+        let file_info = uploaded["file_info"]
+            .as_str()
+            .context("QQ returned no file_info for the picture")?;
+        let message = json!({ "msg_type": 7, "content": " ", "media": { "file_info": file_info } });
+        let mut passive = message.clone();
+        passive["msg_id"] = json!(reply_to);
+        passive["msg_seq"] = json!(seq.fetch_add(1, Ordering::Relaxed));
+        if let Err(err) = self
+            .api(reqwest::Method::POST, &target.path(), Some(passive))
+            .await
+        {
+            // An expired reply window rejects msg_id; send it as an active message.
+            eprintln!("qq: passive picture failed ({err:#}); sending as an active message");
+            self.api(reqwest::Method::POST, &target.path(), Some(message))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// QQ may push an event more than once; remember recent message ids.
     fn first_sight(&self, id: &str) -> bool {
         self.seen.first(id)
@@ -409,6 +454,13 @@ impl Approver for QqApprover {
             .ask_approval(&self.target, id, tool, summary, &self.reply_to, &self.seq)
             .await;
         self.bot.approvals.wait(&session, asked, answer).await
+    }
+
+    async fn send_image(&self, _mime: &str, data: &[u8]) -> Result<bool> {
+        self.bot
+            .send_image(&self.target, data, &self.reply_to, &self.seq)
+            .await?;
+        Ok(true)
     }
 }
 
@@ -871,6 +923,16 @@ mod tests {
                     },
                 ),
             )
+            .route(
+                "/v2/{kind}/{id}/files",
+                post(
+                    |State(sent): State<Sent>, Path((kind, id)): Path<(String, String)>, headers: HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+                        assert!(authorized(&headers));
+                        sent.lock().unwrap().push((format!("/v2/{kind}/{id}/files"), body));
+                        axum::Json(json!({"file_uuid": "f1", "file_info": "INFO1", "ttl": 3600}))
+                    },
+                ),
+            )
             .with_state(sent);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         base
@@ -1104,6 +1166,29 @@ mod tests {
         assert!(!asked.is_finished());
         assert!(bot.answer_approval(&message("U1", "否")));
         assert!(!asked.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn pictures_are_uploaded_then_sent_as_media_replies() {
+        let sent: Sent = Arc::default();
+        let (_bot, approver, _) = approval_bot(sent.clone(), "U1").await;
+        assert!(
+            approver(false)
+                .send_image("image/png", &[1, 2, 3])
+                .await
+                .unwrap()
+        );
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent[0].0, "/v2/users/U1/files");
+        assert_eq!(
+            sent[0].1,
+            json!({"file_type": 1, "file_data": "AQID", "srv_send_msg": false})
+        );
+        assert_eq!(sent[1].0, "/v2/users/U1/messages");
+        assert_eq!(sent[1].1["msg_type"], 7);
+        assert_eq!(sent[1].1["media"]["file_info"], "INFO1");
+        assert_eq!(sent[1].1["msg_id"], "m1");
+        assert_eq!(sent[1].1["msg_seq"], 1);
     }
 
     #[tokio::test]

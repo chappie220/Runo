@@ -19,6 +19,7 @@ Single-binary Rust rewrite of OpenClaw. No plugins: every feature is built in.
 | Identity setup on first start, web search | ✅ |
 | Browser, using the one installed on the host | ✅ |
 | Reading web pages without a browser (`web_fetch`) | ✅ |
+| Image generation (ChatGPT plan or OpenRouter), sent to the chat | ✅ |
 | Backup and restore (`backup`, `restore`) | ✅ |
 | Voice messages to text (QQ, email, Web UI) | ✅ |
 | MCP client (stdio and Streamable HTTP servers) | ✅ |
@@ -623,6 +624,60 @@ max_chars = 8000          # text per call
 
 It is the `web_fetch` [capability](#access), which guests have by default.
 
+## Image generation
+
+`image_generate` draws a picture when someone asks for one and sends it into
+the chat: as a picture on QQ, Feishu and Zulip, and shown in the Web UI. In
+the terminal and in scheduled jobs it is only saved; every picture is kept in
+`workspace/images/`. To edit a picture or draw from one, the model passes
+files people sent (or earlier results) as references.
+
+Pick the model in `openclaw-rs config` → Tools and the web → Image
+generation; the list is read from the providers, nothing to type:
+
+- **ChatGPT · gpt-image-2**, on a ChatGPT plan (`openclaw-rs login`). It uses
+  the plan's own image quota through the same image endpoints the Codex CLI
+  uses (`/backend-api/codex/images/generations` and `/images/edits`, up to 5
+  reference pictures). That service picks size and quality itself, so the
+  aspect ratio is asked for in the prompt; transparent backgrounds work. It is
+  the default when the main model is on a ChatGPT plan.
+- **Any OpenRouter image model**, listed from OpenRouter's `images/models`,
+  billed per picture with the OpenRouter key; the cost shows in `usage`.
+
+```toml
+[image]
+enabled = true
+# model = "gpt-image-2"                    # default on a ChatGPT plan, none otherwise
+# model = "google/gemini-2.5-flash-image"  # an OpenRouter image model
+timeout_secs = 300
+```
+
+It is the `image_generate` [capability](#access), which guests do not have
+unless granted, since every picture costs quota or credit.
+
+### Drawing in character
+
+A persona that draws should draw like itself, not like a generic image
+model. While `image_generate` is on, a built-in `drawing` [skill](#skills)
+is listed (only its name and one line, like any skill; nothing is added to
+the start of a conversation). The model loads it when someone asks for a
+picture or when, in character, it wants to draw ("我想画画"), and it then:
+
+1. looks for a saved drawing profile in memory; without one, it researches
+   only how its character draws (skill level, medium, style, favorite
+   subjects, habits, signature) with `web_search`/`web_fetch`, or derives it
+   from SOUL.md for a persona of its own, and saves it with `memory_save`
+   (`Drawing profile: ...`) so it is researched once;
+2. turns the profile into limits in the image prompt (a child's crayon
+   drawing stays wobbly, an artist keeps their style, someone who cannot
+   draw draws badly), drawn on a fitting surface such as a sketchbook page;
+3. sends the picture and answers in character.
+
+It is offered to those who have both the `skills` and `image_generate`
+capabilities. To change it, put your own `skills/drawing/SKILL.md` in the
+workspace (start from [the built-in one](skills/drawing/SKILL.md)); it
+replaces the built-in skill. `skills.disabled = ["drawing"]` turns it off.
+
 ## MCP servers
 
 Tools from [Model Context Protocol](https://modelcontextprotocol.io) servers
@@ -1205,7 +1260,8 @@ section (also offered by `init`) removes the owner you pick; with
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
-`mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)). `shell`, `files_write`, `identity` and `mail` still follow
+`mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)),
+`image_generate` (see [Image generation](#image-generation)). `shell`, `files_write`, `identity` and `mail` still follow
 `tools.shell`, `tools.write`, `tools.identity` and `tools.mail`, and
 `ask` is still declined where nobody can approve.
 

@@ -18,7 +18,7 @@ pub struct SessionUsage {
 
 impl Store {
     /// Records one call for `actor`; `kind` is `turn`, `summary`, `ack`,
-    /// `search` or `voice`.
+    /// `search`, `voice` or `image`.
     pub fn record_usage(
         &self,
         session: &str,

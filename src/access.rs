@@ -43,10 +43,13 @@ pub enum Capability {
     /// `settings`: shows and changes the companion settings (heartbeat,
     /// inner life, QQ reply splitting, language) when asked in chat.
     Settings,
+    /// `image_generate`: draws pictures, which spends the image model's
+    /// credits or the ChatGPT plan's image quota.
+    ImageGenerate,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 13] = [
+    pub const ALL: [Capability; 14] = [
         Capability::Shell,
         Capability::FilesRead,
         Capability::FilesWrite,
@@ -60,6 +63,7 @@ impl Capability {
         Capability::Skills,
         Capability::Mail,
         Capability::Settings,
+        Capability::ImageGenerate,
     ];
 
     /// The capability a built-in tool needs; `None` for tools anyone may call.
@@ -77,6 +81,7 @@ impl Capability {
             "skill" => Capability::Skills,
             "send_mail" => Capability::Mail,
             "settings" => Capability::Settings,
+            "image_generate" => Capability::ImageGenerate,
             name if crate::mcp::is_mcp_tool(name) => Capability::Mcp,
             _ => return None,
         })

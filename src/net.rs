@@ -177,6 +177,65 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// One part of a `multipart/form-data` body: a text field, or a file
+/// with its name and MIME type.
+pub enum Part<'a> {
+    Text(&'a str),
+    File {
+        name: &'a str,
+        mime: &'a str,
+        data: &'a [u8],
+    },
+}
+
+/// A `multipart/form-data` body and its `Content-Type`, for the uploads
+/// that take no JSON.
+pub fn multipart(fields: &[(&str, Part<'_>)]) -> (String, Vec<u8>) {
+    let boundary = format!("openclaw-{:032x}", rand_u128());
+    let mut body = Vec::new();
+    for (field, part) in fields {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match part {
+            Part::Text(value) => {
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{field}\"\r\n\r\n").as_bytes(),
+                );
+                body.extend_from_slice(value.as_bytes());
+            }
+            Part::File { name, mime, data } => {
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\n\
+                         Content-Type: {mime}\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+                body.extend_from_slice(data);
+            }
+        }
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+/// A boundary nobody's file contains by chance.
+fn rand_u128() -> u128 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut out = 0u128;
+    for _ in 0..2 {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default(),
+        );
+        out = (out << 64) | u128::from(h.finish());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +330,30 @@ mod tests {
             head.contains(&format!("Proxy-Authorization: Basic {token}")),
             "{head}"
         );
+    }
+
+    #[test]
+    fn multipart_bodies_hold_text_and_files() {
+        let (kind, body) = multipart(&[
+            ("image_type", Part::Text("message")),
+            (
+                "image",
+                Part::File {
+                    name: "a.png",
+                    mime: "image/png",
+                    data: &[1, 2],
+                },
+            ),
+        ]);
+        let boundary = kind.strip_prefix("multipart/form-data; boundary=").unwrap();
+        let mut expected = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"image_type\"\r\n\r\nmessage\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"a.png\"\r\n\
+             Content-Type: image/png\r\n\r\n"
+        )
+        .into_bytes();
+        expected.extend_from_slice(&[1, 2]);
+        expected.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        assert_eq!(body, expected);
     }
 }

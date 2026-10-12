@@ -31,6 +31,10 @@ const MAX_DESCRIPTION_CHARS: usize = 300;
 /// Skills listed in the system prompt; the rest are named as a count.
 const MAX_LISTED: usize = 100;
 
+/// Drawing as the agent's character, built in and offered while
+/// `image_generate` is.
+pub const DRAWING: &str = include_str!("../skills/drawing/SKILL.md");
+
 const NONE: Tr = tr(
     "No skills installed. Install one with `openclaw-rs skills install <directory or git URL>`, or put it in {}",
     "还没有安装 skill。用 `openclaw-rs skills install <目录或 git 地址>` 安装，或者直接放到 {}",
@@ -82,6 +86,9 @@ pub const ALL: &[Tr] = &[
 pub struct Skills {
     pub dir: PathBuf,
     disabled: Vec<String>,
+    /// SKILL.md texts built into the program; a workspace skill of the same
+    /// name replaces one.
+    builtins: Vec<&'static str>,
 }
 
 /// One skill directory as found.
@@ -91,6 +98,8 @@ pub struct Skill {
     pub description: String,
     pub dir: PathBuf,
     pub state: State,
+    /// The SKILL.md of a built-in skill, which has no directory.
+    pub builtin: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,20 +131,36 @@ impl Skills {
         Self {
             dir: workspace.join(DIR),
             disabled: config.disabled.clone(),
+            builtins: Vec::new(),
         }
+    }
+
+    /// Also offers these built-in skills (SKILL.md texts).
+    pub fn with_builtins(mut self, texts: &[&'static str]) -> Self {
+        self.builtins = texts.to_vec();
+        self
     }
 
     /// Every skill directory, by name.
     pub fn scan(&self) -> Vec<Skill> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return Vec::new();
-        };
-        let mut skills: Vec<Skill> = entries
+        let mut skills: Vec<Skill> = std::fs::read_dir(&self.dir)
+            .into_iter()
+            .flatten()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'))
             .filter(|e| e.path().join(FILE).is_file())
             .map(|e| self.read(&e.path()))
             .collect();
+        for text in &self.builtins {
+            let (front, _) = front_matter(text);
+            let name = front.get("name").map(|n| n.trim()).unwrap_or_default();
+            if name.is_empty() || skills.iter().any(|s| s.name == name) {
+                continue;
+            }
+            let mut skill = self.judge(self.dir.join(name), name, &front);
+            skill.builtin = Some(text);
+            skills.push(skill);
+        }
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         skills
     }
@@ -152,20 +177,31 @@ impl Skills {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let mut skill = Skill {
-            name: dir_name.clone(),
-            description: String::new(),
-            dir: dir.to_owned(),
-            state: State::Ready,
-        };
         let text = match read_capped(&dir.join(FILE)) {
             Ok(text) => text,
             Err(err) => {
-                skill.state = State::Broken(format!("{err:#}"));
-                return skill;
+                return Skill {
+                    name: dir_name,
+                    description: String::new(),
+                    dir: dir.to_owned(),
+                    state: State::Broken(format!("{err:#}")),
+                    builtin: None,
+                };
             }
         };
         let (front, _) = front_matter(&text);
+        self.judge(dir.to_owned(), &dir_name, &front)
+    }
+
+    /// A skill from its front matter: named there or after `dir_name`.
+    fn judge(&self, dir: PathBuf, dir_name: &str, front: &BTreeMap<String, String>) -> Skill {
+        let mut skill = Skill {
+            name: dir_name.to_owned(),
+            description: String::new(),
+            dir,
+            state: State::Ready,
+            builtin: None,
+        };
         if let Some(name) = front.get("name").filter(|n| !n.trim().is_empty()) {
             skill.name = name.trim().to_owned();
         }
@@ -178,11 +214,11 @@ impl Skills {
         } else if self
             .disabled
             .iter()
-            .any(|d| d == &skill.name || d == &dir_name)
+            .any(|d| d == &skill.name || d == dir_name)
         {
             State::Off
         } else {
-            let missing = missing(&Requires::from_front(&front));
+            let missing = missing(&Requires::from_front(front));
             if missing.is_empty() {
                 State::Ready
             } else {
@@ -261,6 +297,14 @@ impl Skills {
                 bail!("{name} cannot be used here: it needs {}", what.join(", "))
             }
             State::Broken(why) => bail!("{name} is broken: {why}"),
+        }
+        if let Some(text) = skill.builtin {
+            let (_, body) = front_matter(text);
+            return Ok(format!(
+                "Skill {} (built in).\n\n{}",
+                skill.name,
+                body.trim()
+            ));
         }
         let text = read_capped(&skill.dir.join(FILE))?;
         let (_, body) = front_matter(&text);

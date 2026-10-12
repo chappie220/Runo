@@ -267,6 +267,52 @@ impl FeishuBot {
         Ok(())
     }
 
+    /// Uploads a picture and sends it as an image message.
+    async fn send_image(
+        &self,
+        target: &Target,
+        mime: &str,
+        data: &[u8],
+        reply_to: Option<&str>,
+    ) -> Result<()> {
+        let token = self.access_token().await?;
+        let name = format!("image.{}", mime.rsplit('/').next().unwrap_or("png"));
+        let (kind, body) = crate::net::multipart(&[
+            ("image_type", crate::net::Part::Text("message")),
+            (
+                "image",
+                crate::net::Part::File {
+                    name: &name,
+                    mime,
+                    data,
+                },
+            ),
+        ]);
+        let path = "/open-apis/im/v1/images";
+        let response = self
+            .http
+            .post(self.url(path))
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, kind)
+            .body(body)
+            .send()
+            .await
+            .with_context(|| format!("Feishu API {path} failed"))?;
+        let status = response.status();
+        let value: Value = response.json().await.unwrap_or(Value::Null);
+        let key = value["data"]["image_key"]
+            .as_str()
+            .filter(|_| status.is_success() && value["code"] == 0)
+            .with_context(|| {
+                format!(
+                    "Feishu API {path} returned HTTP {status}: {}",
+                    describe(&value)
+                )
+            })?;
+        self.post(target, reply_to, "image", &json!({ "image_key": key }))
+            .await
+    }
+
     /// Asks with Allow/Decline buttons, or in text where cards are refused.
     async fn ask_approval(
         &self,
@@ -581,6 +627,13 @@ impl Approver for FeishuApprover {
             .ask_approval(&self.target, id, tool, summary, self.reply_to.as_deref())
             .await;
         self.bot.approvals.wait(&session, asked, answer).await
+    }
+
+    async fn send_image(&self, mime: &str, data: &[u8]) -> Result<bool> {
+        self.bot
+            .send_image(&self.target, mime, data, self.reply_to.as_deref())
+            .await?;
+        Ok(true)
     }
 }
 
