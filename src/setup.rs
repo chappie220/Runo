@@ -45,6 +45,8 @@ enum Kind {
     },
     /// Signs in to ChatGPT, in a browser or with a device code.
     SignIn,
+    /// An `http://host:port` proxy address.
+    Proxy,
     /// Where `web_search` looks: `auto` and what this setup can use.
     Search,
     /// Removes one chat app's owner from the list at `path`.
@@ -220,6 +222,15 @@ const GROUPS: &[Group] = &[
             Section {
                 title: tr("Provider and sign-in", "模型提供方与登录"),
                 fields: &[
+                    Field {
+                        path: &["network", "proxy"],
+                        label: tr("Network proxy", "网络代理"),
+                        help: tr(
+                            "An HTTP proxy (http://host:port, e.g. Clash's 7890) for the model providers, sign-in, chat apps (their WebSockets too), search, voice and updates. Local addresses, web_fetch and email go direct. Reset (-) to go direct.",
+                            "HTTP 代理（http://主机:端口，例如 Clash 的 7890），模型提供方、登录、聊天应用（包括 WebSocket）、搜索、语音和更新都走它。本机和局域网地址、web_fetch 和邮件直连。输入 - 取消代理。",
+                        ),
+                        kind: Kind::Proxy,
+                    },
                     Field {
                         path: &["model", "provider"],
                         label: tr("ChatGPT account", "ChatGPT 账号"),
@@ -2225,15 +2236,27 @@ fn change<R: BufRead, W: Write>(
         Some(value) => set(doc, path, value),
         None => remove(doc, path),
     }
-    if let Err(err) = parse(doc) {
-        *doc = before;
-        term.tell(
-            if reset { CANNOT_RESET } else { NOT_ACCEPTED },
-            &[&format!("{err:#}")],
-        )?;
-        return Ok(false);
+    match parse(doc) {
+        Err(err) => {
+            *doc = before;
+            term.tell(
+                if reset { CANNOT_RESET } else { NOT_ACCEPTED },
+                &[&format!("{err:#}")],
+            )?;
+            return Ok(false);
+        }
+        // Sign-in and the model lists use the proxy right away.
+        Ok(config) if path == ["network", "proxy"] => {
+            crate::net::set(config.network.proxy.as_deref());
+        }
+        Ok(_) => {}
     }
     Ok(true)
+}
+
+/// A proxy address as stored: without the `/` the URL ends with.
+pub fn proxy_text(url: &reqwest::Url) -> String {
+    url.as_str().trim_end_matches('/').to_owned()
 }
 
 fn finish<R: BufRead, W: Write>(
@@ -2455,6 +2478,7 @@ pub fn change_setting(path: &Path, key: &str, text: &str, lang: Lang) -> Result<
 fn value_for(kind: Kind, text: &str, lang: Lang) -> Result<Value> {
     Ok(match kind {
         Kind::Text | Kind::Model(_) => Value::from(text),
+        Kind::Proxy => Value::from(proxy_text(&crate::net::parse(text)?)),
         Kind::Decider { .. } => return value_for(Kind::Choice(DECIDERS), text, lang),
         Kind::Effort => return value_for(Kind::Choice(EFFORTS), text, lang),
         Kind::Search => return value_for(Kind::Choice(SEARCHES), text, lang),
@@ -2563,7 +2587,7 @@ pub(crate) fn set(doc: &mut DocumentMut, path: &[&str], mut value: Value) {
     item[*key] = Item::Value(value);
 }
 
-fn remove(doc: &mut DocumentMut, path: &[&str]) {
+pub(crate) fn remove(doc: &mut DocumentMut, path: &[&str]) {
     let (key, tables) = path.split_last().expect("paths are never empty");
     let mut item = doc.as_item_mut();
     for name in tables {
@@ -2879,7 +2903,7 @@ mod tests {
         // the thinking level, two fallbacks. Model › context: keep
         // retries, cache by number, a bad then a good budget, reset summary
         // model, keep image and audio models, recall and max steps.
-        let script = "2\n1\n\n\na/new\n\nb/one, c/two ,\n2\n2\n\n3\nlots\n32000\n-\n\n\n\n\ns\n";
+        let script = "2\n1\n\n\n\na/new\n\nb/one, c/two ,\n2\n2\n\n3\nlots\n32000\n-\n\n\n\n\ns\n";
         let out = drive(&path, script);
         assert!(out.contains("\"lots\" is not a token count"), "{out}");
         assert!(out.contains("Saved"), "{out}");
@@ -3212,6 +3236,13 @@ mod tests {
     }
 
     #[test]
+    fn proxy_addresses_are_checked_and_tidied() {
+        let value = value_for(Kind::Proxy, "127.0.0.1:7890", Lang::En).unwrap();
+        assert_eq!(value.as_str(), Some("http://127.0.0.1:7890"));
+        assert!(value_for(Kind::Proxy, "socks5://127.0.0.1:1080", Lang::En).is_err());
+    }
+
+    #[test]
     fn offers_the_thinking_levels_the_model_lists() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -3229,9 +3260,9 @@ mod tests {
             })),
             ..Models::default()
         };
-        // Model › provider › thinking level (4th; no fallbacks on ChatGPT):
+        // Model › provider › thinking level (5th; no fallbacks on ChatGPT):
         // auto, off, low, medium.
-        let mut term = keys("2\r1\r4\r4\rqqq\r");
+        let mut term = keys("2\r1\r5\r4\rqqq\r");
         edit_with(&path, &mut term, &mut models).unwrap();
         let out = String::from_utf8(term.out).unwrap();
         assert!(
@@ -3261,7 +3292,7 @@ mod tests {
         };
         // Model › provider › ChatGPT account, in a browser; then again
         // with a code; back out and save.
-        let script = "2\r1\r1\r\rabc\n1\r\x1b[B\rabc\nqqq\r";
+        let script = "2\r1\r2\r\rabc\n2\r\x1b[B\rabc\nqqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         assert_eq!(models.signed_in.as_deref(), Some("me@example.org"));
@@ -3280,7 +3311,7 @@ mod tests {
         models.sign_in = Some(Box::new(|_: &mut dyn Prompt, _| {
             Ok(Some("me@example.org".into()))
         }));
-        let mut term = keys("2\r1\r1\r\r3\r\rgpt\n\rqqq\r");
+        let mut term = keys("2\r1\r2\r\r4\r\rgpt\n\rqqq\r");
         edit_with(&path, &mut term, &mut models).unwrap();
         let out = String::from_utf8(term.out).unwrap();
         assert!(out.contains("the main model stays"), "{out}");
@@ -3324,7 +3355,7 @@ mod tests {
         // Model › provider, the model field (3rd), search "sees" and take
         // it; back, then Model › messages during a reply, its provider, one
         // down to openrouter-chat; back out and save.
-        let script = "2\r1\r3\r\rsees\n\rq3\r2\rj\rqqq\r";
+        let script = "2\r1\r4\r\rsees\n\rq3\r2\rj\rqqq\r";
         let mut term = keys(script);
         edit_with(&path, &mut term, &mut models).unwrap();
         drop(models);

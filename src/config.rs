@@ -19,6 +19,7 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::i18n::Lang>,
     pub model: ModelConfig,
+    pub network: NetworkConfig,
     pub agent: AgentConfig,
     pub tools: ToolsConfig,
     pub gateway: GatewayConfig,
@@ -165,6 +166,17 @@ impl Default for BrowserConfig {
             max_chars: 8000,
         }
     }
+}
+
+/// The network path out.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    /// HTTP proxy for the model providers, sign-in, chat apps (WebSockets
+    /// too), search, voice and updates, e.g. `http://127.0.0.1:7890`.
+    /// Local addresses, `web_fetch` and email never use it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
 }
 
 /// `web_fetch`: downloads a page and reads its text, without a browser.
@@ -843,7 +855,10 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
+                let config: Self = toml::from_str(&text)
+                    .with_context(|| format!("invalid config {}", path.display()))?;
+                crate::net::set(config.network.proxy.as_deref());
+                Ok(config)
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(err) => Err(err).with_context(|| format!("cannot read {}", path.display())),

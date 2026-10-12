@@ -105,7 +105,7 @@ impl FeishuBot {
         let secret = config
             .app_secret()
             .context("no Feishu app secret: set FEISHU_APP_SECRET or feishu.app_secret")?;
-        let http = reqwest::Client::builder()
+        let http = crate::net::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(60))
             .build()?;
@@ -801,7 +801,7 @@ async fn connect<M: Model + 'static, T: Tools + 'static>(
                 .and_then(|(_, v)| v.parse().ok())
         })
         .unwrap_or(0);
-    let (socket, _) = tokio_tungstenite::connect_async(&url)
+    let socket = crate::net::websocket(&url)
         .await
         .context("cannot open the Feishu long connection")?;
     eprintln!("feishu: connected as {name}");

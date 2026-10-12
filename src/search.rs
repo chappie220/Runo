@@ -69,7 +69,7 @@ impl Searcher {
                     .to_owned(),
             },
         };
-        let http = reqwest::Client::builder()
+        let http = crate::net::builder()
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(model.request_timeout_secs))
             .build()

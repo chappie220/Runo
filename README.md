@@ -82,7 +82,9 @@ cargo build --release
 back); piped input still takes typed numbers:
 
 1. the language (中文 or English);
-2. where the models run: your ChatGPT subscription (sign in in a browser
+2. where the models run. First it asks whether to go through a network
+   proxy; say yes and type its address (see [Network proxy](#network-proxy)),
+   used at once for the sign-in and the model lists. Then: your ChatGPT subscription (sign in in a browser
    or with a code on a phone, see [ChatGPT subscription](#chatgpt-subscription))
    or OpenRouter (an API key from https://openrouter.ai/keys, checked
    before it is kept; `OPENROUTER_API_KEY`, when set, is used instead);
@@ -244,7 +246,7 @@ the screen.
 `openclaw-rs config` (or `/config` in the terminal UI) edits
 `<state dir>/config.toml` interactively in three levels: a category, then
 its section, then the settings. The categories are language; model
-(ChatGPT account, OpenRouter key, main model and thinking level; context
+(network proxy, ChatGPT account, OpenRouter key, main model and thinking level; context
 and model calls; messages during a reply);
 chat apps and email (QQ, Feishu, Zulip, email); tools and the web (tools,
 web search, browser, reading web pages, skills); access and spending; the
@@ -269,6 +271,27 @@ Comments and keys the editor does not know are kept, every change is checked
 before it is accepted, and the file is saved with mode 0600. It also opens a
 file that currently fails to load, so it can be repaired. The full list of
 options is under [Memory](#memory) below.
+
+## Network proxy
+
+Where the model providers cannot be reached directly, everything that talks
+to them can go through an HTTP proxy: the models (ChatGPT and OpenRouter),
+ChatGPT's sign-in, the model lists, QQ, Feishu and Zulip (their WebSocket
+long connections too, through an HTTP `CONNECT` tunnel), web search, voice,
+MCP servers over HTTP and updates. `init` asks before signing in; later it is
+**Model › Provider and sign-in › Network proxy** in `openclaw-rs config`
+(`-` goes direct again).
+
+```toml
+[network]
+proxy = "http://127.0.0.1:7890"   # Clash, v2rayN and the like: their HTTP port
+# proxy = "http://user:password@proxy.lan:8080"
+```
+
+Only `http://` proxies work (the address may be typed without it). These
+always go direct: addresses on this host and the local network (a local
+SearXNG, a browser's debugging port), `web_fetch`, which checks every
+address it connects to, and email (IMAP/SMTP).
 
 ## Checking the setup
 

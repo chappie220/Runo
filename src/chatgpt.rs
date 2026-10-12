@@ -294,7 +294,7 @@ impl Auth {
 }
 
 fn http() -> reqwest::Client {
-    reqwest::Client::builder()
+    crate::net::builder()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
         .build()

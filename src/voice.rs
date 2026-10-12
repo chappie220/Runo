@@ -35,7 +35,7 @@ impl Transcriber {
     /// Uses `audio_model`, else the main model.
     pub fn new(model: &ModelConfig, audio_model: Option<&str>, api_key: &str) -> Result<Self> {
         let chosen = audio_model.map(str::trim).filter(|m| !m.is_empty());
-        let http = reqwest::Client::builder()
+        let http = crate::net::builder()
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(model.request_timeout_secs.max(120)))
             .build()

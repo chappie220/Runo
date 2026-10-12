@@ -63,20 +63,23 @@ pub trait Catalog: Send + Sync {
 
 /// OpenRouter's (or a compatible server's) `/key` and `/models`.
 pub struct OpenRouter {
-    http: reqwest::Client,
     base_url: String,
 }
 
 impl OpenRouter {
     pub fn new(base_url: &str) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
-                .build()
-                .context("cannot build HTTP client")?,
             base_url: base_url.trim_end_matches('/').to_owned(),
         })
+    }
+
+    /// Built per request, so a proxy set during setup applies.
+    fn http(&self) -> reqwest::Client {
+        crate::net::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default()
     }
 }
 
@@ -84,7 +87,7 @@ impl OpenRouter {
 impl Catalog for OpenRouter {
     async fn check_key(&self, key: &str) -> KeyCheck {
         let response = self
-            .http
+            .http()
             .get(format!("{}/key", self.base_url))
             .bearer_auth(key)
             .send()
@@ -110,7 +113,7 @@ impl Catalog for OpenRouter {
 
     async fn models(&self) -> Result<Vec<ModelInfo>> {
         let body: Json = self
-            .http
+            .http()
             .get(format!("{}/models", self.base_url))
             .send()
             .await?
@@ -186,6 +189,30 @@ const STEP_LANGUAGE: Tr = tr("Language", "语言");
 const STEP_KEY: Tr = tr("Model provider", "模型提供方");
 const STEP_PERMISSIONS: Tr = tr("Permissions", "权限");
 const STEP_TOOLS: Tr = tr("Tools and the web", "工具与网络");
+const PROXY_ASK: Tr = tr(
+    "Reach the model providers through a network proxy? [y/N]: ",
+    "需要通过网络代理访问模型提供方吗？[y/N]：",
+);
+const PROXY_ASK_SET: Tr = tr(
+    "Reach the model providers through a network proxy? [Y/n]: ",
+    "需要通过网络代理访问模型提供方吗？[Y/n]：",
+);
+const PROXY_ADDRESS: Tr = tr(
+    "Proxy address (http://host:port, e.g. http://127.0.0.1:7890): ",
+    "代理地址（http://主机:端口，例如 http://127.0.0.1:7890）：",
+);
+const PROXY_ADDRESS_KEEP: Tr = tr(
+    "Proxy address [{}] (Enter keeps it): ",
+    "代理地址 [{}]（直接回车保留）：",
+);
+const PROXY_BAD: Tr = tr(
+    "✗ {} Only http:// proxies work (Clash, v2rayN and the like have an HTTP port).",
+    "✗ {} 只支持 http:// 代理（Clash、v2rayN 等都有 HTTP 端口）。",
+);
+const PROXY_SET: Tr = tr(
+    "✓ Using the proxy {}; local addresses go direct.",
+    "✓ 使用代理 {}；本机和局域网地址直连。",
+);
 const PROVIDER_TITLE: Tr = tr("Which models?", "用哪里的模型？");
 const PROVIDER_CHATGPT: Tr = tr("My ChatGPT subscription", "我的 ChatGPT 订阅");
 const PROVIDER_OPENROUTER: Tr = tr("OpenRouter (API key)", "OpenRouter（API key）");
@@ -401,6 +428,12 @@ pub const ALL: &[Tr] = &[
     STEP,
     STEP_LANGUAGE,
     STEP_KEY,
+    PROXY_ASK,
+    PROXY_ASK_SET,
+    PROXY_ADDRESS,
+    PROXY_ADDRESS_KEEP,
+    PROXY_BAD,
+    PROXY_SET,
     PROVIDER_TITLE,
     PROVIDER_OPENROUTER,
     PROVIDER_CHATGPT,
@@ -716,6 +749,7 @@ pub async fn wizard<R: BufRead, W: Write>(
 
     // 2. Where the models run: OpenRouter with a key, or a ChatGPT plan.
     step(term, 2, STEP_KEY)?;
+    proxy(&mut doc, term, &config)?;
     let chatgpt = match sign_in {
         Some(sign_in) => match provider(term, &config, sign_in, signed_in)? {
             Some(chatgpt) => chatgpt,
@@ -1004,6 +1038,56 @@ fn choose<R: BufRead, W: Write>(
             .filter(|n| (1..=items.len()).contains(n))
             .map_or(start, |n| n - 1),
     ))
+}
+
+/// Asks whether to go through a proxy, before anything signs in or loads
+/// a list, and uses the answer right away. Running out of answers keeps
+/// what is set.
+fn proxy<R: BufRead, W: Write>(
+    doc: &mut DocumentMut,
+    term: &mut Term<R, W>,
+    config: &Config,
+) -> Result<()> {
+    let current = config
+        .network
+        .proxy
+        .clone()
+        .filter(|p| !p.trim().is_empty());
+    let ask = if current.is_some() {
+        PROXY_ASK_SET
+    } else {
+        PROXY_ASK
+    };
+    let Some(wanted) = term.confirm(ask.get(term.lang), current.is_some())? else {
+        return Ok(());
+    };
+    if !wanted {
+        setup::remove(doc, &["network", "proxy"]);
+        crate::net::set(None);
+        return Ok(());
+    }
+    let url = loop {
+        let prompt = match &current {
+            Some(current) => PROXY_ADDRESS_KEEP.fill(term.lang, &[current]),
+            None => PROXY_ADDRESS.get(term.lang).to_owned(),
+        };
+        let Some(answer) = term.ask(&prompt)? else {
+            return Ok(());
+        };
+        let text = match (answer.trim(), &current) {
+            ("", Some(current)) => current.clone(),
+            ("", None) => continue,
+            (text, _) => text.to_owned(),
+        };
+        match crate::net::parse(&text) {
+            Ok(url) => break setup::proxy_text(&url),
+            Err(err) => term.tell(PROXY_BAD, &[&format!("{err:#}")])?,
+        }
+    };
+    setup::set(doc, &["network", "proxy"], Value::from(url.as_str()));
+    crate::net::set(Some(&url));
+    term.tell(PROXY_SET, &[&url])?;
+    Ok(())
 }
 
 /// Asks where the models run. `Some(true)` for a ChatGPT plan, signed in;
@@ -1482,7 +1566,7 @@ mod tests {
         let catalog = fake();
         // Chinese; a refused key, then a good one; search "maker", pick the
         // text-only model; yes to an image model, which only lists "other/sees".
-        let script = "1\nsk-bad\nsk-good\nmaker\n1\n\n\n1\n";
+        let script = "1\n\nsk-bad\nsk-good\nmaker\n1\n\n\n1\n";
         let (done, out) = drive(&path, &catalog, script).await;
         assert_eq!(done, Some(Lang::Zh), "{out}");
         assert!(
@@ -1520,7 +1604,7 @@ mod tests {
         .unwrap();
         let catalog = fake();
         // English; keep the key; pick by full id.
-        let script = "2\n\nsees\nother/sees\n";
+        let script = "2\n\n\nsees\nother/sees\n";
         let (done, out) = drive(&path, &catalog, script).await;
         assert_eq!(done, Some(Lang::En), "{out}");
         assert!(out.contains("other/sees can see images"), "{out}");
@@ -1535,7 +1619,7 @@ mod tests {
     async fn ending_early_saves_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let (done, out) = drive(&path, &fake(), "1\nsk-good\n").await;
+        let (done, out) = drive(&path, &fake(), "1\n\nsk-good\n").await;
         assert_eq!(done, None);
         assert!(out.contains("没有保存"), "{out}");
         assert!(!path.exists());
@@ -1554,7 +1638,7 @@ mod tests {
         // as they are; no (highlighted) to the first chat claiming
         // ownership; yes to the companion, a city, a bad then a good
         // birthday, default quiet hours; yes to the Gateway.
-        let script = "\r\x1b[B\rsk-good\nsees\n\r\r\r\r\r\r\r\rShanghai\n31-02\n03-14\n\n\r";
+        let script = "\r\r\x1b[B\rsk-good\nsees\n\r\r\r\r\r\r\r\rShanghai\n31-02\n03-14\n\n\r";
         let unused = || -> Option<setup::SignIn<'static>> {
             Some(Box::new(|_: &mut dyn setup::Prompt, _| unreachable!()))
         };
@@ -1669,7 +1753,7 @@ mod tests {
         // SearXNG and its address; web_fetch as it is; shell commands
         // allowed, file writes as they are; the first chat claims; no
         // companion.
-        let script = "2\n1\n2\ngpt-5-codex\n2\nhttp://127.0.0.1:8888\n\n2\n\ny\nn\n";
+        let script = "2\n\n1\n2\ngpt-5-codex\n2\nhttp://127.0.0.1:8888\n\n2\n\ny\nn\n";
         let (done, out) = drive_with(&path, script, host).await;
         assert_eq!(done, Some(Lang::En), "{out}");
         assert_eq!(signed, 1);
@@ -1706,10 +1790,10 @@ mod tests {
             signed_in: Some("me@example.org".into()),
             ..Host::default()
         };
-        // English; ChatGPT (the default); keep the sign-in and model; tools
-        // and permissions as they are; keep claiming on; revoke the first;
-        // no companion.
-        let script = "2\n\n\n\n\n\n\n\n\ny\n1\nn\n";
+        // English; a proxy, typed without its scheme; ChatGPT (the
+        // default); keep the sign-in and model; tools and permissions as
+        // they are; keep claiming on; revoke the first; no companion.
+        let script = "2\ny\nsocks5://x:1\nlocalhost:7890\n\n\n\n\n\n\n\n\ny\n1\nn\n";
         let (done, out) = drive_with(&path, script, host).await;
         assert_eq!(done, Some(Lang::En), "{out}");
         assert!(out.contains("Owners now: qq:ME, feishu:ou_x"), "{out}");
@@ -1718,6 +1802,16 @@ mod tests {
         assert_eq!(config.model.model, "gpt-5");
         assert_eq!(config.access.owners, ["feishu:ou_x"]);
         assert!(config.access.first_chat_owner);
+        assert!(out.contains("Only http:// proxies work"), "{out}");
+        assert!(
+            out.contains("Using the proxy http://localhost:7890"),
+            "{out}"
+        );
+        assert_eq!(
+            config.network.proxy.as_deref(),
+            Some("http://localhost:7890")
+        );
+        crate::net::set(None);
 
         // A model the plan no longer offers: picked from ChatGPT's list.
         std::fs::write(&path, "[model]\nprovider = \"chatgpt\"\nmodel = \"gone\"\n").unwrap();
@@ -1731,7 +1825,7 @@ mod tests {
         };
         // English; ChatGPT; keep the sign-in; list all, take the second;
         // tools and permissions as they are; no claiming; no companion.
-        let script = "2\n\n\n\n2\n\n\n\n\nn\nn\n";
+        let script = "2\n\n\n\n\n2\n\n\n\n\nn\nn\n";
         let (done, out) = drive_with(&path, script, host).await;
         assert_eq!(done, Some(Lang::En), "{out}");
         assert!(

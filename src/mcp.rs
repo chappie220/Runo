@@ -355,7 +355,7 @@ impl Conn {
                 spawn(name, command, config, tools_changed.clone())?
             }
             (None, Some(url)) if !url.trim().is_empty() => Transport::Http {
-                http: reqwest::Client::builder()
+                http: crate::net::builder()
                     .connect_timeout(Duration::from_secs(20))
                     .build()?,
                 url: url.trim().to_owned(),

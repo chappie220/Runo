@@ -28,6 +28,7 @@ mod llm;
 mod mail;
 mod mcp;
 mod memory;
+mod net;
 mod onboard;
 mod qq;
 mod reasoning;

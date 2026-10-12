@@ -127,7 +127,7 @@ impl QqBot {
         let secret = config
             .app_secret()
             .context("no QQ app secret: set QQ_APP_SECRET or qq.app_secret")?;
-        let http = reqwest::Client::builder()
+        let http = crate::net::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(30))
             .build()?;
@@ -547,7 +547,7 @@ async fn connect<M: Model + 'static, T: Tools + 'static>(
         .as_str()
         .context("QQ gateway response has no url")?
         .to_owned();
-    let (socket, _) = tokio_tungstenite::connect_async(&url)
+    let socket = crate::net::websocket(&url)
         .await
         .with_context(|| format!("cannot connect to {url}"))?;
     let (mut sink, mut stream) = socket.split();

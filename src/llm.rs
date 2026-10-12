@@ -353,7 +353,7 @@ pub(crate) fn chatgpt_base(config: &ModelConfig) -> &str {
 
 impl Client {
     pub fn new(config: &ModelConfig, api_key: String) -> Result<Self> {
-        let http = reqwest::Client::builder()
+        let http = crate::net::builder()
             .connect_timeout(Duration::from_secs(20))
             .read_timeout(Duration::from_secs(config.request_timeout_secs))
             .build()

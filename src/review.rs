@@ -110,7 +110,7 @@ pub fn decider(
     if settings.provider == ReviewProvider::Off {
         return Ok(None);
     }
-    let http = reqwest::Client::builder()
+    let http = crate::net::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(settings.timeout_secs.max(1)))
         // A redirect could carry the key to another host.

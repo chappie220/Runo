@@ -1047,7 +1047,8 @@ async fn search_findings(config: &Config, offline: bool) -> Vec<Finding> {
                 return Vec::new();
             }
             let answer = async {
-                let response = reqwest::Client::new()
+                let response = crate::net::builder()
+                    .build()?
                     .get(reqwest::Url::parse_with_params(
                         &format!("{url}/search"),
                         [("q", "openclaw"), ("format", "json")],
