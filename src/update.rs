@@ -288,6 +288,9 @@ pub fn old_path(binary: &Path) -> PathBuf {
     binary.with_file_name(name)
 }
 
+/// `errno` for running a file that is still open for writing.
+const ETXTBSY: i32 = 26;
+
 /// Replaces `binary` with `data` once it runs and reports `version`;
 /// the current binary is kept as `<binary>.old`.
 pub fn install(binary: &Path, data: &[u8], version: &str) -> Result<()> {
@@ -310,10 +313,21 @@ pub fn install(binary: &Path, data: &[u8], version: &str) -> Result<()> {
         file.sync_all()?;
         drop(file);
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
-        let output = std::process::Command::new(&staged)
-            .arg("--version")
-            .output()
-            .context("the new binary does not run on this host")?;
+        // A child another thread forked while the file was open for writing
+        // holds it open until its exec ("text file busy"); that passes.
+        let mut tries = 0;
+        let output = loop {
+            match std::process::Command::new(&staged)
+                .arg("--version")
+                .output()
+            {
+                Err(err) if err.raw_os_error() == Some(ETXTBSY) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                result => break result.context("the new binary does not run on this host")?,
+            }
+        };
         let said = String::from_utf8_lossy(&output.stdout);
         if !output.status.success() || !said.contains(version) {
             bail!(
