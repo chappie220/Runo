@@ -1,10 +1,10 @@
 //! Fits a session's history into a token budget instead of a message count.
 //!
 //! Tool output (shell, files, search, …) lives in full only for the turn
-//! that made it: once the user writes again, earlier turns keep their tool
-//! calls with long arguments cut and the start of each result, so the model
-//! still knows what it did (a memory it saved, a command it ran) without
-//! paying for the output again.
+//! that made it: once the user writes again, earlier turns keep only which
+//! tools were called and the start of each result, so the model still knows
+//! what it did (a memory it saved, a command it ran) without paying for the
+//! arguments and output again.
 //!
 //! Two marks per session only move forward, and only when the window
 //! overflows; it then shrinks to half the budget. Between those jumps the
@@ -62,14 +62,11 @@ fn stub(message: &ChatMessage) -> ChatMessage {
     }
 }
 
-/// Characters kept of an earlier turn's tool result, and of each text in
-/// its tool calls' arguments.
+/// Characters kept of an earlier turn's tool result.
 const EARLIER_RESULT_CHARS: usize = 200;
-const EARLIER_ARGUMENT_CHARS: usize = 200;
 
-/// A message from an earlier turn as sent: tool calls with long texts in
-/// their arguments cut, results cut to their start; `None` when nothing is
-/// left.
+/// A message from an earlier turn as sent: tool calls without their
+/// arguments, results cut to their start; `None` when nothing is left.
 fn without_tools(message: &ChatMessage) -> Option<ChatMessage> {
     match message.role {
         Role::Tool => {
@@ -90,7 +87,7 @@ fn without_tools(message: &ChatMessage) -> Option<ChatMessage> {
             Some(calls) if !calls.is_empty() => {
                 let mut calls = calls.to_vec();
                 for call in &mut calls {
-                    call.function.arguments = short_arguments(&call.function.arguments);
+                    call.function.arguments = "{}".to_owned();
                 }
                 Some(ChatMessage {
                     tool_calls: Some(calls),
@@ -111,29 +108,6 @@ fn without_tools(message: &ChatMessage) -> Option<ChatMessage> {
 /// The first `chars` characters of `text`, or `None` when it is no longer.
 fn cut(text: &str, chars: usize) -> Option<&str> {
     text.char_indices().nth(chars).map(|(at, _)| &text[..at])
-}
-
-/// Tool call arguments with every long text cut; still valid JSON.
-fn short_arguments(arguments: &str) -> String {
-    fn shorten(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::String(text) => {
-                if let Some(start) = cut(text, EARLIER_ARGUMENT_CHARS) {
-                    *text = format!("{start}… [{} characters]", text.chars().count());
-                }
-            }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(shorten),
-            serde_json::Value::Object(fields) => fields.values_mut().for_each(shorten),
-            _ => {}
-        }
-    }
-    match serde_json::from_str::<serde_json::Value>(arguments) {
-        Ok(mut value) => {
-            shorten(&mut value);
-            value.to_string()
-        }
-        Err(_) => "{}".to_owned(),
-    }
 }
 
 struct Entry {
@@ -509,7 +483,10 @@ mod tests {
             arguments: serde_json::json!({"content": "生日是三月五日", "note": long}).to_string(),
         };
         history.push((14, save));
-        history.push((15, ChatMessage::tool_result("c1", "saved memory #7")));
+        history.push((
+            15,
+            ChatMessage::tool_result("c1", "saved memory #7: 生日是三月五日"),
+        ));
         history.push((16, call("c2")));
         history.push((17, ChatMessage::tool_result("c2", "x".repeat(5000))));
         history.push((18, ChatMessage::assistant("done")));
@@ -523,18 +500,11 @@ mod tests {
         let texts = contents(&messages);
         assert_eq!(texts[..7], ["q0", "a0", "q1", "a1", "q2", "a2", "checking"]);
         assert!(messages[6].tool_calls.is_none());
-        // The memory it saved is still there to see.
+        // The call stays, without its arguments; its result says what it did.
         let saved = &messages[7].tool_calls.as_ref().unwrap()[0].function;
         assert_eq!(saved.name, "memory_save");
-        let args: serde_json::Value = serde_json::from_str(&saved.arguments).unwrap();
-        assert_eq!(args["content"], "生日是三月五日");
-        assert!(
-            args["note"]
-                .as_str()
-                .unwrap()
-                .ends_with("… [300 characters]")
-        );
-        assert_eq!(texts[8], "saved memory #7");
+        assert_eq!(saved.arguments, "{}");
+        assert_eq!(texts[8], "saved memory #7: 生日是三月五日");
         // Long output only by its start.
         assert!(texts[10].starts_with(&"x".repeat(200)), "{}", texts[10]);
         assert!(texts[10].contains("5000 bytes"), "{}", texts[10]);

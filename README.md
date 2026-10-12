@@ -1391,10 +1391,10 @@ max_output_bytes = 16384  # per stream; also the most shell output held in memor
 ```
 
 Tool output (shell, files, search) is sent in full only during the turn
-that made it. Later turns keep the tool calls, with long texts in their
-arguments cut to 200 characters, and the first 200 characters of each
-result, so the model still knows what it did before (a memory it saved, a
-command it ran) and does not do it again or deny it. When a conversation outgrows `context_tokens`, it is cut
+that made it. Later turns keep only which tools were called (without their
+arguments) and the first 200 characters of each result, so the model still
+knows what it did before and does not do it again or deny it; a saved
+memory's result names what was saved (`saved memory #7: …`). When a conversation outgrows `context_tokens`, it is cut
 back to half the budget: the oldest turns, tool output included, are folded
 by the model into a running summary sent at the start of the window.
 The full history stays in `chats.sqlite`.

@@ -484,7 +484,7 @@ impl BuiltinTools {
             .store
             .memory_save_kind(&args.content, args.kind.as_deref(), actor.scope())
             .map_err(|e| format!("error: {e:#}"))?;
-        Ok(format!("saved memory #{id}"))
+        Ok(format!("saved memory #{id}: {}", args.content.trim()))
     }
 
     fn memory_search(&self, actor: &Actor, args: MemorySearchArgs) -> Result<String, String> {
@@ -1516,7 +1516,7 @@ mod tests {
         let saved = t
             .call(&call("memory_save", json!({"content": "生日是三月五日"})))
             .await;
-        assert_eq!(saved, "saved memory #1");
+        assert_eq!(saved, "saved memory #1: 生日是三月五日");
         let again = t
             .call(&call("memory_save", json!({"content": " 生日是三月五日 "})))
             .await;
