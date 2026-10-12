@@ -699,6 +699,8 @@ pub struct ResponsesParser {
     usage: Option<Usage>,
     model: Option<String>,
     finish_reason: Option<String>,
+    /// Pages the answer cites (title, URL), from web searches.
+    sources: Vec<(String, String)>,
     pub done: bool,
 }
 
@@ -754,8 +756,12 @@ impl ResponsesParser {
                                 .to_owned(),
                         },
                     }),
-                    // Text normally comes as deltas; take it whole if it did not.
-                    Some("message") if self.text.is_empty() => {
+                    Some("message") => {
+                        self.cite(item);
+                        if !self.text.is_empty() {
+                            return Ok(None);
+                        }
+                        // Text normally comes as deltas; take it whole if it did not.
                         let text: String = item["content"]
                             .as_array()
                             .into_iter()
@@ -814,9 +820,36 @@ impl ResponsesParser {
         Ok(None)
     }
 
-    pub fn finish(self) -> Result<Completion> {
+    /// Keeps the pages a message cites (`url_citation` annotations).
+    fn cite(&mut self, item: &Value) {
+        let annotations = item["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part["annotations"].as_array())
+            .flatten();
+        for annotation in annotations {
+            let Some(url) = annotation["url"].as_str().filter(|u| !u.is_empty()) else {
+                continue;
+            };
+            if self.sources.iter().any(|(_, seen)| seen == url) {
+                continue;
+            }
+            let title = annotation["title"].as_str().unwrap_or("").trim();
+            self.sources.push((title.to_owned(), url.to_owned()));
+        }
+    }
+
+    pub fn finish(mut self) -> Result<Completion> {
         if !self.done {
             bail!("the model stream ended before the response was complete");
+        }
+        // Inline citations are only markers in the text; list the pages.
+        if !self.sources.is_empty() {
+            self.text.push_str("\n\nSources:");
+            for (title, url) in &self.sources {
+                self.text.push_str(&format!("\n- {title} {url}"));
+            }
         }
         Ok(Completion {
             text: self.text,
@@ -1204,5 +1237,79 @@ mod tests {
         assert_eq!(seen[1].2["instructions"], "be kind");
         assert_eq!(seen[1].2["store"], false);
         assert_eq!(read(&path).unwrap().refresh_token, "r2");
+    }
+
+    #[test]
+    fn cited_pages_are_listed_after_the_answer() {
+        let mut parser = ResponsesParser::default();
+        let item = json!({"type": "message", "content": [{
+            "type": "output_text",
+            "text": "Rain tomorrow.",
+            "annotations": [
+                {"type": "url_citation", "url": "https://a.example", "title": "A"},
+                {"type": "url_citation", "url": "https://a.example", "title": "A"},
+                {"type": "url_citation", "url": "https://b.example", "title": "B"}
+            ]
+        }]});
+        let events = [
+            json!({"type": "response.output_item.done", "item": {"type": "web_search_call"}}),
+            json!({"type": "response.output_item.done", "item": item}),
+            json!({"type": "response.completed", "response": {}}),
+        ];
+        let stream: String = events.iter().map(|e| format!("data: {e}\n\n")).collect();
+        let mut shown = String::new();
+        parser
+            .push(stream.as_bytes(), &mut |t| shown.push_str(t))
+            .unwrap();
+        let completion = parser.finish().unwrap();
+        assert_eq!(shown, "Rain tomorrow.");
+        assert_eq!(
+            completion.text,
+            "Rain tomorrow.\n\nSources:\n- A https://a.example\n- B https://b.example"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_asks_for_the_hosted_tool() {
+        use axum::routing::post;
+        let seen = Arc::new(Mutex::new(Value::Null));
+        let app = axum::Router::new().route(
+            "/responses",
+            post({
+                let seen = seen.clone();
+                move |axum::Json(body): axum::Json<Value>| {
+                    *seen.lock().unwrap() = body;
+                    async move {
+                        let events = [
+                            json!({"type": "response.output_text.delta", "delta": "found"}),
+                            json!({"type": "response.completed", "response": {}}),
+                        ];
+                        events
+                            .iter()
+                            .map(|e| format!("data: {e}\n\n"))
+                            .collect::<String>()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(AUTH_FILE);
+        write(&path, &tokens(crate::store::now() + 3600)).unwrap();
+        let config = crate::config::ModelConfig {
+            base_url: url.clone(),
+            model: "gpt-5".into(),
+            ..Default::default()
+        };
+        let client = crate::llm::Client::new(&config, String::new())
+            .unwrap()
+            .with_chatgpt(Auth::shared(&path, &url));
+        let found = client.web_search("weather in Beijing").await.unwrap();
+        assert_eq!(found.text, "found");
+        let body = seen.lock().unwrap().clone();
+        assert_eq!(body["tools"], json!([{"type": "web_search"}]));
+        assert_eq!(body["input"][0]["content"][0]["text"], "weather in Beijing");
     }
 }

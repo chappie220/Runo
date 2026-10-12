@@ -118,8 +118,8 @@ const CHATGPT_OUT: Tr = tr(
     "模型使用 ChatGPT 订阅，但是：{}",
 );
 const NO_OPENROUTER: Tr = tr(
-    "no OpenRouter key: web search, voice and the guide are off (optional with ChatGPT)",
-    "没有 OpenRouter key：联网搜索、语音和 guide 已关闭（用 ChatGPT 时可以不设置）",
+    "no OpenRouter key: voice and the guide are off, web search uses ChatGPT's (optional with ChatGPT)",
+    "没有 OpenRouter key：语音和 guide 已关闭，联网搜索改用 ChatGPT 自带的（用 ChatGPT 时可以不设置）",
 );
 const KEY_OK_CREDIT: Tr = tr("the key works ({})", "key 可用（{}）");
 const KEY_BAD: Tr = tr(
@@ -281,6 +281,14 @@ const SEARCH_OFF: Tr = tr("off: no web_search tool", "已关闭：没有 web_sea
 const SEARCH_OPENROUTER: Tr = tr(
     "OpenRouter's web plugin, billed per search with the same key",
     "使用 OpenRouter 的 web 插件，用同一个 key 按次计费",
+);
+const SEARCH_CHATGPT: Tr = tr(
+    "the ChatGPT subscription's own web search, within the plan",
+    "使用 ChatGPT 订阅自带的联网搜索，算在套餐里",
+);
+const SEARCH_NOT_CHATGPT: Tr = tr(
+    "search.provider is \"chatgpt\" but the model is not on a ChatGPT subscription: run `openclaw-rs login`",
+    "search.provider 是 \"chatgpt\"，但模型没有使用 ChatGPT 订阅：请运行 `openclaw-rs login`",
 );
 const SEARXNG_OK: Tr = tr("SearXNG at {} answers", "SearXNG（{}）可用");
 const SEARXNG_FAILED: Tr = tr(
@@ -467,6 +475,8 @@ pub const ALL: &[Tr] = &[
     SKILLS_GUESTS,
     SEARCH_OFF,
     SEARCH_OPENROUTER,
+    SEARCH_CHATGPT,
+    SEARCH_NOT_CHATGPT,
     SEARXNG_OK,
     SEARXNG_FAILED,
     SEARXNG_NO_URL,
@@ -1013,10 +1023,12 @@ async fn mcp_findings(config: &Config, workspace: &Path, offline: bool) -> Vec<F
 async fn search_findings(config: &Config, offline: bool) -> Vec<Finding> {
     match config.search.provider {
         SearchProvider::Off => vec![info(SEARCH_OFF.now())],
-        // Off at start without the key (see the model section).
+        // Without the key a subscription searches on its own.
         SearchProvider::Openrouter if config.chatgpt() && config.api_key().is_err() => {
-            vec![info(SEARCH_OFF.now())]
+            vec![info(SEARCH_CHATGPT.now())]
         }
+        SearchProvider::Chatgpt if !config.chatgpt() => vec![fail(SEARCH_NOT_CHATGPT.now())],
+        SearchProvider::Chatgpt => vec![info(SEARCH_CHATGPT.now())],
         SearchProvider::Openrouter => vec![info(SEARCH_OPENROUTER.now())],
         SearchProvider::Searxng => {
             let Some(url) = config

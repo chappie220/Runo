@@ -1,4 +1,5 @@
-//! `web_search`: looks things up through OpenRouter's web plugin or SearXNG,
+//! `web_search`: looks things up through OpenRouter's web plugin, a ChatGPT
+//! subscription's web search or SearXNG,
 //! for example a fictional character the user wants as the agent's persona.
 
 use std::time::Duration;
@@ -24,11 +25,16 @@ enum Backend {
     Searxng {
         url: String,
     },
+    Chatgpt {
+        client: crate::llm::Client,
+        model: String,
+    },
 }
 
 impl Searcher {
     /// `None` when search is turned off.
     pub fn new(config: &SearchConfig, model: &ModelConfig, api_key: &str) -> Result<Option<Self>> {
+        let model_settings = model;
         let backend = match config.provider {
             SearchProvider::Off => return Ok(None),
             SearchProvider::Openrouter => Backend::OpenRouter {
@@ -36,6 +42,23 @@ impl Searcher {
                 model: config.model.clone().unwrap_or_else(|| model.model.clone()),
                 api_key: api_key.to_owned(),
             },
+            SearchProvider::Chatgpt => {
+                let model = config
+                    .model
+                    .clone()
+                    .filter(|m| !m.trim().is_empty() && !m.contains('/'))
+                    .unwrap_or_else(|| model.model.clone());
+                let settings = ModelConfig {
+                    provider: crate::config::Provider::Chatgpt,
+                    model: model.clone(),
+                    fallbacks: Vec::new(),
+                    ..model_settings.clone()
+                };
+                Backend::Chatgpt {
+                    client: crate::llm::Client::new(&settings, String::new())?,
+                    model,
+                }
+            }
             SearchProvider::Searxng => Backend::Searxng {
                 url: config
                     .searxng_url
@@ -61,7 +84,7 @@ impl Searcher {
     /// The model OpenRouter searches run on; `None` for SearXNG.
     pub fn model(&self) -> Option<&str> {
         match &self.backend {
-            Backend::OpenRouter { model, .. } => Some(model),
+            Backend::OpenRouter { model, .. } | Backend::Chatgpt { model, .. } => Some(model),
             Backend::Searxng { .. } => None,
         }
     }
@@ -102,6 +125,20 @@ impl Searcher {
                     .filter(|u| u.is_object())
                     .map(Usage::parse);
                 Ok((openrouter_results(&body), usage))
+            }
+            Backend::Chatgpt { client, .. } => {
+                let found = client
+                    .web_search(&format!(
+                        "Search the web for: {query}\n\nReport the relevant facts found, concisely \
+                         and in the language of the query, citing each source URL. Use at most {} \
+                         sources.",
+                        self.max_results
+                    ))
+                    .await
+                    .context("search request failed")?;
+                let text = found.text.trim();
+                let text = if text.is_empty() { "no results" } else { text };
+                Ok((text.to_owned(), found.usage))
             }
             Backend::Searxng { url } => {
                 let url = reqwest::Url::parse_with_params(

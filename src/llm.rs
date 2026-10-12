@@ -430,6 +430,29 @@ impl Client {
                 },
             })?
         };
+        self.send(&body, on_text).await
+    }
+
+    /// A web search answered by the ChatGPT backend's own `web_search`
+    /// tool: what was found, with the cited pages.
+    pub async fn web_search(&self, prompt: &str) -> Result<Completion> {
+        anyhow::ensure!(self.chatgpt.is_some(), "web search needs a ChatGPT model");
+        let mut body = crate::chatgpt::request_body(
+            &self.model,
+            &[ChatMessage::user(prompt)],
+            &[],
+            self.reasoning_effort.as_deref(),
+        );
+        body["tools"] = serde_json::json!([{ "type": "web_search" }]);
+        self.send(&serde_json::to_vec(&body)?, &mut |_| {}).await
+    }
+
+    /// Sends `body`, retrying as `max_retries` allows.
+    async fn send(
+        &self,
+        body: &[u8],
+        on_text: &mut (dyn for<'t> FnMut(&'t str) + Send),
+    ) -> Result<Completion> {
         let mut attempt = 0;
         loop {
             let mut shown = false;
@@ -439,8 +462,8 @@ impl Client {
                     on_text(text);
                 };
                 match &self.chatgpt {
-                    Some(auth) => self.attempt_chatgpt(auth, &body, &mut forward).await,
-                    None => self.attempt(&body, &mut forward).await,
+                    Some(auth) => self.attempt_chatgpt(auth, body, &mut forward).await,
+                    None => self.attempt(body, &mut forward).await,
                 }
             };
             let (error, after) = match result {

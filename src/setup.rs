@@ -673,10 +673,10 @@ const SECTIONS: &[Section] = &[
                 path: &["search", "provider"],
                 label: tr("Provider", "搜索服务"),
                 help: tr(
-                    "openrouter: billed per search with the OpenRouter key; searxng: your own instance; off: no web_search tool.",
-                    "openrouter：用 OpenRouter key 按次计费；searxng：自己的实例；off：不提供 web_search 工具。",
+                    "openrouter: billed per search with the OpenRouter key (on a ChatGPT subscription without that key, ChatGPT's search is used instead); searxng: your own instance; off: no web_search tool; chatgpt: the ChatGPT subscription's own search.",
+                    "openrouter：用 OpenRouter key 按次计费（用 ChatGPT 订阅又没有这个 key 时，自动改用 ChatGPT 的搜索）；searxng：自己的实例；off：不提供 web_search 工具；chatgpt：用 ChatGPT 订阅自带的搜索。",
                 ),
-                kind: Kind::Choice(&["openrouter", "searxng", "off"]),
+                kind: Kind::Choice(&["openrouter", "searxng", "off", "chatgpt"]),
             },
             Field {
                 path: &["search", "searxng_url"],

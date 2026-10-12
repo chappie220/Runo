@@ -97,6 +97,8 @@ pub enum SearchProvider {
     Openrouter,
     /// A SearXNG instance with the JSON format enabled (`searxng_url`).
     Searxng,
+    /// The ChatGPT subscription's own web search (`openclaw-rs login`).
+    Chatgpt,
     /// No `web_search` tool.
     Off,
 }

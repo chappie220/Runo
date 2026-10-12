@@ -774,6 +774,17 @@ fn refuse_open_channel(
     Ok(())
 }
 
+/// Who runs `web_search`: on a ChatGPT subscription without an OpenRouter
+/// key, its own search instead of OpenRouter's.
+fn search_provider(config: &Config) -> config::SearchProvider {
+    match config.search.provider {
+        config::SearchProvider::Openrouter if config.chatgpt() && config.api_key().is_err() => {
+            config::SearchProvider::Chatgpt
+        }
+        provider => provider,
+    }
+}
+
 /// `provider`, or off when it needs an OpenRouter key and there is none (a
 /// ChatGPT subscription alone).
 fn needs_openrouter(
@@ -811,13 +822,14 @@ async fn build_agent(
     let openrouter = !api_key.is_empty();
     let side = config.openrouter_model();
     let search_config = config::SearchConfig {
-        provider: match config.search.provider {
-            config::SearchProvider::Openrouter if !openrouter => config::SearchProvider::Off,
-            provider => provider,
-        },
+        provider: search_provider(config),
         ..config.search.clone()
     };
-    let search = search::Searcher::new(&search_config, &side, &api_key)?;
+    let search_model = match search_config.provider {
+        config::SearchProvider::Chatgpt => &config.model,
+        _ => &side,
+    };
+    let search = search::Searcher::new(&search_config, search_model, &api_key)?;
     let review_config = config::ReviewConfig {
         provider: needs_openrouter(config.tools.review.provider, openrouter, "tools.review"),
         ..config.tools.review.clone()

@@ -141,10 +141,12 @@ the model was an OpenRouter id, with no editing of config.toml; change
 either in `openclaw-rs config` (any model your plan offers in Codex, e.g.
 `gpt-5-codex`), and `model.reasoning_effort` (`minimal` … `high`).
 
-What only OpenRouter offers (web search with `search.provider =
-"openrouter"`, voice messages, the guide and OpenRouter review deciders)
-still needs `OPENROUTER_API_KEY`; without one they are off and the rest
-works. `summary_model` and `vision_model` ids with a `/` go to OpenRouter,
+Web search uses the subscription's own search (`search.provider =
+"chatgpt"`, which `openrouter` becomes without an OpenRouter key), and
+compacting long conversations runs on the subscription's model like
+everything else. What only OpenRouter offers (voice messages, the guide and
+OpenRouter review deciders) still needs `OPENROUTER_API_KEY`; without one
+they are off and the rest works. `summary_model` and `vision_model` ids with a `/` go to OpenRouter,
 others to ChatGPT. An imported sign-in shares its refresh token with
 Codex, and each refresh replaces it, so one of the two gets signed out
 sooner or later: a `login` of its own is better. When the plan's limit is
@@ -1201,12 +1203,15 @@ into `chat` and the Web UI.
 The model gets `web_search` for current information and character research.
 By default it runs through OpenRouter's [web plugin](https://openrouter.ai/docs/guides/features/plugins/web-search)
 with the same API key, which works wherever OpenRouter does and is billed per
-search. A self-hosted [SearXNG](https://docs.searxng.org) instance (with the
-`json` format enabled) is free:
+search. On a [ChatGPT subscription](#chatgpt-subscription), `chatgpt` uses
+its own web search, within the plan; it is what `openrouter` becomes there
+when no OpenRouter key is set. A self-hosted
+[SearXNG](https://docs.searxng.org) instance (with the `json` format
+enabled) is free:
 
 ```toml
 [search]
-provider = "openrouter"   # openrouter | searxng | off
+provider = "openrouter"   # openrouter | chatgpt | searxng | off
 # model = "..."           # model that runs OpenRouter searches (default: model.model)
 # searxng_url = "http://127.0.0.1:8888"
 max_results = 5
