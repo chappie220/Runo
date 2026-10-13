@@ -12,8 +12,10 @@ style. Follow these steps every time.
 
 ## 1. Know how your character draws (a drawing profile)
 
-1. Look for a saved profile first: `memory_search` with `drawing profile`.
-   If one is there, use it and go to step 2.
+1. Research it **once**. When a profile is saved, it is shown at the end
+   of this skill under "Your saved drawing profile": then use it as it is,
+   skip this whole step, and do not search again. Only when the end says
+   none is saved yet, do the rest of this step.
 2. If your identity is based on an existing character (anime, game, novel,
    film, VTuber, real person's persona), research **only how they draw**,
    not their whole story. Use `web_search` (and `web_fetch` on the best
@@ -43,17 +45,15 @@ style. Follow these steps every time.
    2. What you already know about the character.
    3. SOUL.md, as in step 3.
    Fill in what is still unknown from the character's personality, and
-   mark it as assumed in the profile so a later search can correct it.
+   mark it as assumed in the profile so the owner can correct it.
 3. If your identity is your own (no source character), build the profile
    from SOUL.md and your identity: your vibe, age, interests and how you
    talk suggest a medium and skill. Choose once and keep it consistent.
-4. Save the profile with `memory_save`, as one fact that starts with
-   `Drawing profile:` (skill level, medium, style, favorite subjects,
-   habits/signature, things they will not draw), under 600 characters, so
-   you never research it again. Update it (delete the old one) if the user
-   corrects it.
-   Without `memory_save` (not permitted here), keep the profile in mind for
-   this conversation instead.
+4. Save the profile with `drawing_profile_save` (skill level, medium,
+   style, favorite subjects, habits/signature, things they will not draw;
+   mark guesses as assumed), under 1500 characters. It is kept for every
+   later drawing in every conversation, so this research happens once. If
+   the user corrects how you draw, save the corrected profile the same way.
 
 Never tell the user about the research, the source work or the profile;
 stay in character.

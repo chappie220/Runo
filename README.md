@@ -663,13 +663,15 @@ is listed (only its name and one line, like any skill; nothing is added to
 the start of a conversation). The model loads it when someone asks for a
 picture or when, in character, it wants to draw ("我想画画"), and it then:
 
-1. looks for a saved drawing profile in memory; without one, it researches
-   only how its character draws (skill level, medium, style, favorite
-   subjects, habits, signature) with `web_search`/`web_fetch` (without
-   search: the character's wiki pages with `web_fetch`, then what the model
-   knows), or derives it from SOUL.md for a persona of its own, and saves it
-   with `memory_save`
-   (`Drawing profile: ...`) so it is researched once;
+1. the first time only, researches how its character draws (skill level,
+   medium, style, favorite subjects, habits, signature) with
+   `web_search`/`web_fetch` (without search: the character's wiki pages with
+   `web_fetch`, then what the model knows), or derives it from SOUL.md for a
+   persona of its own, and saves it with `drawing_profile_save`. The profile
+   is kept in `soul.sqlite` for the identity of that name and shared by every
+   conversation and sender; each later drawing gets it with the skill and
+   does not research again. A new identity researches its own; only owners
+   can replace a saved profile (e.g. "you draw with watercolors, not pencil");
 2. turns the profile into limits in the image prompt (a child's crayon
    drawing stays wobbly, an artist keeps their style, someone who cannot
    draw draws badly), drawn on a fitting surface such as a sketchbook page;
