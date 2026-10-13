@@ -154,14 +154,11 @@ enum Command {
         #[arg(long, conflicts_with_all = ["import", "status", "logout"])]
         device: bool,
     },
-    /// Install the latest release from GitHub, or go back to the previous binary.
+    /// Install the latest release from GitHub.
     Update {
         /// Only say whether a newer version exists.
         #[arg(long)]
         check: bool,
-        /// Put back the binary the last update replaced.
-        #[arg(long, conflicts_with = "check")]
-        rollback: bool,
     },
     /// Finish moving an install from its old name (openclaw-rs): binary, service, state.
     Migrate,
@@ -465,9 +462,9 @@ async fn run(cli: Cli) -> Result<()> {
     if let Command::Migrate = cli.command {
         return rename::finish(false).map(|_| ());
     }
-    if let Command::Update { check, rollback } = cli.command {
+    if let Command::Update { check } = cli.command {
         let config = Config::load(&config_path).unwrap_or_default();
-        return update::run(&config.update, check, rollback, &config.gateway.bind).await;
+        return update::run(&config.update, check, &config.gateway.bind).await;
     }
     // Before loading: signing in is how a config gets its model.
     if let Command::Login {
@@ -577,7 +574,7 @@ async fn run(cli: Cli) -> Result<()> {
                 eprintln!("{}", text::FIRST_START.now());
             }
             if service::legacy_installed() {
-                eprintln!("{}", rename::SERVICE_UNMOVED.now());
+                eprintln!("{}", rename::SERVICE_UNMOVED.with(&[&rename::program()]));
             }
             let agent = Arc::new(build_agent(&config, &config_path, &state, store).await?);
             let bind = bind.unwrap_or_else(|| config.gateway.bind.clone());

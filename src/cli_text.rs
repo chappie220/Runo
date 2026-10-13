@@ -180,8 +180,8 @@ const COMMANDS: &[(&str, Tr)] = &[
     (
         "update",
         tr(
-            "Install the latest release from GitHub, or go back to the previous binary",
-            "从 GitHub 安装最新版本，或者回退到上一个版本",
+            "Install the latest release from GitHub",
+            "从 GitHub 安装最新版本",
         ),
     ),
     (
@@ -356,14 +356,6 @@ const ARGS: &[(&str, &str, Tr)] = &[
         tr(
             "Only say whether a newer version exists",
             "只检查有没有新版本",
-        ),
-    ),
-    (
-        "update",
-        "rollback",
-        tr(
-            "Put back the binary the last update replaced",
-            "恢复上次更新前的程序",
         ),
     ),
     (

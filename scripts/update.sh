@@ -1,10 +1,9 @@
 #!/bin/sh
 # Updates runo to the latest release: the same as install.sh --update
-# (checksum checked, the previous binary kept as runo.old, a running
-# Gateway restarted when this account may).
+# (checksum checked, a running Gateway restarted when this account may).
 #
 #   curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
-#   sh update.sh --version 0.2.0      # a given release, also to go back
+#   sh update.sh --version 0.4.1      # a given release: how to go back
 #
 # Takes the same options as install.sh (--dir, --version, --force).
 # `runo update` does the same from the binary itself; this script

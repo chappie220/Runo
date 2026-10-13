@@ -10,8 +10,9 @@
 //!   name and keeps the old service, so the first `update` after that (or
 //!   install.sh) finishes the move.
 //!
-//! The old names stay behind as links to the new ones, so scripts, shell
-//! history and an `update --rollback` to the old binary keep working.
+//! The old names stay behind as links to the new ones, so scripts and shell
+//! history keep working. The old binary itself is removed, not kept: going
+//! back means installing an older release (`scripts/update.sh --version X`).
 
 use std::path::{Path, PathBuf};
 
@@ -28,8 +29,8 @@ const MOVED_STATE: Tr = tr(
     "已把 {} 移到 {}；旧名字现在指向新位置。",
 );
 const STATE_IN_USE: Tr = tr(
-    "Still using {}: a Gateway is running from it. Run `runo migrate` to move it and the service to the new name.",
-    "仍在使用 {}：有 Gateway 正在用它运行。运行 `runo migrate` 把它和服务一起迁移到新名字。",
+    "Still using {}: a Gateway is running from it. Run `{} migrate` to move it and the service to the new name.",
+    "仍在使用 {}：有 Gateway 正在用它运行。运行 `{} migrate` 把它和服务一起迁移到新名字。",
 );
 const RENAMED_BINARY: Tr = tr(
     "Renamed {} to {}; the old name now points to it.",
@@ -40,12 +41,12 @@ const NOTHING_TO_MOVE: Tr = tr(
     "没有需要从 openclaw-rs 迁移的内容了。",
 );
 pub const SERVICE_UNMOVED: Tr = tr(
-    "The service still has its old name (openclaw-rs): run `runo migrate` to move it to runo.",
-    "服务还在用旧名字（openclaw-rs）：运行 `runo migrate` 把它迁移到 runo。",
+    "The service still has its old name (openclaw-rs): run `{} migrate` to move it to runo.",
+    "服务还在用旧名字（openclaw-rs）：运行 `{} migrate` 把它迁移到 runo。",
 );
 const NEEDS_ROOT: Tr = tr(
-    "{} needs root to move, and there is no sudo or doas and terminal to ask on: run `runo migrate` as root",
-    "迁移 {} 需要 root，但没有 sudo/doas 或终端可以询问密码：请用 root 运行 `runo migrate`",
+    "{} needs root to move, and there is no sudo or doas and terminal to ask on: run `{} migrate` as root",
+    "迁移 {} 需要 root，但没有 sudo/doas 或终端可以询问密码：请用 root 运行 `{} migrate`",
 );
 
 #[cfg(test)]
@@ -57,6 +58,16 @@ pub const ALL: &[Tr] = &[
     SERVICE_UNMOVED,
     NEEDS_ROOT,
 ];
+
+/// This program's name as installed: `openclaw-rs` until the binary has
+/// moved, so the hints name a command that exists.
+pub fn program() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .filter(|n| n == LEGACY_NAME)
+        .unwrap_or_else(|| NAME.to_owned())
+}
 
 fn is_real_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
@@ -108,7 +119,7 @@ pub fn move_own_state_dir() -> Option<String> {
     }
     if crate::service::gateway_running() {
         let old = home.join(LEGACY_STATE_DIR_NAME);
-        return Some(STATE_IN_USE.with(&[&old.display().to_string()]));
+        return Some(STATE_IN_USE.with(&[&old.display().to_string(), &program()]));
     }
     match move_state_dir(&home, None) {
         Ok(Some((old, new))) => {
@@ -138,32 +149,25 @@ fn binary_unmoved(dir: &Path) -> bool {
 /// Puts the binary under the new name and the old name as a link to it.
 /// Handles both ways an old install meets a new binary: an openclaw-rs that
 /// replaced itself with this release, and a runo installed beside an old
-/// openclaw-rs (which then becomes `runo.old`, for `update --rollback`).
+/// openclaw-rs, which is removed. Copies of old binaries (`.old`) go too.
 /// Returns where the binary now is.
 pub fn move_binary(binary: &Path) -> Result<PathBuf> {
     let dir = binary.parent().context("the binary has no directory")?;
     let legacy = dir.join(LEGACY_NAME);
     let new = dir.join(NAME);
-    let legacy_old = crate::update::old_path(&legacy);
-    let new_old = crate::update::old_path(&new);
     if binary.file_name().is_some_and(|n| n == LEGACY_NAME) && is_real_file(binary) {
         std::fs::rename(binary, &new)
             .with_context(|| format!("cannot rename {} to {}", binary.display(), new.display()))?;
-        if is_real_file(&legacy_old) && !exists(&new_old) {
-            std::fs::rename(&legacy_old, &new_old)?;
-        }
     } else if binary.file_name().is_some_and(|n| n == NAME) && is_real_file(&legacy) {
-        if exists(&new_old) {
-            std::fs::remove_file(&legacy)
-        } else {
-            std::fs::rename(&legacy, &new_old)
-        }
-        .with_context(|| format!("cannot replace {}", legacy.display()))?;
-        if is_real_file(&legacy_old) {
-            let _ = std::fs::remove_file(&legacy_old);
-        }
+        std::fs::remove_file(&legacy)
+            .with_context(|| format!("cannot remove {}", legacy.display()))?;
     } else {
         return Ok(binary.to_owned());
+    }
+    for old in [&legacy, &new].map(|p| crate::update::old_path(p)) {
+        if is_real_file(&old) {
+            let _ = std::fs::remove_file(&old);
+        }
     }
     std::os::unix::fs::symlink(NAME, &legacy)
         .with_context(|| format!("cannot link {} to {}", legacy.display(), new.display()))?;
@@ -192,7 +196,7 @@ pub fn finish(quiet: bool) -> Result<PathBuf> {
             crate::service::LEGACY_INIT_SCRIPT.to_owned()
         };
         if !crate::elevate::can_ask() {
-            anyhow::bail!(NEEDS_ROOT.with(&[&what]));
+            anyhow::bail!(NEEDS_ROOT.with(&[&what, &program()]));
         }
         crate::elevate::rerun(&["migrate"])?;
         return Ok(current_binary(&binary));
@@ -266,24 +270,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&now).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "new");
         assert!(std::fs::symlink_metadata(&legacy).unwrap().is_symlink());
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("runo.old")).unwrap(),
-            "old"
-        );
         assert_eq!(current_binary(&legacy), now);
+        // No copies of old binaries are kept.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]
-    fn keeps_an_old_binary_beside_a_new_install_for_rollback() {
+    fn removes_an_old_binary_beside_a_new_install() {
         let dir = tempfile::tempdir().unwrap();
         let new = dir.path().join(NAME);
         std::fs::write(&new, "new").unwrap();
         std::fs::write(dir.path().join(LEGACY_NAME), "old").unwrap();
         assert_eq!(move_binary(&new).unwrap(), new);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("runo.old")).unwrap(),
-            "old"
-        );
+        assert!(!exists(&dir.path().join("runo.old")));
         assert_eq!(
             std::fs::read_to_string(dir.path().join(LEGACY_NAME)).unwrap(),
             "new"

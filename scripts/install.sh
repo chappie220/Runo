@@ -1,9 +1,10 @@
 #!/bin/sh
 # Installs (or updates) runo from GitHub Releases: downloads the
 # binary for this machine, checks it against the release's SHA256SUMS and
-# that it runs, then puts it in place. The binary it replaces is kept as
-# runo.old. An install from before the rename (openclaw-rs) is moved to
-# the new name: binary, service and state (`runo migrate`).
+# that it runs, then puts it in place of the old one (no copy is kept: to go
+# back, install the older release with --version). An install from before
+# the rename (openclaw-rs) is moved to the new name: binary, service and
+# state (`runo migrate`).
 #
 # What needs root (writing /usr/local/bin, the system service) goes through
 # sudo or doas, which ask for your password. A first install then runs
@@ -173,16 +174,24 @@ restart_service() {
 }
 
 # Moves an install from before the rename to the new name: the old binary
-# becomes a link to runo (and runo.old), the service and state follow.
+# is replaced by a link to runo, the service and state follow. Runs the
+# program that is there: after an openclaw-rs 0.4 updated itself, the new
+# release is still called openclaw-rs and runo does not exist yet. An older
+# release (installed again with --version) has no migrate and is left as it is.
 migrate() {
 	home_dir="${HOME:-}"
 	if [ -f "$DIR/$LEGACY" ] && [ ! -L "$DIR/$LEGACY" ] ||
 		[ -e "/etc/init.d/$LEGACY" ] ||
 		[ -e "${XDG_CONFIG_HOME:-$home_dir/.config}/rc/init.d/$LEGACY" ] ||
 		{ [ -d "$home_dir/.$LEGACY" ] && [ ! -L "$home_dir/.$LEGACY" ]; }; then
-		"$BINARY" migrate ||
-			say "Finish the move to the new name with: $NAME migrate" \
-				"请运行 $NAME migrate 完成到新名字的迁移"
+		prog="$BINARY"
+		[ -x "$prog" ] || prog="$DIR/$LEGACY"
+		"$prog" help migrate >/dev/null 2>&1 || return 0
+		"$prog" migrate ||
+			die "moving to the new name failed; fix the error above and run: $prog migrate" \
+				"迁移到新名字失败；请处理上面的错误后运行：$prog migrate"
+		[ -x "$BINARY" ] ||
+			die "$BINARY is still missing after $prog migrate" "运行 $prog migrate 后仍然没有 $BINARY"
 	fi
 }
 
@@ -232,10 +241,13 @@ else
 	else
 		say "Installing $NAME $VERSION ($TARGET) to $BINARY ..." "正在安装 $NAME $VERSION（$TARGET）到 $BINARY ..."
 	fi
-	asset="$NAME-$TARGET"
 	fetch "$DOWNLOAD_URL/$TAG/SHA256SUMS" "$TMP/SHA256SUMS" ||
 		die "cannot download SHA256SUMS of release $VERSION" "无法下载版本 $VERSION 的 SHA256SUMS"
-	expected=$(awk -v f="$asset" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' "$TMP/SHA256SUMS")
+	# Releases before 0.5 have the binary under the old name only.
+	for asset in "$NAME-$TARGET" "$LEGACY-$TARGET"; do
+		expected=$(awk -v f="$asset" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' "$TMP/SHA256SUMS")
+		[ -z "$expected" ] || break
+	done
 	[ -n "$expected" ] ||
 		die "release $VERSION has no binary for $TARGET" "版本 $VERSION 没有 $TARGET 的程序"
 	fetch "$DOWNLOAD_URL/$TAG/$asset" "$TMP/$NAME" ||
@@ -262,13 +274,11 @@ else
 	# Copied into the same directory first, so the switch is one rename.
 	$SUDO cp "$TMP/$NAME" "$DIR/.$NAME.new.$$"
 	$SUDO chmod 755 "$DIR/.$NAME.new.$$"
-	if [ -f "$BINARY" ]; then
-		$SUDO cp -p "$BINARY" "$BINARY.old"
-	fi
 	$SUDO mv -f "$DIR/.$NAME.new.$$" "$BINARY"
+	# Copies earlier versions kept.
+	$SUDO rm -f "$BINARY.old" "$DIR/$LEGACY.old"
 	if [ -n "$have" ]; then
-		say "Updated to $VERSION; the previous binary is kept as $BINARY.old." \
-			"已更新到 $VERSION；旧版本保存在 $BINARY.old。"
+		say "Updated to $VERSION." "已更新到 $VERSION。"
 		migrate
 		restart_service
 	else

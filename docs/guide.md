@@ -952,7 +952,6 @@ port) with the end of its log.
 ```sh
 runo update --check     # is there a newer release?
 runo update             # install it (asking for root when needed), restart the service
-runo update --rollback  # back to the binary the last update replaced
 ```
 
 Or with the script, which also works when the installed binary is too old
@@ -960,14 +959,16 @@ to have `update`, or broken (same options as the install script):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
-curl -fsSL .../update.sh | sh -s -- --version 0.1.0   # a given release, also to go back
+curl -fsSL .../update.sh | sh -s -- --version 0.4.1   # a given release: how to go back
 ```
 
 `update` takes the latest release of `update.repo` on GitHub, downloads the
 binary for this platform, checks it against the release's `SHA256SUMS`,
 makes sure it runs and reports the new version, and only then replaces the
-current binary, which is kept as `<binary>.old`. Run it as whoever owns the
-binary (root for `/usr/local/bin`).
+current binary. No copy of the old binary is kept (a `<binary>.old` left by
+an earlier version is removed): to go back, install the older release from
+GitHub with `update.sh --version`. Run it as whoever owns the binary (root
+for `/usr/local/bin`).
 
 The Gateway also looks for a new release once a day and logs it. With
 `auto = true` it installs it on its own and restarts once no turn is
@@ -1010,17 +1011,31 @@ name, and the old names keep working as links:
 
 | Before | Now | How it moves |
 |---|---|---|
-| `openclaw-rs` binary | `runo` (`openclaw-rs` links to it; the old binary becomes `runo.old`) | `runo update`, `runo migrate`, or the install/update script |
+| `openclaw-rs` binary | `runo` (`openclaw-rs` links to it; the old binary is removed) | `runo update`, `runo migrate`, or the install/update script |
 | `~/.openclaw-rs` | `~/.runo` (`~/.openclaw-rs` links to it) | on its own, the first time any command runs while no Gateway is running |
 | service `openclaw-rs` (`/etc/init.d`, or `~/.config/rc/init.d`) | service `runo`, with the same conf.d settings and secrets | `runo update` or `runo migrate` (asks for root for the system service) |
-| `OPENCLAW_RS_HOME`, `OPENCLAW_RS_TOKEN` | `RUNO_HOME`, `RUNO_TOKEN` | the old names are still read for now |
+| `OPENCLAW_RS_HOME`, `OPENCLAW_RS_TOKEN` | `RUNO_HOME`, `RUNO_TOKEN` | the old names are still read for now; the service's conf.d file sets both |
 | `OPENCLAW_REPO`, `OPENCLAW_*_URL` (scripts) | `RUNO_REPO`, `RUNO_*_URL` | the old names are still read for now |
+
+The simplest way over is the update script, which installs runo and moves
+everything:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
+```
 
 An openclaw-rs 0.4 updating itself (`openclaw-rs update`, or `auto = true`)
 installs 0.5 under the old name and keeps the old service running it, so
-releases carry the binaries under both names. Run `runo update` (or
-`runo migrate`) once after that to finish the move; until then the Gateway
-logs a reminder at start. Backups made by openclaw-rs restore as they are.
+releases carry the binaries under both names. The program is still called
+`openclaw-rs` then and `runo` does not exist yet: finish the move with
+`openclaw-rs migrate` (or the update script). Until then the Gateway logs a
+reminder at start.
+
+A service that set its own state directory (`OPENCLAW_RS_HOME` other than
+`~/.openclaw-rs`) keeps it; only the default directory moves. The conf.d
+file sets each variable under both names, so going back to 0.4
+(`update.sh --version 0.4.1`, then `rc-service runo restart`) finds the
+same state and token. Backups made by openclaw-rs restore as they are.
 
 ## Backup and restore
 

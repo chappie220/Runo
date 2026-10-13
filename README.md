@@ -22,9 +22,12 @@ The script picks the binary for this machine, checks its checksum, installs
 it and runs `runo init` for first-time setup. Later updates:
 `runo update`.
 
-Coming from openclaw-rs (0.4 and older)? Run `openclaw-rs update` and then
-`runo update` (or `runo migrate`): the binary, the service and `~/.openclaw-rs`
-move to the new name, and the old names keep working as links. See
+Coming from openclaw-rs (0.4 and older)? Run the update script
+(`curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh`),
+or `openclaw-rs update` and then `openclaw-rs migrate`: the binary, the
+service and `~/.openclaw-rs` move to the new name, and the old names keep
+working as links. To go back, install an older release with
+`update.sh --version`. See
 [Moving from openclaw-rs](docs/guide.md#moving-from-openclaw-rs).
 
 ## Build

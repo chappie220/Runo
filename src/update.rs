@@ -4,8 +4,9 @@
 //! A release carries one binary per target (`runo-<target>`, and for
 //! binaries from before the rename the same as `openclaw-rs-<target>`) and a
 //! `SHA256SUMS` file. The download must match its checksum and run
-//! `--version` before it replaces the current binary, which is kept as
-//! `<binary>.old` for `update --rollback`. The Gateway restarts itself by
+//! `--version` before it replaces the current binary. No copy of the old
+//! binary is kept: going back means installing the older release
+//! (`scripts/update.sh --version X`). The Gateway restarts itself by
 //! executing the new binary in place once no turn is running, so the
 //! process (and the OpenRC supervisor's view of it) stays the same.
 
@@ -59,20 +60,12 @@ const AVAILABLE: Tr = tr(
     "有新版本 {}：运行 `runo update` 安装。",
 );
 const DOWNLOADING: Tr = tr("Downloading {} ...", "正在下载 {} ...");
-const UPDATED: Tr = tr(
-    "Updated {} to {}; the previous binary is kept as {}.",
-    "已把 {} 更新到 {}；旧版本保存在 {}。",
-);
+const UPDATED: Tr = tr("Updated {} to {}.", "已把 {} 更新到 {}。");
 const RESTARTED: Tr = tr("Restarted the service.", "已重启服务。");
 const RESTART_HINT: Tr = tr(
     "A Gateway is running: restart it to use the new version (runo gateway restart).",
     "Gateway 正在运行：重启后才会用上新版本（runo gateway restart）。",
 );
-const ROLLED_BACK: Tr = tr(
-    "Rolled back: {} is the previous binary again ({}).",
-    "已回退：{} 恢复为上一个版本（{}）。",
-);
-const NO_OLD: Tr = tr("No previous binary at {}.", "没有找到旧版本 {}。");
 const NO_ASSET: Tr = tr(
     "Release {} has no binary for {} (expected {}).",
     "版本 {} 里没有适用于 {} 的程序（应为 {}）。",
@@ -92,8 +85,6 @@ pub const ALL: &[Tr] = &[
     UPDATED,
     RESTARTED,
     RESTART_HINT,
-    ROLLED_BACK,
-    NO_OLD,
     NO_ASSET,
     NOT_WRITABLE,
 ];
@@ -283,6 +274,7 @@ pub async fn fetch(release: &Release) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// Where updates before 0.5 kept the replaced binary; removed now.
 pub fn old_path(binary: &Path) -> PathBuf {
     let mut name = binary.file_name().unwrap_or_default().to_owned();
     name.push(".old");
@@ -292,8 +284,8 @@ pub fn old_path(binary: &Path) -> PathBuf {
 /// `errno` for running a file that is still open for writing.
 const ETXTBSY: i32 = 26;
 
-/// Replaces `binary` with `data` once it runs and reports `version`;
-/// the current binary is kept as `<binary>.old`.
+/// Replaces `binary` with `data` once it runs and reports `version`, and
+/// removes a `<binary>.old` an earlier version left.
 pub fn install(binary: &Path, data: &[u8], version: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -336,43 +328,16 @@ pub fn install(binary: &Path, data: &[u8], version: &str) -> Result<()> {
                 said.trim()
             );
         }
-        let old = old_path(binary);
-        std::fs::copy(binary, &old).map_err(|e| anyhow::anyhow!(not_writable(&e)))?;
         std::fs::rename(&staged, binary).map_err(|e| anyhow::anyhow!(not_writable(&e)))?;
+        let _ = std::fs::remove_file(old_path(binary));
         Ok(())
     })();
     let _ = std::fs::remove_file(&staged);
     result
 }
 
-/// Puts `<binary>.old` back, keeping the replaced one as `.old` instead.
-pub fn rollback(binary: &Path) -> Result<String> {
-    let old = old_path(binary);
-    if !old.is_file() {
-        bail!(NO_OLD.with(&[&old.display().to_string()]));
-    }
-    let output = std::process::Command::new(&old)
-        .arg("--version")
-        .output()
-        .context("the previous binary does not run")?;
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let swap = binary.with_file_name(format!(".runo-rollback-{}", std::process::id()));
-    let fail = |e: std::io::Error| {
-        anyhow::anyhow!(NOT_WRITABLE.with(&[&binary.display().to_string(), &e.to_string()]))
-    };
-    std::fs::rename(binary, &swap).map_err(fail)?;
-    std::fs::rename(&old, binary).map_err(fail)?;
-    std::fs::rename(&swap, &old).map_err(fail)?;
-    Ok(version)
-}
-
 /// `runo update`.
-pub async fn run(
-    config: &UpdateConfig,
-    check_only: bool,
-    rollback_only: bool,
-    bind: &str,
-) -> Result<()> {
+pub async fn run(config: &UpdateConfig, check_only: bool, bind: &str) -> Result<()> {
     let binary = std::env::current_exe().context("cannot find this binary")?;
     // A binary in /usr/local/bin belongs to root: do the whole update as root.
     if !check_only
@@ -382,16 +347,11 @@ pub async fn run(
             .is_some_and(|dir| !crate::elevate::writable(dir))
         && crate::elevate::can_ask()
     {
-        let args: &[&str] = if rollback_only {
-            &["update", "--rollback"]
-        } else {
-            &["update"]
-        };
-        return crate::elevate::rerun(args);
+        return crate::elevate::rerun(&["update"]);
     }
     // An install from before the rename moves to the new name first, so the
     // update replaces the binary the new service runs.
-    let binary = if rollback_only || check_only {
+    let binary = if check_only {
         binary
     } else {
         crate::rename::finish(true).unwrap_or_else(|err| {
@@ -399,15 +359,6 @@ pub async fn run(
             crate::rename::current_binary(&binary)
         })
     };
-    if rollback_only {
-        let version = rollback(&binary)?;
-        println!(
-            "{}",
-            ROLLED_BACK.with(&[&binary.display().to_string(), &version])
-        );
-        restart_service(bind);
-        return Ok(());
-    }
     println!("{}", CURRENT.with(&[VERSION, TARGET]));
     let release = latest(config).await?;
     println!("{}", LATEST.with(&[&release.version]));
@@ -424,11 +375,7 @@ pub async fn run(
     install(&binary, &data, &release.version)?;
     println!(
         "{}",
-        UPDATED.with(&[
-            &binary.display().to_string(),
-            &release.version,
-            &old_path(&binary).display().to_string()
-        ])
+        UPDATED.with(&[&binary.display().to_string(), &release.version])
     );
     restart_service(bind);
     Ok(())
@@ -627,7 +574,7 @@ mod tests {
     const NEW_BINARY: &[u8] = b"#!/bin/sh\necho runo 99.0.0\n";
 
     #[tokio::test]
-    async fn a_release_is_downloaded_checked_installed_and_rolled_back() {
+    async fn a_release_is_downloaded_checked_and_installed() {
         let config = github(NEW_BINARY.to_vec(), sha256_hex(NEW_BINARY)).await;
         let release = latest(&config).await.unwrap();
         assert_eq!(release.version, "99.0.0");
@@ -639,19 +586,12 @@ mod tests {
         std::fs::write(&binary, "#!/bin/sh\necho runo 0.1.0\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A copy an earlier version kept is cleaned up.
+        std::fs::write(old_path(&binary), "old").unwrap();
         install(&binary, &data, &release.version).unwrap();
         assert_eq!(std::fs::read(&binary).unwrap(), NEW_BINARY);
-        assert!(
-            std::fs::read_to_string(old_path(&binary))
-                .unwrap()
-                .contains("0.1.0")
-        );
-
-        assert_eq!(rollback(&binary).unwrap(), "runo 0.1.0");
-        assert!(std::fs::read_to_string(&binary).unwrap().contains("0.1.0"));
-        assert_eq!(std::fs::read(old_path(&binary)).unwrap(), NEW_BINARY);
-        // Only the two binaries are left.
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        // Only the new binary is left.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[tokio::test]

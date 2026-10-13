@@ -255,11 +255,15 @@ pub fn render_conf(home: &Path, state: &Path, env: &[(String, String)]) -> Strin
     let mut lines = vec![
         "# Managed by `runo service install`. Owner-only: may contain secrets.".to_owned(),
         format!("export HOME={}", shell_quote(&home.display().to_string())),
-        format!(
-            "export RUNO_HOME={}",
-            shell_quote(&state.display().to_string())
-        ),
     ];
+    // Also under the old name, which releases before 0.5 read: going back to
+    // one (scripts/update.sh --version) keeps the same state.
+    for key in ["RUNO_HOME", "OPENCLAW_RS_HOME"] {
+        lines.push(format!(
+            "export {key}={}",
+            shell_quote(&state.display().to_string())
+        ));
+    }
     for (key, value) in env {
         lines.push(format!("export {key}={}", shell_quote(value)));
     }
@@ -268,15 +272,22 @@ pub fn render_conf(home: &Path, state: &Path, env: &[(String, String)]) -> Strin
 }
 
 fn forwarded_env() -> Vec<(String, String)> {
-    FORWARDED_ENV
+    let mut env: Vec<(String, String)> = FORWARDED_ENV
         .iter()
+        .filter(|key| **key != "RUNO_TOKEN")
         .filter_map(|key| {
             std::env::var(key)
                 .ok()
                 .filter(|v| !v.is_empty())
                 .map(|v| ((*key).to_owned(), v))
         })
-        .collect()
+        .collect();
+    // The token under both names, as RUNO_HOME in render_conf.
+    if let Some(token) = crate::config::env_var("TOKEN").and_then(|v| v.into_string().ok()) {
+        env.push(("RUNO_TOKEN".into(), token.clone()));
+        env.push(("OPENCLAW_RS_TOKEN".into(), token));
+    }
+    env
 }
 
 /// Where a user service lives: `$XDG_CONFIG_HOME/rc`, else `~/.config/rc`.
@@ -772,9 +783,44 @@ fn account_state(account: &Account) -> PathBuf {
     }
 }
 
+/// A value as `shell_quote` wrote it (or plain).
+fn shell_unquote(value: &str) -> String {
+    let value = value.trim();
+    match value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+        Some(inner) => inner.replace(r"'\''", "'"),
+        None => value.trim_matches('"').to_owned(),
+    }
+}
+
+/// The state directory a conf.d file of a service from before 0.5 sets.
+fn conf_state(conf: &str) -> Option<PathBuf> {
+    conf.lines().find_map(|line| {
+        let line = line.trim();
+        let value = line
+            .strip_prefix("export OPENCLAW_RS_HOME=")
+            .or_else(|| line.strip_prefix("export RUNO_HOME="))?;
+        Some(PathBuf::from(shell_unquote(value))).filter(|p| !p.as_os_str().is_empty())
+    })
+}
+
+/// Where the service from before 0.5 of `account` keeps its state: a
+/// directory its conf.d file chose stays where it is; the default one
+/// moves to the new name.
+fn legacy_service_state(conf: &str, account: &Account) -> PathBuf {
+    let defaults = [
+        account.home.join(crate::config::LEGACY_STATE_DIR_NAME),
+        account.home.join(crate::config::STATE_DIR_NAME),
+    ];
+    match conf_state(conf) {
+        Some(dir) if !defaults.contains(&dir) => dir,
+        _ => account_state(account),
+    }
+}
+
 /// The conf.d file of a service installed before 0.5, for the new one: the
-/// same settings and secrets, the variables under their new names, and the
-/// state directory at `state`.
+/// same settings and secrets, the state directory at `state`, and each
+/// `OPENCLAW_RS_` variable also under its new `RUNO_` name. The old names
+/// stay, so an older release installed again still finds them.
 fn carry_conf(old: &str, home: &Path, state: &Path) -> String {
     let mut conf = render_conf(home, state, &[]);
     for line in old.lines() {
@@ -787,11 +833,10 @@ fn carry_conf(old: &str, home: &Path, state: &Path) -> String {
         {
             continue;
         }
-        let line = match line.strip_prefix("export OPENCLAW_RS_") {
-            Some(rest) => format!("export RUNO_{rest}"),
-            None => line.to_owned(),
-        };
-        conf.push_str(&line);
+        if let Some(rest) = line.strip_prefix("export OPENCLAW_RS_") {
+            conf.push_str(&format!("export RUNO_{rest}\n"));
+        }
+        conf.push_str(line);
         conf.push('\n');
     }
     conf
@@ -810,7 +855,7 @@ pub fn replace_legacy(binary: &Path) -> Result<bool> {
             .map_or_else(|| lookup_account("root"), Ok)?;
         let _ = run("rc-service", &[LEGACY_NAME, "stop"]);
         let _ = run("rc-update", &["del", LEGACY_NAME, "default"]);
-        let state = account_state(&account);
+        let state = legacy_service_state(&conf, &account);
         write_file(
             Path::new(CONF_FILE),
             &carry_conf(&conf, &account.home, &state),
@@ -836,7 +881,7 @@ pub fn replace_legacy(binary: &Path) -> Result<bool> {
         let conf = std::fs::read_to_string(&legacy.conf).unwrap_or_default();
         let _ = run("rc-service", &["--user", LEGACY_NAME, "stop"]);
         let _ = run("rc-update", &["--user", "del", LEGACY_NAME, "default"]);
-        let state = account_state(&account);
+        let state = legacy_service_state(&conf, &account);
         let paths = UserPaths::new(&account.home);
         write_file(
             &paths.conf,
@@ -1010,6 +1055,7 @@ mod tests {
             &[("OPENROUTER_API_KEY".into(), "sk-'x".into())],
         );
         assert!(conf.contains("export RUNO_HOME='/home/pi/.runo'"));
+        assert!(conf.contains("export OPENCLAW_RS_HOME='/home/pi/.runo'"));
         assert!(conf.contains(r"export OPENROUTER_API_KEY='sk-'\''x'"));
     }
 
@@ -1037,10 +1083,29 @@ mod tests {
                    export OPENCLAW_RS_TOKEN='t'\n";
         let conf = carry_conf(old, Path::new("/home/pi"), Path::new("/home/pi/.runo"));
         assert!(conf.contains("export RUNO_HOME='/home/pi/.runo'"), "{conf}");
+        assert!(
+            conf.contains("export OPENCLAW_RS_HOME='/home/pi/.runo'"),
+            "{conf}"
+        );
         assert!(conf.contains("export OPENROUTER_API_KEY='sk-x'"), "{conf}");
+        // Under both names, so an older release installed again still has it.
         assert!(conf.contains("export RUNO_TOKEN='t'"), "{conf}");
-        assert!(!conf.contains("OPENCLAW"), "{conf}");
+        assert!(conf.contains("export OPENCLAW_RS_TOKEN='t'"), "{conf}");
         assert_eq!(conf.matches("export HOME=").count(), 1, "{conf}");
+        assert_eq!(conf.matches("_HOME=").count(), 2, "{conf}");
+
+        // The default directory moves; one the conf.d file chose stays.
+        assert_eq!(
+            conf_state(old),
+            Some(PathBuf::from("/home/pi/.openclaw-rs"))
+        );
+        let custom = "export OPENCLAW_RS_HOME='/data/it'\\''s'\n";
+        assert_eq!(conf_state(custom), Some(PathBuf::from("/data/it's")));
+        assert_eq!(
+            legacy_service_state(custom, &pi()),
+            PathBuf::from("/data/it's")
+        );
+        assert_eq!(conf_state("export HOME='/home/pi'\n"), None);
     }
 
     #[test]
