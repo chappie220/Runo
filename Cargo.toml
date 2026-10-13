@@ -11,7 +11,7 @@ publish = false
 # tag is (v<release>). It may add a fourth part to `version`, which Cargo
 # keeps at three, a leading `a` (alpha) or `b` (beta), and a revision
 # (`-1`, newer than without); without it the release is `version`.
-release = "0.4.0"
+release = "0.4.1"
 
 [[bin]]
 name = "openclaw-rs"
