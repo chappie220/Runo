@@ -13,7 +13,13 @@ use crate::gateway::APPROVAL_TIMEOUT;
 
 /// Chat apps whose private chats are `<channel>:<dm>:<id>` and whose
 /// senders are `<channel>:<id>`.
-const CHANNELS: &[(&str, &str)] = &[("qq", "c2c"), ("feishu", "dm"), ("zulip", "dm")];
+const CHANNELS: &[(&str, &str)] = &[
+    ("qq", "c2c"),
+    ("feishu", "dm"),
+    ("zulip", "dm"),
+    ("telegram", "dm"),
+    ("discord", "dm"),
+];
 
 /// Longest reply that is split into several messages; longer ones are
 /// answers to read, not chat.

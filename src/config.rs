@@ -26,6 +26,8 @@ pub struct Config {
     pub qq: QqConfig,
     pub feishu: FeishuConfig,
     pub zulip: ZulipConfig,
+    pub telegram: crate::telegram::TelegramConfig,
+    pub discord: crate::discord::DiscordConfig,
     pub mail: MailConfig,
     pub search: SearchConfig,
     pub browser: BrowserConfig,
@@ -982,7 +984,12 @@ impl Default for AgentConfig {
 impl Config {
     /// Whether any channel that strangers can write to is on.
     pub fn any_channel(&self) -> bool {
-        self.qq.enabled || self.feishu.enabled || self.zulip.enabled || self.mail.enabled
+        self.qq.enabled
+            || self.feishu.enabled
+            || self.zulip.enabled
+            || self.telegram.enabled
+            || self.discord.enabled
+            || self.mail.enabled
     }
 
     pub fn load(path: &Path) -> Result<Self> {

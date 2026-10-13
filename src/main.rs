@@ -12,6 +12,7 @@ mod completions;
 mod config;
 mod context;
 mod cron;
+mod discord;
 mod doctor;
 mod elevate;
 mod embed;
@@ -44,6 +45,7 @@ mod status;
 mod stickers;
 mod store;
 mod tasks;
+mod telegram;
 mod tools;
 mod tts;
 mod tui;
@@ -613,10 +615,24 @@ async fn run(cli: Cli) -> Result<()> {
                 gateway.add_notifier(bot.clone());
                 tokio::spawn(zulip::run(bot, gateway.clone()));
             }
+            if config.telegram.enabled {
+                refuse_open_channel(&config, "telegram", "Telegram", &config.telegram.allow)?;
+                let bot = telegram::TelegramBot::new(config.telegram.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(telegram::run(bot, gateway.clone()));
+            }
+            if config.discord.enabled {
+                refuse_open_channel(&config, "discord", "Discord", &config.discord.allow)?;
+                let bot = discord::DiscordBot::new(config.discord.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(discord::run(bot, gateway.clone()));
+            }
             let unowned: Vec<&str> = [
                 ("qq", config.qq.enabled),
                 ("feishu", config.feishu.enabled),
                 ("zulip", config.zulip.enabled),
+                ("telegram", config.telegram.enabled),
+                ("discord", config.discord.enabled),
             ]
             .into_iter()
             .filter(|(app, on)| *on && config.access.unowned(app))

@@ -64,7 +64,7 @@ fn relevant(field: &Field, config: &Config) -> bool {
     use crate::config::SearchProvider;
     match field.path {
         ["model", "fallbacks"] | ["model", "prompt_cache"] => !config.chatgpt(),
-        ["qq" | "feishu" | "zulip", "proxy"] => config
+        ["qq" | "feishu" | "zulip" | "telegram" | "discord", "proxy"] => config
             .network
             .proxy
             .as_deref()
@@ -171,8 +171,8 @@ const OFF_EFFORT: Tr = tr(
     "off（不发送，由模型自己决定）",
 );
 const NO_CHAT_OWNERS: Tr = tr(
-    "No chat app (QQ, Feishu, Zulip) has an owner.",
-    "QQ、飞书、Zulip 都还没有所有者。",
+    "No chat app (QQ, Feishu, Zulip, Telegram, Discord) has an owner.",
+    "QQ、飞书、Zulip、Telegram、Discord 都还没有所有者。",
 );
 const REVOKED: Tr = tr("Revoked {}.", "已撤销 {}。");
 const REVOKE_TITLE: Tr = tr("Revoke which owner?", "撤销哪个所有者？");
@@ -598,6 +598,112 @@ const GROUPS: &[Group] = &[
                     },
                     Field {
                         path: &["zulip", "split_replies"],
+                        label: tr("Split chatty replies", "闲聊回复分条发送"),
+                        help: tr(
+                            "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                            "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                ],
+            },
+            Section {
+                title: tr("Telegram bot", "Telegram 机器人"),
+                fields: &[
+                    Field {
+                        path: &["telegram", "enabled"],
+                        label: tr("Enabled", "启用"),
+                        help: tr(
+                            "Polls Telegram for messages when `serve` runs. Create the bot with @BotFather and paste its token.",
+                            "运行 `serve` 时从 Telegram 拉取消息。用 @BotFather 创建机器人，填入它的 token。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["telegram", "proxy"],
+                        label: tr("Use the network proxy", "使用网络代理"),
+                        help: tr(
+                            "Reach Telegram through network.proxy (Model › Provider and sign-in); where Telegram is blocked it needs one.",
+                            "通过网络代理（模型 › 模型提供方与登录）连接 Telegram；Telegram 被屏蔽的地方需要代理。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["telegram", "token"],
+                        label: tr("Bot token", "机器人 token"),
+                        help: tr(
+                            "TELEGRAM_BOT_TOKEN wins when set.",
+                            "设了 TELEGRAM_BOT_TOKEN 时以环境变量为准。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "TELEGRAM_BOT_TOKEN",
+                            generate: false,
+                        },
+                    },
+                    Field {
+                        path: &["telegram", "allow"],
+                        label: tr("Allowed users or chats", "允许的用户或聊天"),
+                        help: tr(
+                            "Comma-separated user ids, @usernames or group chat ids; empty lets everyone chat. In groups the bot answers when @-mentioned or replied to.",
+                            "用逗号分隔的用户 id、@用户名或群聊 id；留空则所有人都能聊天。在群里只有 @ 机器人或回复它才会回答。",
+                        ),
+                        kind: Kind::List,
+                    },
+                    Field {
+                        path: &["telegram", "split_replies"],
+                        label: tr("Split chatty replies", "闲聊回复分条发送"),
+                        help: tr(
+                            "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
+                            "几段话的简短回复拆成最多三条消息，间隔片刻发出，像真人发消息。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                ],
+            },
+            Section {
+                title: tr("Discord bot", "Discord 机器人"),
+                fields: &[
+                    Field {
+                        path: &["discord", "enabled"],
+                        label: tr("Enabled", "启用"),
+                        help: tr(
+                            "Connects to Discord when `serve` runs. Create an application in the Developer Portal, add a bot, turn on the Message Content intent, and invite it.",
+                            "运行 `serve` 时连接 Discord。在 Developer Portal 创建应用并添加 bot，打开 Message Content intent，再把它邀请进服务器。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["discord", "proxy"],
+                        label: tr("Use the network proxy", "使用网络代理"),
+                        help: tr(
+                            "Reach Discord through network.proxy (Model › Provider and sign-in); where Discord is blocked it needs one.",
+                            "通过网络代理（模型 › 模型提供方与登录）连接 Discord；Discord 被屏蔽的地方需要代理。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["discord", "token"],
+                        label: tr("Bot token", "机器人 token"),
+                        help: tr(
+                            "DISCORD_BOT_TOKEN wins when set.",
+                            "设了 DISCORD_BOT_TOKEN 时以环境变量为准。",
+                        ),
+                        kind: Kind::Secret {
+                            env: "DISCORD_BOT_TOKEN",
+                            generate: false,
+                        },
+                    },
+                    Field {
+                        path: &["discord", "allow"],
+                        label: tr("Allowed users or chats", "允许的用户或聊天"),
+                        help: tr(
+                            "Comma-separated user ids or channel ids; empty lets everyone who can reach the bot chat. In servers it answers when @-mentioned or replied to.",
+                            "用逗号分隔的用户 id 或频道 id；留空则所有能找到机器人的人都能聊天。在服务器里只有 @ 机器人或回复它才会回答。",
+                        ),
+                        kind: Kind::List,
+                    },
+                    Field {
+                        path: &["discord", "split_replies"],
                         label: tr("Split chatty replies", "闲聊回复分条发送"),
                         help: tr(
                             "A short reply of a few paragraphs goes out as up to three messages, a moment apart, like texting.",
@@ -3304,7 +3410,7 @@ mod tests {
         let out = drive_in(
             Lang::Zh,
             &path,
-            "3\n1\n?\n是\n\n\n\n\n99\n3\n4\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
+            "3\n1\n?\n是\n\n\n\n\n99\n3\n6\n\n\n\nabc\n\n\n\n\n\n\n\n\n\ns\n",
         );
         assert!(out.contains("2) 模型"), "{out}");
         assert!(out.contains("1) QQ 机器人"), "{out}");

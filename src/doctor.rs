@@ -76,6 +76,8 @@ const S_GATEWAY: Tr = tr("Gateway", "Gateway");
 const S_QQ: Tr = tr("QQ", "QQ");
 const S_FEISHU: Tr = tr("Feishu", "飞书");
 const S_ZULIP: Tr = tr("Zulip", "Zulip");
+const S_TELEGRAM: Tr = tr("Telegram", "Telegram");
+const S_DISCORD: Tr = tr("Discord", "Discord");
 const S_MAIL: Tr = tr("Email", "邮件");
 const S_ACCESS: Tr = tr("Access", "权限");
 const S_LIMITS: Tr = tr("Spending limits", "花费上限");
@@ -400,6 +402,8 @@ pub const ALL: &[Tr] = &[
     S_QQ,
     S_FEISHU,
     S_ZULIP,
+    S_TELEGRAM,
+    S_DISCORD,
     S_MAIL,
     S_ACCESS,
     S_LIMITS,
@@ -656,6 +660,12 @@ pub async fn run(path: &Path, state: &Path, offline: bool) -> Result<bool> {
 
     report.section(S_ZULIP);
     report.add(zulip_findings(&config, offline).await);
+
+    report.section(S_TELEGRAM);
+    report.add(telegram_findings(&config, offline).await);
+
+    report.section(S_DISCORD);
+    report.add(discord_findings(&config, offline).await);
 
     report.section(S_MAIL);
     report.add(mail_findings(&config, offline).await);
@@ -1202,6 +1212,72 @@ async fn zulip_findings(config: &Config, offline: bool) -> Vec<Finding> {
     findings
 }
 
+async fn telegram_findings(config: &Config, offline: bool) -> Vec<Finding> {
+    let telegram = &config.telegram;
+    if !telegram.enabled {
+        return vec![info(OFF.now())];
+    }
+    let mut findings = Vec::new();
+    if telegram.token().is_none() {
+        findings.push(fail(NO_SECRET.with(&[
+            "bot token",
+            "TELEGRAM_BOT_TOKEN",
+            "telegram.token",
+        ])));
+    }
+    if telegram.allow.is_empty() {
+        findings.push(warn(ALLOW_EMPTY.with(&["telegram"])));
+    }
+    if offline || findings.iter().any(|f| f.status == Status::Fail) {
+        return findings;
+    }
+    let checked = match crate::telegram::TelegramBot::new(telegram.clone()) {
+        Ok(bot) => bot.check().await,
+        Err(err) => Err(err),
+    };
+    findings.insert(
+        0,
+        match checked {
+            Ok(detail) => ok(detail),
+            Err(err) => fail(QQ_FAILED.with(&[&format!("{err:#}")])),
+        },
+    );
+    findings
+}
+
+async fn discord_findings(config: &Config, offline: bool) -> Vec<Finding> {
+    let discord = &config.discord;
+    if !discord.enabled {
+        return vec![info(OFF.now())];
+    }
+    let mut findings = Vec::new();
+    if discord.token().is_none() {
+        findings.push(fail(NO_SECRET.with(&[
+            "bot token",
+            "DISCORD_BOT_TOKEN",
+            "discord.token",
+        ])));
+    }
+    if discord.allow.is_empty() {
+        findings.push(warn(ALLOW_EMPTY.with(&["discord"])));
+    }
+    if offline || findings.iter().any(|f| f.status == Status::Fail) {
+        return findings;
+    }
+    let checked = match crate::discord::DiscordBot::new(discord.clone()) {
+        Ok(bot) => bot.check().await,
+        Err(err) => Err(err),
+    };
+    findings.insert(
+        0,
+        match checked {
+            Ok(detail) => ok(detail),
+            Err(err) => fail(QQ_FAILED.with(&[&format!("{err:#}")])),
+        },
+    );
+    findings
+}
+
 async fn mail_findings(config: &Config, offline: bool) -> Vec<Finding> {
     if !config.mail.enabled {
         return vec![info(OFF.now())];
@@ -1307,6 +1383,8 @@ fn access_findings(config: &Config) -> Vec<Finding> {
         ("qq", config.qq.enabled),
         ("feishu", config.feishu.enabled),
         ("zulip", config.zulip.enabled),
+        ("telegram", config.telegram.enabled),
+        ("discord", config.discord.enabled),
     ]
     .into_iter()
     .filter(|(app, on)| *on && config.access.unowned(app))

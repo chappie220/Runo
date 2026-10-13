@@ -43,6 +43,8 @@ const FORWARDED_ENV: &[&str] = &[
     "QQ_APP_SECRET",
     "FEISHU_APP_SECRET",
     "ZULIP_API_KEY",
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
     "MAIL_PASSWORD",
     "TYPESAFE_API_KEY",
 ];
