@@ -38,6 +38,18 @@ pub trait Approver: Send + Sync {
     async fn send_image(&self, _mime: &str, _data: &[u8]) -> anyhow::Result<bool> {
         Ok(false)
     }
+
+    /// Whether this front end can play voice messages, asked before one
+    /// is spoken (which costs money).
+    fn plays_voice(&self) -> bool {
+        false
+    }
+
+    /// Sends a voice message the turn spoke (mp3); `false` when this front
+    /// end cannot play voice messages.
+    async fn send_voice(&self, _mime: &str, _data: &[u8]) -> anyhow::Result<bool> {
+        Ok(false)
+    }
 }
 
 tokio::task_local! {
@@ -58,6 +70,22 @@ pub async fn with_approver<F: std::future::Future>(
 pub async fn send_image(mime: &str, data: &[u8]) -> anyhow::Result<bool> {
     match TURN_APPROVER.try_with(Arc::clone) {
         Ok(approver) => approver.send_image(mime, data).await,
+        Err(_) => Ok(false),
+    }
+}
+
+/// Whether the chat the turn answers can play voice messages.
+pub fn plays_voice() -> bool {
+    TURN_APPROVER
+        .try_with(|approver| approver.plays_voice())
+        .unwrap_or(false)
+}
+
+/// Sends a voice message to the chat the turn answers; `Ok(false)` when it
+/// has none that can.
+pub async fn send_voice(mime: &str, data: &[u8]) -> anyhow::Result<bool> {
+    match TURN_APPROVER.try_with(Arc::clone) {
+        Ok(approver) => approver.send_voice(mime, data).await,
         Err(_) => Ok(false),
     }
 }
@@ -119,6 +147,9 @@ pub struct BuiltinTools {
     review: Option<Reviewer>,
     mail: Option<Arc<MailBot>>,
     image: Option<crate::imagegen::ImageGen>,
+    speaker: Option<crate::tts::Speaker>,
+    /// The sticker library; `None` offers no sticker tools.
+    stickers: Option<crate::config::StickersConfig>,
     /// config.toml, for the `settings` tool; `None` offers no such tool.
     settings: Option<PathBuf>,
 }
@@ -158,6 +189,32 @@ struct ImageArgs {
 #[derive(Deserialize)]
 struct DrawingProfileArgs {
     profile: String,
+}
+
+#[derive(Deserialize)]
+struct VoiceArgs {
+    text: String,
+    #[serde(default)]
+    instructions: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct VoiceProfileArgs {
+    voice: String,
+    instructions: String,
+}
+
+#[derive(Deserialize)]
+struct StickerSendArgs {
+    mood: String,
+}
+
+#[derive(Deserialize)]
+struct StickerSaveArgs {
+    path: String,
+    mood: String,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Deserialize)]
@@ -261,6 +318,8 @@ impl BuiltinTools {
             review: None,
             mail: None,
             image: None,
+            speaker: None,
+            stickers: None,
             settings: None,
         })
     }
@@ -404,6 +463,256 @@ impl BuiltinTools {
         ))
     }
 
+    /// Offers `voice_send` with this speech model; `None` offers none.
+    pub fn with_speaker(mut self, speaker: Option<crate::tts::Speaker>) -> Self {
+        self.speaker = speaker;
+        self
+    }
+
+    /// Offers the sticker library; `None` (or turned off) offers none.
+    pub fn with_stickers(mut self, stickers: Option<crate::config::StickersConfig>) -> Self {
+        self.stickers = stickers.filter(|s| s.enabled);
+        self
+    }
+
+    /// Speaks `text` in the identity's voice and sends it as a voice message.
+    async fn voice_send(&self, actor: &Actor, args: VoiceArgs) -> Result<String, String> {
+        let speaker = self
+            .speaker
+            .as_ref()
+            .ok_or("error: voice messages are off")?;
+        if !plays_voice() {
+            return Ok(
+                "This chat cannot play voice messages, so nothing was spoken. Answer in \
+                       text, and do not use voice_send again in this chat."
+                    .into(),
+            );
+        }
+        let name = self.identity_name()?;
+        let profile = self
+            .store
+            .voice_profile(&name)
+            .map_err(|e| format!("error: {e:#}"))?;
+        let (voice, saved_instructions) = match &profile {
+            Some((voice, instructions)) => (Some(voice.as_str()), Some(instructions.as_str())),
+            None => (None, None),
+        };
+        let voice = speaker
+            .pick_voice(voice)
+            .await
+            .map_err(|e| format!("error: {e:#}"))?;
+        // This message's delivery on top of how the identity always speaks.
+        let instructions = match (saved_instructions, args.instructions.as_deref()) {
+            (Some(saved), Some(now)) if !now.trim().is_empty() => {
+                Some(format!("{saved}\nThis time: {}", now.trim()))
+            }
+            (Some(saved), _) => Some(saved.to_owned()),
+            (None, now) => now.map(str::to_owned),
+        };
+        let speech = speaker
+            .speak(&args.text, &voice, instructions.as_deref())
+            .await
+            .map_err(|e| format!("error: {e:#}"))?;
+        if let Some(cost) = speech.cost {
+            let session = crate::agent::current_session().unwrap_or_default();
+            let usage = crate::llm::Usage {
+                cost,
+                ..Default::default()
+            };
+            if let Err(err) = self.store.record_usage(
+                &session,
+                "speech",
+                Some(&actor.id),
+                Some(&speaker.model),
+                &usage,
+            ) {
+                eprintln!("usage: cannot record speech: {err:#}");
+            }
+        }
+        let relative = crate::tts::save(&self.workspace, &speech)
+            .await
+            .map_err(|e| format!("error: {e:#}"))?;
+        let note = if profile.is_none() {
+            " No voice profile is saved yet: load the voice skill and save one, so you always sound like yourself."
+        } else {
+            ""
+        };
+        match send_voice(speech.mime, &speech.data).await {
+            Ok(true) => Ok(format!(
+                "Voice message sent ({} voice, {} KB). It is already in the chat: do not repeat its \
+                 words in text or mention the file.{note}",
+                speech.voice,
+                speech.data.len() / 1024
+            )),
+            Ok(false) => Ok(format!(
+                "This chat cannot play voice messages, so nothing was sent; it is saved at {}. \
+                 Answer in text here, and do not use voice_send again in this chat.",
+                self.workspace.join(&relative).display()
+            )),
+            Err(err) => Err(format!(
+                "error: sending the voice message failed ({err:#}); it is saved at {}. Answer in text.",
+                self.workspace.join(&relative).display()
+            )),
+        }
+    }
+
+    /// What the voice skill is told: the saved profile, or the voices to
+    /// choose from.
+    async fn voice_profile_note(&self) -> Result<String, String> {
+        let name = self.identity_name()?;
+        let saved = self
+            .store
+            .voice_profile(&name)
+            .map_err(|e| format!("error: {e:#}"))?;
+        if let Some((voice, instructions)) = saved {
+            return Ok(format!(
+                "## Your saved voice profile\n\nVoice: {voice}\nHow you speak: {instructions}\n\n\
+                 It was researched before and is shared by every conversation: voice_send uses it \
+                 on its own. Skip step 1 entirely; do not research your voice again."
+            ));
+        }
+        let Some(speaker) = &self.speaker else {
+            return Ok(String::new());
+        };
+        let voices = speaker.catalog().await.voices;
+        let list = if voices.is_empty() {
+            "(the list could not be read now; any voice name the model documents)".to_owned()
+        } else {
+            voices.join(", ")
+        };
+        Ok(format!(
+            "## No voice profile saved yet\n\nDo step 1 now, once, then save it with \
+             voice_profile_save. The voices of {}: {list}",
+            speaker.model
+        ))
+    }
+
+    /// Saves how the identity sounds. Only owners replace a saved profile.
+    async fn voice_profile_save(
+        &self,
+        actor: &Actor,
+        args: VoiceProfileArgs,
+    ) -> Result<String, String> {
+        let speaker = self
+            .speaker
+            .as_ref()
+            .ok_or("error: voice messages are off")?;
+        let voice = args.voice.trim();
+        let instructions = args.instructions.trim();
+        if voice.is_empty() || instructions.is_empty() {
+            return Err("error: give both the voice and how to speak".into());
+        }
+        if instructions.chars().count() > MAX_DRAWING_PROFILE_CHARS {
+            return Err(format!(
+                "error: keep the instructions under {MAX_DRAWING_PROFILE_CHARS} characters"
+            ));
+        }
+        let voices = speaker.catalog().await.voices;
+        // Saved as the model spells it.
+        let voice = match voices.iter().find(|v| v.eq_ignore_ascii_case(voice)) {
+            Some(known) => known.as_str(),
+            None if voices.is_empty() => voice,
+            None => {
+                return Err(format!(
+                    "error: {} has no voice {voice:?}; pick one of: {}",
+                    speaker.model,
+                    voices.join(", ")
+                ));
+            }
+        };
+        let name = self.identity_name()?;
+        let saved = self
+            .store
+            .voice_profile(&name)
+            .map_err(|e| format!("error: {e:#}"))?;
+        if saved.is_some() && !actor.owner {
+            return Err(
+                "error: a voice profile is already saved; use it. Only the owner can change it."
+                    .into(),
+            );
+        }
+        self.store
+            .voice_profile_set(&name, voice, instructions)
+            .map_err(|e| format!("error: {e:#}"))?;
+        Ok(if saved.is_some() {
+            "voice profile replaced; later voice messages use it".into()
+        } else {
+            "voice profile saved; every later voice message uses it without researching".into()
+        })
+    }
+
+    /// Sends the identity's sticker for `mood`, or says how to make one.
+    async fn sticker_send(&self, actor: &Actor, args: StickerSendArgs) -> Result<String, String> {
+        if self.stickers.is_none() {
+            return Err("error: stickers are off".into());
+        }
+        let name = self.identity_name()?;
+        let mood = crate::stickers::mood_key(&args.mood).map_err(|e| format!("error: {e:#}"))?;
+        let found = crate::stickers::pick(&self.store, &name, &mood)
+            .map_err(|e| format!("error: {e:#}"))?;
+        let Some(sticker) = found else {
+            let moods = self
+                .store
+                .sticker_moods(&name)
+                .map_err(|e| format!("error: {e:#}"))?;
+            let have = if moods.is_empty() {
+                "You have no stickers yet.".to_owned()
+            } else {
+                format!(
+                    "Your stickers: {}.",
+                    moods
+                        .iter()
+                        .map(|(m, n)| format!("{m} ({n})"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            let make = if self.image.is_some() && actor.can(Capability::ImageGenerate) {
+                " To make one, load the stickers skill, draw it, then sticker_save it; or send one of the moods you have, or none."
+            } else {
+                " Send one of the moods you have, or none."
+            };
+            return Ok(format!("No {mood:?} sticker yet. {have}{make}"));
+        };
+        let data = tokio::fs::read(self.workspace.join(&sticker.path))
+            .await
+            .map_err(|e| format!("error: {}: {e}", sticker.path))?;
+        let mime = crate::imagegen::sniff(&data);
+        match send_image(mime, &data).await {
+            Ok(true) => {
+                if let Err(err) = self.store.sticker_used(sticker.id) {
+                    eprintln!("stickers: cannot count a use: {err:#}");
+                }
+                Ok(format!(
+                    "Sent your {mood} sticker ({}). It is in the chat: do not describe it.",
+                    sticker.description
+                ))
+            }
+            Ok(false) => Ok("This chat cannot show pictures; do not send stickers here.".into()),
+            Err(err) => Err(format!("error: sending the sticker failed: {err:#}")),
+        }
+    }
+
+    /// Files a picture (usually one image_generate just drew) as a sticker.
+    fn sticker_save(&self, args: StickerSaveArgs) -> Result<String, String> {
+        let config = self.stickers.as_ref().ok_or("error: stickers are off")?;
+        let name = self.identity_name()?;
+        let source = self.resolve(&args.path);
+        let (id, path) = crate::stickers::save(
+            &self.store,
+            &self.workspace,
+            &name,
+            &args.mood,
+            &args.description,
+            &source,
+            config.per_mood,
+        )
+        .map_err(|e| format!("error: {e:#}"))?;
+        Ok(format!(
+            "saved sticker #{id} as {path}; sticker_send with this mood sends it from now on"
+        ))
+    }
+
     pub fn with_search(mut self, search: Option<Searcher>) -> Self {
         self.search = search;
         self
@@ -434,28 +743,87 @@ impl BuiltinTools {
     fn skills_for(&self, actor: Option<&Actor>) -> Option<Skills> {
         let skills = self.skills.as_ref()?;
         let draws = self.image.is_some() && actor.is_some_and(|a| a.can(Capability::ImageGenerate));
-        Some(if draws {
-            skills.clone().with_builtins(&[crate::skills::DRAWING])
-        } else {
+        let speaks = self.speaker.is_some() && actor.is_some_and(|a| a.can(Capability::Voice));
+        let mut builtins = Vec::new();
+        if draws {
+            builtins.push(crate::skills::DRAWING);
+            if self.stickers.is_some() {
+                builtins.push(crate::skills::STICKERS);
+            }
+        }
+        if speaks {
+            builtins.push(crate::skills::VOICE);
+        }
+        Some(if builtins.is_empty() {
             skills.clone()
+        } else {
+            skills.clone().with_builtins(&builtins)
         })
     }
 
-    fn skill(&self, actor: &Actor, args: SkillArgs) -> Result<String, String> {
+    async fn skill(&self, actor: &Actor, args: SkillArgs) -> Result<String, String> {
         let skills = self
             .skills_for(Some(actor))
             .ok_or("error: skills are off")?;
         let name = args.name.trim();
         let mut text = skills.load(name).map_err(|err| format!("error: {err:#}"))?;
-        let builtin_drawing = skills
+        let builtin = skills
             .scan()
             .iter()
-            .any(|s| s.name == name && s.builtin == Some(crate::skills::DRAWING));
-        if builtin_drawing {
+            .find(|s| s.name == name)
+            .and_then(|s| s.builtin);
+        if builtin == Some(crate::skills::DRAWING) {
             text.push_str("\n\n");
             text.push_str(&self.drawing_profile_note()?);
         }
+        if builtin == Some(crate::skills::STICKERS) {
+            let name = self.identity_name()?;
+            if let Some(profile) = self
+                .store
+                .drawing_profile(&name)
+                .map_err(|e| format!("error: {e:#}"))?
+            {
+                text.push_str("\n\n## Your drawing profile\n\n");
+                text.push_str(&profile);
+            }
+            text.push_str("\n\n");
+            text.push_str(&self.sticker_note()?);
+        }
+        if builtin == Some(crate::skills::VOICE) {
+            text.push_str("\n\n");
+            text.push_str(&self.voice_profile_note().await?);
+        }
         Ok(text)
+    }
+
+    /// What the stickers skill is told about the library so far.
+    fn sticker_note(&self) -> Result<String, String> {
+        let name = self.identity_name()?;
+        let moods = self
+            .store
+            .sticker_moods(&name)
+            .map_err(|e| format!("error: {e:#}"))?;
+        if moods.is_empty() {
+            return Ok(
+                "## Your sticker library\n\nEmpty: your first sticker sets the style.".into(),
+            );
+        }
+        let mut lines = vec!["## Your sticker library".to_owned(), String::new()];
+        for (mood, _) in &moods {
+            for sticker in self
+                .store
+                .stickers_for(&name, mood)
+                .map_err(|e| format!("error: {e:#}"))?
+            {
+                lines.push(format!(
+                    "- {mood}: {} — {}",
+                    sticker.path, sticker.description
+                ));
+            }
+        }
+        lines.push(String::new());
+        lines.push("Pass one of these paths as a reference when drawing a new one, so the style stays the same.".into());
+        Ok(lines.join("\n"))
     }
 
     /// The identity's name, which a drawing profile belongs to.
@@ -690,15 +1058,22 @@ impl BuiltinTools {
             .store
             .memory_save_kind(&args.content, args.kind.as_deref(), actor.scope())
             .map_err(|e| format!("error: {e:#}"))?;
+        // Embedded now, so a search by meaning finds it in this conversation.
+        if let Some(embedder) = crate::embed::current() {
+            let store = self.store.clone();
+            tokio::spawn(async move { crate::embed::catch_up(&store, &embedder).await });
+        }
         Ok(format!("saved memory #{id}"))
     }
 
-    fn memory_search(&self, actor: &Actor, args: MemorySearchArgs) -> Result<String, String> {
+    async fn memory_search(&self, actor: &Actor, args: MemorySearchArgs) -> Result<String, String> {
         let limit = args.limit.unwrap_or(10).clamp(1, 50);
-        let hits = self
+        let keyword = self
             .store
             .memory_search_in(&args.query, limit, actor.scope())
             .map_err(|e| format!("error: {e:#}"))?;
+        let hits =
+            crate::embed::search(&self.store, &args.query, keyword, actor.scope(), limit).await;
         if hits.is_empty() {
             return Ok("no matching memories".into());
         }
@@ -1261,6 +1636,59 @@ impl BuiltinTools {
                 }, "required": ["profile"]}),
             ));
         }
+        if let Some(speaker) = &self.speaker {
+            specs.push(ToolSpec::function(
+                "voice_send",
+                &format!(
+                    "Say something out loud: {} speaks it in your voice and it is sent as a voice \
+                     message in this chat. Use it now and then, when hearing you means more than \
+                     reading you (a good-night, comfort, a laugh, a greeting, when they sent you a \
+                     voice message or ask to hear you), not for long or factual answers. Write \
+                     `text` as speech: short (one to three sentences, at most {} characters), \
+                     spoken words only, no Markdown, emoji, links or stage directions. If the voice \
+                     skill is listed and no voice profile is saved, load it first.",
+                    speaker.model, speaker.max_chars
+                ),
+                json!({"type": "object", "properties": {
+                    "text": {"type": "string", "description": "The words to say"},
+                    "instructions": {"type": "string", "description": "How to say it this time: emotion, pace, volume (e.g. sleepy and soft, giggling)"}
+                }, "required": ["text"]}),
+            ));
+            if self.skills.is_some() {
+                specs.push(ToolSpec::function(
+                    "voice_profile_save",
+                    "Save how you (your identity) sound, as the voice skill describes: the speech model voice closest to yours and how you speak. Every later voice message uses it, in every conversation, so you research it only once. Saving again replaces it (owners only).",
+                    json!({"type": "object", "properties": {
+                        "voice": {"type": "string", "description": "One of the model's voices, as the skill lists them"},
+                        "instructions": {"type": "string", "description": "How you speak, for the speech model, under 1500 characters: age and gender of the voice, pitch, timbre, pace, accent, energy, verbal habits"}
+                    }, "required": ["voice", "instructions"]}),
+                ));
+            }
+        }
+        if self.stickers.is_some() {
+            specs.push(ToolSpec::function(
+                "sticker_send",
+                "Send one of your own stickers for a mood, like people do in chat apps: after or instead \
+                 of a short reply when the feeling is clear (happy, laugh, love, shy, sad, cry, angry, \
+                 surprised, confused, sleepy, thinking, proud, sorry, thanks, hello, goodnight, ok). \
+                 At most one per reply, and not in every reply. It costs nothing; the result says which \
+                 moods you have and how to make a missing one.",
+                json!({"type": "object", "properties": {
+                    "mood": {"type": "string", "description": "One English word, such as happy, shy or goodnight"}
+                }, "required": ["mood"]}),
+            ));
+            if self.image.is_some() {
+                specs.push(ToolSpec::function(
+                    "sticker_save",
+                    "Add a picture you drew (its images/ path from image_generate) to your sticker library under a mood, as the stickers skill describes, so sticker_send can send it again without drawing.",
+                    json!({"type": "object", "properties": {
+                        "path": {"type": "string", "description": "Workspace path of the picture"},
+                        "mood": {"type": "string", "description": "One English word, such as happy"},
+                        "description": {"type": "string", "description": "What it shows, in a few words"}
+                    }, "required": ["path", "mood"]}),
+                ));
+            }
+        }
         if let Some(skills) = self.skills_for(access::current().as_ref())
             && !skills.ready().is_empty()
         {
@@ -1354,7 +1782,10 @@ impl BuiltinTools {
                 Err(e) => Err(e),
             },
             "memory_save" => parse(call).and_then(|args| self.memory_save(actor, args)),
-            "memory_search" => parse(call).and_then(|args| self.memory_search(actor, args)),
+            "memory_search" => match parse(call) {
+                Ok(args) => self.memory_search(actor, args).await,
+                Err(e) => Err(e),
+            },
             "memory_delete" => parse(call).and_then(|args| self.memory_delete(actor, args)),
             "identity_set" => match parse(call) {
                 Ok(args) => self.identity_set(actor, args).await,
@@ -1372,7 +1803,23 @@ impl BuiltinTools {
                 Ok(args) => self.web_fetch(actor, args).await,
                 Err(e) => Err(e),
             },
-            "skill" => parse(call).and_then(|args| self.skill(actor, args)),
+            "skill" => match parse(call) {
+                Ok(args) => self.skill(actor, args).await,
+                Err(e) => Err(e),
+            },
+            "voice_send" => match parse(call) {
+                Ok(args) => self.voice_send(actor, args).await,
+                Err(e) => Err(e),
+            },
+            "voice_profile_save" => match parse(call) {
+                Ok(args) => self.voice_profile_save(actor, args).await,
+                Err(e) => Err(e),
+            },
+            "sticker_send" => match parse(call) {
+                Ok(args) => self.sticker_send(actor, args).await,
+                Err(e) => Err(e),
+            },
+            "sticker_save" => parse(call).and_then(|args| self.sticker_save(args)),
             "drawing_profile_save" => {
                 parse(call).and_then(|args| self.drawing_profile_save(actor, args))
             }
@@ -1538,6 +1985,208 @@ mod tests {
         let offered = access::with_actor(guest, async { tools.specs() }).await;
         assert!(!offered.iter().any(|s| s.function.name == "image_generate"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Remembers the pictures and voice messages a turn sends.
+    #[derive(Default)]
+    struct Phone {
+        pictures: std::sync::Mutex<Vec<Vec<u8>>>,
+        voices: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    #[async_trait]
+    impl Approver for Phone {
+        async fn approve(&self, _tool: &str, _summary: &str) -> bool {
+            false
+        }
+        async fn send_image(&self, _mime: &str, data: &[u8]) -> anyhow::Result<bool> {
+            self.pictures.lock().unwrap().push(data.into());
+            Ok(true)
+        }
+        fn plays_voice(&self) -> bool {
+            true
+        }
+        async fn send_voice(&self, mime: &str, data: &[u8]) -> anyhow::Result<bool> {
+            self.voices.lock().unwrap().push((mime.into(), data.into()));
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn voice_send_speaks_in_the_saved_voice() {
+        use axum::routing::{get, post};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let log = seen.clone();
+        let app = axum::Router::new()
+            .route(
+                "/models",
+                get(|| async {
+                    axum::Json(
+                        json!({"data": [{"id": "t/tts", "pricing": {"prompt": "0.00001"},
+                        "architecture": {"output_modalities": ["speech"]},
+                        "supported_voices": ["eve", "rex"]}]}),
+                    )
+                }),
+            )
+            .route(
+                "/audio/speech",
+                post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                    let log = log.clone();
+                    async move {
+                        log.lock().unwrap().push(body);
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "audio/mpeg")],
+                            vec![0xFFu8; 100],
+                        )
+                    }
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.model.base_url = base;
+        config.speech.model = Some("t/tts".into());
+        let skills = Skills::new(dir.path(), &crate::config::SkillsConfig::default());
+        let tools = BuiltinTools::new(
+            dir.path().into(),
+            ToolsConfig::default(),
+            Store::open_in_memory().unwrap(),
+        )
+        .unwrap()
+        .with_skills(Some(skills))
+        .with_speaker(crate::tts::Speaker::new(&config, "k").unwrap());
+        let offered = owner(async { tools.specs() }).await;
+        assert!(offered.iter().any(|s| s.function.name == "voice_send"));
+        let phone = Arc::new(Phone::default());
+        let run = |name: &str, args: serde_json::Value| {
+            let request = call(name, args);
+            let phone = phone.clone();
+            let tools = &tools;
+            async move { owner(with_approver(phone, tools.call(&request))).await }
+        };
+
+        // Before a profile: the model's first voice, and a nudge to the skill.
+        let out = run("voice_send", json!({"text": "晚安～"})).await;
+        assert!(
+            out.contains("Voice message sent") && out.contains("voice skill"),
+            "{out}"
+        );
+        assert_eq!(seen.lock().unwrap()[0]["voice"], "eve");
+        let skill = run("skill", json!({"name": "voice"})).await;
+        assert!(
+            skill.contains("No voice profile saved yet") && skill.contains("eve, rex"),
+            "{skill}"
+        );
+        let wrong = run(
+            "voice_profile_save",
+            json!({"voice": "nobody", "instructions": "deep"}),
+        )
+        .await;
+        assert!(wrong.contains("pick one of: eve, rex"), "{wrong}");
+        let saved = run(
+            "voice_profile_save",
+            json!({"voice": "Rex", "instructions": "A gruff monkey king, loud and fast"}),
+        )
+        .await;
+        assert!(saved.contains("voice profile saved"), "{saved}");
+
+        // After: the saved voice, with this message's delivery added.
+        let out = run(
+            "voice_send",
+            json!({"text": "俺老孙来也！", "instructions": "shouting"}),
+        )
+        .await;
+        assert!(
+            out.contains("Voice message sent") && !out.contains("voice skill"),
+            "{out}"
+        );
+        let body = seen.lock().unwrap()[1].clone();
+        assert_eq!(body["voice"], "rex");
+        assert_eq!(body["response_format"], "mp3");
+        assert_eq!(
+            body["instructions"],
+            "A gruff monkey king, loud and fast\nThis time: shouting"
+        );
+        {
+            let voices = phone.voices.lock().unwrap();
+            assert_eq!(voices.len(), 2);
+            assert_eq!(voices[1].0, "audio/mpeg");
+        }
+        let skill = run("skill", json!({"name": "voice"})).await;
+        assert!(
+            skill.contains("Your saved voice profile") && skill.contains("Voice: rex"),
+            "{skill}"
+        );
+
+        // A chat that cannot play voice: nothing is spoken or paid for.
+        let out = owner(tools.call(&call("voice_send", json!({"text": "hi"})))).await;
+        assert!(out.contains("cannot play voice messages"), "{out}");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        // Guests are not offered it unless granted.
+        let guest = Config::default().access.resolve("qq:G", "qq:c2c:G");
+        let offered = access::with_actor(guest, async { tools.specs() }).await;
+        assert!(!offered.iter().any(|s| s.function.name == "voice_send"));
+    }
+
+    #[tokio::test]
+    async fn stickers_are_saved_once_and_sent_again() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("images")).unwrap();
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 7];
+        std::fs::write(dir.path().join("images/shy.png"), png).unwrap();
+        let mut config = Config::default();
+        config.model.provider = crate::config::Provider::Chatgpt;
+        let skills = Skills::new(dir.path(), &crate::config::SkillsConfig::default());
+        let tools = BuiltinTools::new(
+            dir.path().into(),
+            ToolsConfig::default(),
+            Store::open_in_memory().unwrap(),
+        )
+        .unwrap()
+        .with_skills(Some(skills))
+        .with_image(crate::imagegen::ImageGen::new(&config, "").unwrap())
+        .with_stickers(Some(crate::config::StickersConfig::default()));
+        let phone = Arc::new(Phone::default());
+        let run = |name: &str, args: serde_json::Value| {
+            let request = call(name, args);
+            let phone = phone.clone();
+            let tools = &tools;
+            async move { owner(with_approver(phone, tools.call(&request))).await }
+        };
+        let none = run("sticker_send", json!({"mood": "shy"})).await;
+        assert!(
+            none.contains("No \"shy\" sticker yet") && none.contains("stickers skill"),
+            "{none}"
+        );
+        let skill = run("skill", json!({"name": "stickers"})).await;
+        assert!(
+            skill.contains("Empty: your first sticker sets the style"),
+            "{skill}"
+        );
+        let saved = run(
+            "sticker_save",
+            json!({"path": "images/shy.png", "mood": "Shy", "description": "捂脸"}),
+        )
+        .await;
+        assert!(
+            saved.contains("saved sticker #1 as stickers/shy-"),
+            "{saved}"
+        );
+        let sent = run("sticker_send", json!({"mood": "shy"})).await;
+        assert!(sent.contains("Sent your shy sticker (捂脸)"), "{sent}");
+        assert_eq!(phone.pictures.lock().unwrap()[0], png);
+        let skill = run("skill", json!({"name": "stickers"})).await;
+        assert!(
+            skill.contains("- shy: stickers/shy-") && skill.contains("捂脸"),
+            "{skill}"
+        );
+        // Anyone may send a saved sticker; only those who draw may add one.
+        let guest = Config::default().access.resolve("qq:G", "qq:c2c:G");
+        let offered = access::with_actor(guest, async { tools.specs() }).await;
+        assert!(offered.iter().any(|s| s.function.name == "sticker_send"));
+        assert!(!offered.iter().any(|s| s.function.name == "sticker_save"));
     }
 
     #[tokio::test]

@@ -113,6 +113,40 @@ CREATE TABLE drawing_profile (
   updated_at INTEGER NOT NULL
 );
 "#,
+        r#"
+-- 0.5: each memory's embedding, little-endian f32s, from `model`; a memory
+-- without one for the current model is embedded again.
+CREATE TABLE memory_vectors (
+  memory_id INTEGER PRIMARY KEY,
+  model TEXT NOT NULL,
+  vector BLOB NOT NULL
+);
+CREATE TRIGGER memory_vectors_ad AFTER DELETE ON memories BEGIN
+  DELETE FROM memory_vectors WHERE memory_id = old.id;
+END;
+-- How the identity sounds (a voice of the speech model and how to speak),
+-- researched once like the drawing profile.
+CREATE TABLE voice_profile (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  identity TEXT NOT NULL,
+  voice TEXT NOT NULL,
+  instructions TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- The identity's stickers, drawn once and sent again by mood; the picture
+-- is a workspace file.
+CREATE TABLE stickers (
+  id INTEGER PRIMARY KEY,
+  identity TEXT NOT NULL,
+  mood TEXT NOT NULL,
+  description TEXT NOT NULL,
+  path TEXT NOT NULL,
+  uses INTEGER NOT NULL DEFAULT 0,
+  last_used INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX stickers_mood ON stickers(identity, mood);
+"#,
     ],
     legacy: &[
         ("memories", "id, content, created_at"),

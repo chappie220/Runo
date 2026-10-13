@@ -14,6 +14,7 @@ mod context;
 mod cron;
 mod doctor;
 mod elevate;
+mod embed;
 mod feishu;
 mod fetch;
 mod gateway;
@@ -39,8 +40,10 @@ mod search;
 mod service;
 mod setup;
 mod skills;
+mod stickers;
 mod store;
 mod tools;
+mod tts;
 mod tui;
 mod update;
 mod usage;
@@ -881,6 +884,13 @@ async fn build_agent(
         config::ContextBudget::Tokens(_) => None,
     };
     let image = imagegen::ImageGen::new(config, &api_key)?;
+    embed::set(embed::Embedder::new(config, &api_key)?);
+    let speaker = tts::Speaker::new(config, &api_key)?;
+    if let Some(embedder) = embed::current() {
+        // Memories saved before (or by another model) are embedded in the background.
+        let store = store.clone();
+        tokio::spawn(async move { embed::catch_up(&store, &embedder).await });
+    }
     let voice = openrouter
         .then(|| voice::Transcriber::new(&side, config.agent.audio_model.as_deref(), &api_key))
         .transpose()?;
@@ -904,6 +914,8 @@ async fn build_agent(
             .with_review(review)
             .with_mail(mail)
             .with_image(image)
+            .with_speaker(speaker)
+            .with_stickers(Some(config.stickers.clone()))
             .with_settings(Some(config_path.to_owned())),
         store,
         config: config::AgentConfig {

@@ -22,6 +22,9 @@ Runo (formerly openclaw-rs) is a single-binary Rust rewrite of OpenClaw. No plug
 | Image generation (ChatGPT plan or OpenRouter), sent to the chat | ✅ |
 | Backup and restore (`backup`, `restore`) | ✅ |
 | Voice messages to text (QQ, email, Web UI) | ✅ |
+| Speaking: voice messages in the character's voice (QQ, Web UI, Zulip) | ✅ |
+| A sticker library the character draws once and reuses by mood | ✅ |
+| Memory search by meaning (embeddings in SQLite, mixed with keywords) | ✅ |
 | MCP client (stdio and Streamable HTTP servers) | ✅ |
 | Skills (`SKILL.md`, compatible with OpenClaw and Agent Skills) | ✅ |
 | Spending limits (daily, monthly, per guest, per turn) | ✅ |
@@ -464,6 +467,46 @@ audio_model = "..."   # any OpenRouter model with audio input; default: the main
 
 `doctor` says whether the main model (or `audio_model`) takes audio.
 
+### Speaking
+
+The agent can also talk back. With a speech model set, it gets
+`voice_send`: one of OpenRouter's
+[text-to-speech models](https://openrouter.ai/collections/text-to-speech-models)
+says a short text in the agent's voice, and it goes out as a voice message:
+
+- **QQ:** a voice message (QQ takes the mp3 as it is).
+- **Web UI:** a player in the conversation. **Zulip:** an uploaded mp3.
+- **Feishu, terminal, email:** they cannot play one; the tool says so, the
+  agent answers in text, and the mp3 stays in `workspace/voice/`.
+
+```toml
+[speech]
+enabled = true
+model = "x-ai/grok-voice-tts-1.0"   # pick it in `runo config` › Voice messages
+# voice = "eve"                     # until the agent saves its own voice profile
+max_chars = 600                     # longest voice message
+timeout_secs = 120
+```
+
+The model list in `config` comes from OpenRouter
+(`/models?output_modalities=speech`), each with some of its voices. It is
+billed per character with the OpenRouter key (the ChatGPT plan has no speech
+endpoint that works with its sign-in); the cost shows in `usage`, estimated
+from the model's listed price. It is the `voice`
+[capability](#access): guests do not have it unless granted.
+
+Like [drawing](#drawing-in-character), a built-in `voice` skill makes the
+agent sound like its character: the first time, it researches how the
+character sounds (voice actor, age, pitch, pace, accent, verbal habits),
+picks the closest of the model's voices and saves a voice profile with
+`voice_profile_save`. The profile (a voice and how to speak) is kept in
+`soul.sqlite` for that identity and used by every later voice message
+without researching again; only owners can replace it. The skill also says
+when to speak (good night, comfort, when someone sent a voice message, when
+asked) and when not (long or factual answers). Models that take delivery
+instructions (OpenAI and Gemini voices) also get how to say each message
+("sleepy and soft").
+
 ## Stopping a turn
 
 A turn that runs too long can be stopped without losing what it did:
@@ -681,6 +724,27 @@ It is offered to those who have both the `skills` and `image_generate`
 capabilities. To change it, put your own `skills/drawing/SKILL.md` in the
 workspace (start from [the built-in one](../skills/drawing/SKILL.md)); it
 replaces the built-in skill. `skills.disabled = ["drawing"]` turns it off.
+
+### Stickers
+
+The agent keeps its own sticker library (表情包): pictures of itself, one
+feeling each, drawn once and sent again. `sticker_send` with a mood (happy,
+shy, goodnight…) sends the least used sticker saved for it, which costs
+nothing; when there is none, the result says which moods there are and how
+to make the missing one. A built-in `stickers` skill draws it: one
+consistent style (from the drawing profile, else clean chibi), a transparent
+square picture, an existing sticker passed as a reference so the set
+matches; `sticker_save` then files the picture under its mood in
+`workspace/stickers/`. Stickers belong to the identity that saved them.
+
+```toml
+[stickers]
+enabled = true
+per_mood = 3   # saving another replaces the least used
+```
+
+Anyone may be sent a saved sticker; drawing and saving new ones needs the
+`image_generate` capability.
 
 ## MCP servers
 
@@ -1299,7 +1363,8 @@ section (also offered by `init`) removes the owner you pick; with
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
 `mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)),
-`image_generate` (see [Image generation](#image-generation)). `shell`, `files_write`, `identity` and `mail` still follow
+`image_generate` (see [Image generation](#image-generation); also `sticker_save`),
+`voice` (`voice_send`, see [Speaking](#speaking)). `shell`, `files_write`, `identity` and `mail` still follow
 `tools.shell`, `tools.write`, `tools.identity` and `tools.mail`, and
 `ask` is still declined where nobody can approve.
 
@@ -1424,6 +1489,31 @@ only recalls their own memories.
 recall_limit = 5      # 0 turns recall off
 recall_tokens = 800
 ```
+
+### Search by meaning
+
+Keywords miss what is said in other words: "我最近睡不好" shares no word
+with "失眠". With an embedding model, every memory is also embedded once
+(when it is saved, and older ones in the background) and its vector kept in
+`soul.sqlite`, next to the keyword index. Recall and `memory_search` embed
+the message and rank memories by both: reciprocal-rank fusion of the
+keyword hits and the closest vectors, so a memory found both ways comes
+first and an exact name still counts. A memory found by meaning alone needs
+a cosine similarity of `min_similarity`. Everything runs in the binary and
+SQLite; there is no other service.
+
+```toml
+[embedding]
+model = "qwen/qwen3-embedding-4b"   # pick it in `runo config` › Memory search by meaning
+min_similarity = 0.5
+timeout_secs = 20
+```
+
+The models come from OpenRouter's list (`/embeddings/models`) and run with
+the OpenRouter key; embedding a thousand memories costs a fraction of a
+cent, and each message one short call (in `usage` as `embedding`). Changing
+the model embeds every memory again with the new one. Without a model, or
+when the embedding service fails, search is the keyword index alone.
 
 State lives in `~/.runo` (override with `RUNO_HOME`):
 

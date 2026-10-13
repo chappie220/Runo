@@ -4,7 +4,9 @@ Runo (formerly openclaw-rs) is a single-binary Rust rewrite of OpenClaw: a perso
 on a Raspberry Pi or any Linux machine. It talks to models on OpenRouter or a
 ChatGPT plan, keeps sessions and memories in SQLite, uses tools (shell,
 files, web search, browser, MCP, skills, image generation), and chats
-through the terminal, a Web UI, QQ, Feishu, Zulip and email. Everything is
+through the terminal, a Web UI, QQ, Feishu, Zulip and email. It can also
+speak in its character's voice (QQ voice messages), send stickers of itself
+that it drew once, and recall memories by meaning, not only by keyword. Everything is
 built in; there are no plugins.
 
 Full documentation: [docs/guide.md](docs/guide.md).

@@ -31,6 +31,9 @@ pub struct Config {
     pub browser: BrowserConfig,
     pub fetch: FetchConfig,
     pub image: ImageConfig,
+    pub speech: SpeechConfig,
+    pub stickers: StickersConfig,
+    pub embedding: EmbeddingConfig,
     pub mcp: McpConfig,
     pub skills: SkillsConfig,
     pub limits: crate::limits::LimitsConfig,
@@ -231,6 +234,96 @@ impl Default for ImageConfig {
             model: None,
             timeout_secs: 300,
         }
+    }
+}
+
+/// `voice_send`: speaks a message with a text-to-speech model and sends it
+/// as a voice message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpeechConfig {
+    /// Off: no `voice_send` tool.
+    pub enabled: bool,
+    /// An OpenRouter speech model such as `openai/gpt-4o-mini-tts`; none: no tool.
+    pub model: Option<String>,
+    /// The voice used until the identity saved a voice profile; default:
+    /// the model's first.
+    pub voice: Option<String>,
+    /// Longest text spoken in one voice message.
+    pub max_chars: usize,
+    pub timeout_secs: u64,
+}
+
+impl Default for SpeechConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: None,
+            voice: None,
+            max_chars: 600,
+            timeout_secs: 120,
+        }
+    }
+}
+
+impl SpeechConfig {
+    /// The speech model, when the tool is on and one is chosen.
+    pub fn model(&self) -> Option<&str> {
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| self.enabled && !m.is_empty())
+    }
+}
+
+/// The identity's own sticker library: drawn once, sent again by mood.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StickersConfig {
+    /// Off: no sticker tools.
+    pub enabled: bool,
+    /// Most stickers kept per mood; saving another replaces the least used.
+    pub per_mood: usize,
+}
+
+impl Default for StickersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            per_mood: 3,
+        }
+    }
+}
+
+/// Memories found by meaning: each is embedded once, and searches mix
+/// vector similarity with the keyword index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmbeddingConfig {
+    /// An OpenRouter embedding model such as `qwen/qwen3-embedding-4b`;
+    /// none: keyword search only.
+    pub model: Option<String>,
+    /// Cosine similarity a memory needs to be recalled by meaning alone.
+    pub min_similarity: f32,
+    pub timeout_secs: u64,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            min_similarity: 0.5,
+            timeout_secs: 20,
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    pub fn model(&self) -> Option<&str> {
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
     }
 }
 

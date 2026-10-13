@@ -34,6 +34,10 @@ const MAX_LISTED: usize = 100;
 /// Drawing as the agent's character, built in and offered while
 /// `image_generate` is.
 pub const DRAWING: &str = include_str!("../skills/drawing/SKILL.md");
+/// The built-in voice skill, offered while `voice_send` is.
+pub const VOICE: &str = include_str!("../skills/voice/SKILL.md");
+/// The built-in stickers skill, offered while stickers can be drawn.
+pub const STICKERS: &str = include_str!("../skills/stickers/SKILL.md");
 
 const NONE: Tr = tr(
     "No skills installed. Install one with `runo skills install <directory or git URL>`, or put it in {}",

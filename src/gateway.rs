@@ -87,6 +87,12 @@ enum ServerMsg {
         mime: String,
         data: String,
     },
+    /// A voice message the turn spoke, base64-encoded.
+    Audio {
+        session: String,
+        mime: String,
+        data: String,
+    },
     Done {
         session: String,
         text: String,
@@ -817,6 +823,20 @@ impl Approver for SocketApprover {
             data: base64::engine::general_purpose::STANDARD.encode(data),
         };
         Ok(self.out.send(image).is_ok())
+    }
+
+    fn plays_voice(&self) -> bool {
+        true
+    }
+
+    async fn send_voice(&self, mime: &str, data: &[u8]) -> anyhow::Result<bool> {
+        use base64::Engine;
+        let audio = ServerMsg::Audio {
+            session: self.session.clone(),
+            mime: mime.to_owned(),
+            data: base64::engine::general_purpose::STANDARD.encode(data),
+        };
+        Ok(self.out.send(audio).is_ok())
     }
 }
 

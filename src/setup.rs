@@ -73,6 +73,8 @@ fn relevant(field: &Field, config: &Config) -> bool {
         ["search", "model"] => config.search_provider() == SearchProvider::Openrouter,
         ["tools", "review", "model"] => config.tools.review.provider != ReviewProvider::Off,
         ["image", "model" | "timeout_secs"] => config.image.enabled,
+        ["speech", "model" | "voice" | "max_chars" | "timeout_secs"] => config.speech.enabled,
+        ["stickers", "per_mood"] => config.stickers.enabled,
         _ => true,
     }
 }
@@ -917,7 +919,78 @@ const GROUPS: &[Group] = &[
                         ),
                         kind: Kind::Int,
                     },
+                    Field {
+                        path: &["stickers", "enabled"],
+                        label: tr("Sticker library", "表情包库"),
+                        help: tr(
+                            "The agent draws a sticker of itself once per mood, keeps it, and sends it again later (sticker_send costs nothing).",
+                            "智能体按情绪给自己画一次表情包并存下来，之后直接复用（sticker_send 不花钱）。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["stickers", "per_mood"],
+                        label: tr("Stickers per mood", "每种情绪的表情包数"),
+                        help: tr(
+                            "How many stickers one mood keeps; saving another replaces the least used.",
+                            "每种情绪最多保留几张；再存新的会替换用得最少的那张。",
+                        ),
+                        kind: Kind::Int,
+                    },
                 ],
+            },
+            Section {
+                title: tr("Voice messages", "语音消息"),
+                fields: &[
+                    Field {
+                        path: &["speech", "enabled"],
+                        label: tr("voice_send tool", "voice_send 工具"),
+                        help: tr(
+                            "The agent can speak: it sends voice messages on QQ (and a player in the Web UI and Zulip). Needs an OpenRouter key.",
+                            "智能体可以说话：在 QQ 上发语音消息（Web UI 和 Zulip 里是播放器）。需要 OpenRouter key。",
+                        ),
+                        kind: Kind::Bool,
+                    },
+                    Field {
+                        path: &["speech", "model"],
+                        label: tr("Speech model", "语音模型"),
+                        help: tr(
+                            "Picked from OpenRouter's text-to-speech models (each shown with some of its voices), billed per character. Reset (-) for no voice messages.",
+                            "从 OpenRouter 的语音合成模型中选择（每个都列出部分音色），按字数计费。输入 - 关闭语音消息。",
+                        ),
+                        kind: Kind::Model(Need::Text),
+                    },
+                    Field {
+                        path: &["speech", "voice"],
+                        label: tr("Default voice", "默认音色"),
+                        help: tr(
+                            "A voice of the speech model, used until the agent saves its own voice profile (it picks one that fits its character). Reset (-) for the model's first voice.",
+                            "语音模型的一个音色，在智能体保存自己的声音设定之前使用（它会自己挑一个符合角色的）。输入 - 用模型的第一个音色。",
+                        ),
+                        kind: Kind::Text,
+                    },
+                    Field {
+                        path: &["speech", "max_chars"],
+                        label: tr("Longest voice message", "单条语音最多字数"),
+                        help: tr(
+                            "Characters spoken in one voice message at most.",
+                            "一条语音最多念多少个字。",
+                        ),
+                        kind: Kind::Int,
+                    },
+                ],
+            },
+            Section {
+                title: tr("Memory search by meaning", "按意思检索记忆"),
+                fields: &[Field {
+                    path: &["embedding", "model"],
+                    label: tr("Embedding model", "嵌入模型"),
+                    help: tr(
+                        "Picked from OpenRouter's embedding models. Each memory is embedded once, and recall mixes meaning with keywords, so \"I can't sleep lately\" finds \"insomnia\". Costs a fraction of a cent per thousand memories. Reset (-) for keywords only.",
+                        "从 OpenRouter 的嵌入模型中选择。每条记忆只嵌入一次，回忆时把意思和关键词一起打分，所以“我最近睡不好”也能找到“失眠”。每千条记忆不到一分钱。输入 - 只用关键词检索。",
+                    ),
+                    kind: Kind::Model(Need::Text),
+                }],
             },
             Section {
                 title: tr("Skills", "Skills"),
@@ -1709,10 +1782,23 @@ fn run_on<R: BufRead, W: Write>(path: &Path, term: &mut Term<R, W>) -> Result<bo
         .unwrap_or_default()
         .openrouter_model()
         .base_url;
+    let speech_base = image_base.clone();
+    let embedding_base = image_base.clone();
     models.images = Some(Box::new(move || {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
                 .block_on(crate::imagegen::openrouter_models(&image_base))
+        })
+    }));
+    models.speech = Some(Box::new(move || {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(crate::tts::openrouter_models(&speech_base))
+        })
+    }));
+    models.embeddings = Some(Box::new(move || {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(crate::embed::openrouter_models(&embedding_base))
         })
     }));
     let (signed_in, sign_in) = chatgpt_sign_in();
@@ -1748,6 +1834,12 @@ pub struct Models<'a> {
     /// Reads OpenRouter's image models.
     pub images: Option<Loader<'a>>,
     images_list: Option<Vec<ModelInfo>>,
+    /// Reads OpenRouter's speech models.
+    pub speech: Option<Loader<'a>>,
+    speech_list: Option<Vec<ModelInfo>>,
+    /// Reads OpenRouter's embedding models.
+    pub embeddings: Option<Loader<'a>>,
+    embeddings_list: Option<Vec<ModelInfo>>,
     /// Signs in to ChatGPT; without it, the sign-in field cannot be used.
     pub sign_in: Option<SignIn<'a>>,
     /// Who is signed in to ChatGPT now.
@@ -1838,6 +1930,29 @@ impl<'a> Models<'a> {
         }
         list.extend(self.images_list.iter().flatten().cloned());
         Ok(list)
+    }
+
+    /// A side list (speech or embedding models), loaded once; empty when
+    /// it cannot be read, which model fields take as "type the id".
+    fn side<R: BufRead, W: Write>(
+        term: &mut Term<R, W>,
+        load: &mut Option<Loader<'a>>,
+        list: &mut Option<Vec<ModelInfo>>,
+    ) -> Result<Vec<ModelInfo>> {
+        if list.is_none() {
+            let loaded = match load.as_mut() {
+                None => Vec::new(),
+                Some(load) => {
+                    term.tell(LOADING_MODELS, &[])?;
+                    load().or_else(|err| {
+                        term.tell(NO_MODEL_LIST, &[&format!("{err:#}")])?;
+                        anyhow::Ok(Vec::new())
+                    })?
+                }
+            };
+            *list = Some(loaded);
+        }
+        Ok(list.clone().unwrap_or_default())
     }
 
     /// The thinking levels the main model's list gives it; for a ChatGPT
@@ -2130,6 +2245,10 @@ fn field_with_arrows<R: BufRead, W: Write>(
             models.get(term)?.to_vec()
         } else if field.path == ["image", "model"] {
             models.images(term, &parse(doc).unwrap_or_default())?
+        } else if field.path == ["speech", "model"] {
+            Models::side(term, &mut models.speech, &mut models.speech_list)?
+        } else if field.path == ["embedding", "model"] {
+            Models::side(term, &mut models.embeddings, &mut models.embeddings_list)?
         } else {
             models.all(term, &parse(doc).unwrap_or_default())?
         };

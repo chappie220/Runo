@@ -278,6 +278,16 @@ function handle(m) {
       div.appendChild(img);
       break;
     }
+    case "audio": {
+      streaming = null;
+      const div = bubble("assistant", "");
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = `data:${m.mime};base64,${m.data}`;
+      div.appendChild(audio);
+      log.scrollTop = log.scrollHeight;
+      break;
+    }
     case "approval": {
       streaming = null;
       const card = bubble("approval", "");
