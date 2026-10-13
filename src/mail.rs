@@ -387,7 +387,7 @@ impl MailBot {
         message_id: &str,
     ) -> Result<(), SendError> {
         let subject = if incoming.subject.is_empty() {
-            "Re: OpenClaw".to_owned()
+            "Re: Runo".to_owned()
         } else if incoming.subject.to_lowercase().starts_with("re:") {
             incoming.subject.clone()
         } else {
@@ -430,7 +430,7 @@ impl MailBot {
         // 163/126 reject mailbox access from clients that do not identify themselves.
         let _ = session
             .id([
-                ("name", Some("openclaw-rs")),
+                ("name", Some("runo")),
                 ("version", Some(crate::update::VERSION)),
             ])
             .await;
@@ -853,7 +853,7 @@ impl Notifier for MailBot {
         if !self.may_send(to) {
             bail!("mail.mode = \"receive\" only sends to mail.allow, and {to} is not on it");
         }
-        self.send(to, "[OpenClaw] 定时消息", text, None, None)
+        self.send(to, "[Runo] 定时消息", text, None, None)
             .await
             .map_err(SendError::into_inner)
     }
@@ -869,7 +869,7 @@ pub async fn run<M: Model + 'static, T: Tools + 'static>(
         Ok((0, 0)) => {}
         Ok((turns, sends)) => eprintln!(
             "mail: resuming after a restart: {turns} interrupted turn(s) will run again, \
-             {sends} reply(s) may or may not have been sent (see `openclaw-rs mail queue`)"
+             {sends} reply(s) may or may not have been sent (see `runo mail queue`)"
         ),
         Err(err) => eprintln!("mail: cannot recover the inbox: {err:#}"),
     }
@@ -1002,12 +1002,12 @@ async fn advance<M: Model + 'static, T: Tools + 'static>(
 fn outgoing_message_id(from: &str, inbox_id: i64) -> String {
     let domain = from
         .rsplit_once('@')
-        .map_or("openclaw.local", |(_, d)| d.trim_end_matches('>'));
+        .map_or("runo.local", |(_, d)| d.trim_end_matches('>'));
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("<openclaw.{inbox_id}.{nanos:x}@{domain}>")
+    format!("<runo.{inbox_id}.{nanos:x}@{domain}>")
 }
 
 async fn tls_connect(
@@ -1397,7 +1397,7 @@ Message-ID: <a1@example.org>\r\nReferences: <r0@example.org>\r\nContent-Type: te
     #[test]
     fn reply_message_ids_are_stable_per_reply() {
         let id = outgoing_message_id("Bot <bot@example.org>", 5);
-        assert!(id.starts_with("<openclaw.5."), "{id}");
+        assert!(id.starts_with("<runo.5."), "{id}");
         assert!(id.ends_with("@example.org>"), "{id}");
     }
 }

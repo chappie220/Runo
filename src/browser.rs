@@ -866,7 +866,7 @@ mod tests {
 }
 
 /// Drives a real installed browser against a local page:
-/// `OPENCLAW_TEST_BROWSER=/path/to/chrome cargo test -- --ignored browser`.
+/// `RUNO_TEST_BROWSER=/path/to/chrome cargo test -- --ignored browser`.
 #[cfg(test)]
 mod live {
     use super::*;
@@ -898,7 +898,7 @@ mod live {
 
         let dir = tempfile::tempdir().unwrap();
         let config = BrowserConfig {
-            executable: std::env::var_os("OPENCLAW_TEST_BROWSER").map(PathBuf::from),
+            executable: std::env::var_os("RUNO_TEST_BROWSER").map(PathBuf::from),
             ..BrowserConfig::default()
         };
         let browser = Browser::new(&config, dir.path(), dir.path()).expect("no browser found");

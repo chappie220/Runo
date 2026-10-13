@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenClaw</title>
+<title>Runo</title>
 <style>
   :root {
     --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -67,7 +67,7 @@
 </head>
 <body>
 <aside>
-  <header><h1>OpenClaw</h1><button id="lang" class="secondary" type="button"></button></header>
+  <header><h1>Runo</h1><button id="lang" class="secondary" type="button"></button></header>
   <form id="new"><input id="newName" data-i18n-placeholder="newName" maxlength="64"><button data-i18n="create"></button></form>
   <ul id="sessions"></ul>
   <div id="status"></div>
@@ -93,7 +93,7 @@ const STRINGS = {
     newName: "New session name", create: "New", input: "Message — Enter to send, Shift+Enter for a new line",
     send: "Send", stop: "Stop", attach: "Attach files (or paste an image)",
     tooBig: "Files can be at most 20 MB per message.", removeFile: "Remove {name}", connecting: "Connecting…", connected: "Connected", reconnecting: "Disconnected, retrying in 3 s",
-    token: "Access token needed (OPENCLAW_RS_TOKEN):", allowTool: "Allow {tool}?", allow: "Allow", deny: "Deny",
+    token: "Access token needed (RUNO_TOKEN):", allowTool: "Allow {tool}?", allow: "Allow", deny: "Deny",
     allowed: "Allowed {tool}", denied: "Denied {tool}", switchTo: "中文",
     waiting: "⏳ Waiting for a good moment to add this", added: "✓ Added to the conversation", nextTurn: "↪ Answered next",
   },
@@ -101,12 +101,20 @@ const STRINGS = {
     newName: "新会话名称", create: "新建", input: "输入消息，Enter 发送，Shift+Enter 换行",
     send: "发送", stop: "停止", attach: "添加文件（也可以直接粘贴图片）",
     tooBig: "每条消息的文件最多 20 MB。", removeFile: "移除 {name}", connecting: "连接中…", connected: "已连接", reconnecting: "连接断开，3 秒后重试",
-    token: "需要访问令牌（OPENCLAW_RS_TOKEN）：", allowTool: "允许执行 {tool}？", allow: "允许", deny: "拒绝",
+    token: "需要访问令牌（RUNO_TOKEN）：", allowTool: "允许执行 {tool}？", allow: "允许", deny: "拒绝",
     allowed: "已允许 {tool}", denied: "已拒绝 {tool}", switchTo: "EN",
     waiting: "⏳ 等待合适的时机插入", added: "✓ 已插入对话", nextTurn: "↪ 接着单独回答",
   },
 };
-const LANG_KEY = "openclaw.lang";
+const LANG_KEY = "runo.lang";
+// Carry over what the browser saved under the old name (openclaw.*).
+for (const key of ["lang", "session", "token"]) {
+  try {
+    const legacy = localStorage.getItem("openclaw." + key);
+    if (legacy !== null && localStorage.getItem("runo." + key) === null) localStorage.setItem("runo." + key, legacy);
+    localStorage.removeItem("openclaw." + key);
+  } catch (e) {}
+}
 function preferredLang() {
   const saved = localStorage.getItem(LANG_KEY);
   if (saved && STRINGS[saved]) return saved;
@@ -136,7 +144,7 @@ $("lang").onclick = () => {
   applyLang();
 };
 const log = $("log"), input = $("input");
-let ws, current = localStorage.getItem("openclaw.session") || "main";
+let ws, current = localStorage.getItem("runo.session") || "main";
 let streaming = null; // assistant bubble receiving deltas for the current session
 const busy = new Set();
 // Bubbles of messages sent while the current session's turn runs, oldest first.
@@ -146,8 +154,8 @@ let ackAnchors = [];
 
 function token() {
   const fromHash = new URLSearchParams(location.hash.slice(1)).get("token");
-  if (fromHash) { localStorage.setItem("openclaw.token", fromHash); history.replaceState(null, "", location.pathname); }
-  return localStorage.getItem("openclaw.token") || "";
+  if (fromHash) { localStorage.setItem("runo.token", fromHash); history.replaceState(null, "", location.pathname); }
+  return localStorage.getItem("runo.token") || "";
 }
 
 function connect() {
@@ -158,7 +166,7 @@ function connect() {
     setStatus("reconnecting");
     if (e.code === 1006 && !ws.everOpened) {
       const entered = prompt(t("token"));
-      if (entered !== null) localStorage.setItem("openclaw.token", entered.trim());
+      if (entered !== null) localStorage.setItem("runo.token", entered.trim());
     }
     setTimeout(connect, 3000);
   };
@@ -185,7 +193,7 @@ function bubble(cls, text, files = []) {
 
 function open(name) {
   current = name;
-  localStorage.setItem("openclaw.session", name);
+  localStorage.setItem("runo.session", name);
   streaming = null;
   waiting = []; ackAnchors = [];
   log.textContent = "";

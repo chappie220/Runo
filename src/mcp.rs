@@ -294,7 +294,7 @@ fn clean_name(name: &str) -> String {
 }
 
 /// `${NAME}` anywhere, or `$NAME` as the whole value, reads the Gateway's
-/// environment, so secrets can stay in `/etc/conf.d/openclaw-rs`
+/// environment, so secrets can stay in `/etc/conf.d/runo`
 /// (`Authorization = "Bearer ${GITHUB_TOKEN}"`).
 fn expand(value: &str) -> String {
     let is_name =
@@ -391,7 +391,7 @@ impl Conn {
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "openclaw-rs", "version": crate::update::VERSION},
+                    "clientInfo": {"name": "runo", "version": crate::update::VERSION},
                 }),
             )
             .await

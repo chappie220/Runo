@@ -712,7 +712,7 @@ pub async fn serve<M: Model + 'static, T: Tools + 'static>(
         .with_context(|| format!("invalid gateway.bind {bind:?}"))?;
     if gateway.token.is_none() && !addr.ip().is_loopback() {
         bail!(
-            "gateway.bind {addr} is reachable from other hosts; set OPENCLAW_RS_TOKEN or gateway.token first"
+            "gateway.bind {addr} is reachable from other hosts; set RUNO_TOKEN or gateway.token first"
         );
     }
     let listener = tokio::net::TcpListener::bind(addr)

@@ -7,7 +7,7 @@ use crate::i18n::{Lang, Tr, tr};
 
 /// Help for each command, by its path (`""` is the program itself).
 const COMMANDS: &[(&str, Tr)] = &[
-    ("", tr("Single-binary OpenClaw", "单文件 OpenClaw")),
+    ("", tr("Single-binary Runo", "单文件 Runo")),
     (
         "chat",
         tr("Interactive chat in the terminal", "在终端里交互聊天"),
@@ -171,6 +171,13 @@ const COMMANDS: &[(&str, Tr)] = &[
         ),
     ),
     (
+        "migrate",
+        tr(
+            "Finish moving an install from its old name (openclaw-rs): binary, service, state",
+            "完成从旧名字（openclaw-rs）的迁移：程序、服务和状态数据",
+        ),
+    ),
+    (
         "update",
         tr(
             "Install the latest release from GitHub, or go back to the previous binary",
@@ -297,8 +304,8 @@ const ARGS: &[(&str, &str, Tr)] = &[
         "backup",
         "file",
         tr(
-            "File to write (default: openclaw-backup-<date>-<time>.tar.gz here)",
-            "要写入的文件（默认：当前目录下的 openclaw-backup-<日期>-<时间>.tar.gz）",
+            "File to write (default: runo-backup-<date>-<time>.tar.gz here)",
+            "要写入的文件（默认：当前目录下的 runo-backup-<日期>-<时间>.tar.gz）",
         ),
     ),
     (
@@ -616,9 +623,9 @@ pub fn completions<T: CommandFactory>(shell: clap_complete::Shell, lang: Lang) -
         return script;
     }
     // clap_complete's bash script spells a hyphenated name two ways: the
-    // state it assigns (`openclaw__rs__subcmd__cron`) and the branch that
-    // should match it (`openclaw__subcmd__rs__subcmd__cron`), so nothing
-    // below the top level would complete. Use the assigned spelling.
+    // state it assigns (`a__b__subcmd__cron` for `a-b`) and the branch that
+    // should match it (`a__subcmd__b__subcmd__cron`), so nothing below the
+    // top level would complete. Use the assigned spelling.
     let assigned = bin.replace('-', "__");
     let branch = bin.replace('-', "__subcmd__");
     script.replace(&branch, &assigned)
@@ -626,12 +633,12 @@ pub fn completions<T: CommandFactory>(shell: clap_complete::Shell, lang: Lang) -
 
 pub const ERROR: Tr = tr("error: {}", "错误：{}");
 pub const NAME_A_SHELL: Tr = tr(
-    "name a shell (bash, zsh, fish, elvish, powershell), or run `openclaw-rs completions install`",
-    "请指定 shell（bash、zsh、fish、elvish、powershell），或运行 `openclaw-rs completions install`",
+    "name a shell (bash, zsh, fish, elvish, powershell), or run `runo completions install`",
+    "请指定 shell（bash、zsh、fish、elvish、powershell），或运行 `runo completions install`",
 );
 pub const FIRST_START: Tr = tr(
-    "First start: the agent has no identity yet and will ask who it should be. Describe it, or name a fictional character for it to look up and become (e.g. \"be Sun Wukong\"). `openclaw-rs identity set` works too.",
-    "首次启动：智能体还没有身份，会先问你它该是谁。描述一下，或者说出一个虚构角色让它去查并成为它（例如“做孙悟空”）。也可以用 `openclaw-rs identity set`。",
+    "First start: the agent has no identity yet and will ask who it should be. Describe it, or name a fictional character for it to look up and become (e.g. \"be Sun Wukong\"). `runo identity set` works too.",
+    "首次启动：智能体还没有身份，会先问你它该是谁。描述一下，或者说出一个虚构角色让它去查并成为它（例如“做孙悟空”）。也可以用 `runo identity set`。",
 );
 pub const CHAT_BANNER: Tr = tr(
     "{} · session {} · model {} · empty line or Ctrl-D to quit",
@@ -646,8 +653,8 @@ pub const TOOL_START: Tr = tr("[tool {} {}]", "[工具 {} {}]");
 pub const TOOL_END: Tr = tr("[tool {} → {} bytes]", "[工具 {} → {} 字节]");
 pub const ALLOW_TOOL: Tr = tr("Allow {}?", "允许 {}？");
 pub const MAIL_RETRY_NONE: Tr = tr(
-    "no failed or uncertain message #{}; see `openclaw-rs mail queue`",
-    "没有编号为 #{} 的失败或状态不明的邮件；见 `openclaw-rs mail queue`",
+    "no failed or uncertain message #{}; see `runo mail queue`",
+    "没有编号为 #{} 的失败或状态不明的邮件；见 `runo mail queue`",
 );
 pub const MAIL_REQUEUED: Tr = tr(
     "queued #{} again; the running Gateway picks it up on its next poll",
@@ -660,8 +667,8 @@ pub const MAIL_ENTRY: Tr = tr(
     "#{} {} {} 来自 {} 尝试={} 更新于 {}",
 );
 pub const NO_MODEL: Tr = tr(
-    "no model chosen: run `openclaw-rs init` for guided setup, or set model.model in config.toml to an OpenRouter model id",
-    "还没有选择模型：运行 `openclaw-rs init` 按引导设置，或在 config.toml 里把 model.model 设为一个 OpenRouter 模型 id",
+    "no model chosen: run `runo init` for guided setup, or set model.model in config.toml to an OpenRouter model id",
+    "还没有选择模型：运行 `runo init` 按引导设置，或在 config.toml 里把 model.model 设为一个 OpenRouter 模型 id",
 );
 pub const OPEN_TO_STRANGERS: Tr = tr(
     "access.guest or access.grants.\"{}:*\" lets anyone on {} run commands or write files; list trusted senders in {}.allow (the log shows each sender), or grant those capabilities to named senders only",
@@ -676,8 +683,8 @@ pub const NO_DIARY: Tr = tr(
     "还没有日记：打开 [life]，让 Gateway 运行过一个夜晚。",
 );
 pub const CLAIMABLE: Tr = tr(
-    "access: first_chat_owner is on, so the first private chat on {} makes that person its owner; write to the bot yourself, then turn it off with `openclaw-rs config`",
-    "权限：first_chat_owner 已打开，{} 上第一个私聊机器人的人会成为所有者；请自己先私聊机器人，然后用 `openclaw-rs config` 关掉它",
+    "access: first_chat_owner is on, so the first private chat on {} makes that person its owner; write to the bot yourself, then turn it off with `runo config`",
+    "权限：first_chat_owner 已打开，{} 上第一个私聊机器人的人会成为所有者；请自己先私聊机器人，然后用 `runo config` 关掉它",
 );
 pub const NO_OWNERS: Tr = tr(
     "access: no access.owners, so every chat and email sender is a guest that can only use {}; add yourself as \"qq:<openid>\", \"feishu:<open_id>\", \"zulip:<email>\" or \"mail:<address>\" to use memory, cron, files or shell from there",
@@ -709,16 +716,16 @@ pub const SESSION_ROW: Tr = tr("{}\t{} messages\tupdated {}", "{}\t{} 条消息\
 pub const NO_SESSION: Tr = tr("no session named {}", "没有名为 {} 的会话");
 pub const DELETED: Tr = tr("deleted {}", "已删除 {}");
 pub const SERVICE_NO_OPENRC: Tr = tr(
-    "OpenRC is not installed (/sbin/openrc-run missing); on systemd hosts run `openclaw-rs serve` from a unit instead",
-    "没有安装 OpenRC（缺少 /sbin/openrc-run）；systemd 系统请在 unit 里运行 `openclaw-rs serve`",
+    "OpenRC is not installed (/sbin/openrc-run missing); on systemd hosts run `runo serve` from a unit instead",
+    "没有安装 OpenRC（缺少 /sbin/openrc-run）；systemd 系统请在 unit 里运行 `runo serve`",
 );
 pub const SERVICE_NO_KEY: Tr = tr(
     "warning: OPENROUTER_API_KEY is not set; add it to {} or the account's config.toml",
     "警告：没有设置 OPENROUTER_API_KEY；请把它加到 {} 或该账户的 config.toml",
 );
 pub const SERVICE_INSTALLED: Tr = tr(
-    "installed {} (runs as {}, state in {}/.openclaw-rs)",
-    "已安装 {}（以 {} 运行，状态数据在 {}/.openclaw-rs）",
+    "installed {} (runs as {}, state in {}/.runo)",
+    "已安装 {}（以 {} 运行，状态数据在 {}/.runo）",
 );
 pub const SERVICE_LOGS: Tr = tr(
     "logs: {} · status: rc-service {} status",
@@ -730,8 +737,8 @@ pub const SERVICE_REMOVED: Tr = tr(
     "已删除 {} 和 {}；状态数据和 {} 已保留",
 );
 pub const TUI_NEEDS_TERMINAL: Tr = tr(
-    "tui needs a terminal; use `openclaw-rs ask` or `chat` from scripts and pipes",
-    "tui 需要在终端里运行；脚本和管道里请用 `openclaw-rs ask` 或 `chat`",
+    "tui needs a terminal; use `runo ask` or `chat` from scripts and pipes",
+    "tui 需要在终端里运行；脚本和管道里请用 `runo ask` 或 `chat`",
 );
 pub const NO_ACCOUNT: Tr = tr("no account named {}", "没有名为 {} 的账户");
 
@@ -892,7 +899,7 @@ mod tests {
             .filter_map(|l| l.strip_suffix('"'))
             .filter(|state| !state.is_empty())
             .collect();
-        assert!(states.contains(&"openclaw__rs__subcmd__cron"));
+        assert!(states.contains(&"runo__subcmd__cron"));
         for state in states {
             assert!(
                 script.contains(&format!("        {state})")),
@@ -906,7 +913,7 @@ mod tests {
         use clap::FromArgMatches;
         for lang in [Lang::En, Lang::Zh] {
             let matches = command::<crate::Cli>(lang)
-                .try_get_matches_from(["openclaw-rs", "--lang", "zh", "usage", "--days", "3"])
+                .try_get_matches_from(["runo", "--lang", "zh", "usage", "--days", "3"])
                 .unwrap();
             let cli = crate::Cli::from_arg_matches(&matches).unwrap();
             assert!(matches!(cli.command, crate::Command::Usage { days: 3 }));

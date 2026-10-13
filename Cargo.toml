@@ -1,20 +1,20 @@
 [package]
-name = "openclaw-rs"
-version = "0.4.1"
+name = "runo"
+version = "0.5.0"
 edition = "2024"
-description = "Single-binary OpenClaw Gateway: OpenRouter agent, SQLite state, Web/CLI/QQ"
+description = "Runo: a single-binary AI companion Gateway: OpenRouter agent, SQLite state, Web/CLI/QQ"
 license = "MIT"
 publish = false
 
-[package.metadata.openclaw]
+[package.metadata.runo]
 # The release number: what `--version` shows, `update` compares and the
 # tag is (v<release>). It may add a fourth part to `version`, which Cargo
 # keeps at three, a leading `a` (alpha) or `b` (beta), and a revision
 # (`-1`, newer than without); without it the release is `version`.
-release = "0.4.1"
+release = "0.5.0"
 
 [[bin]]
-name = "openclaw-rs"
+name = "runo"
 path = "src/main.rs"
 
 [dependencies]

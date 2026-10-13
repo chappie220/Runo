@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// Leaves the name to the identity chosen on first start.
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful personal assistant running on OpenClaw.";
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful personal assistant running on Runo.";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -102,7 +102,7 @@ pub enum SearchProvider {
     Openrouter,
     /// A SearXNG instance with the JSON format enabled (`searxng_url`).
     Searxng,
-    /// The ChatGPT subscription's own web search (`openclaw-rs login`).
+    /// The ChatGPT subscription's own web search (`runo login`).
     Chatgpt,
     /// No `web_search` tool.
     Off,
@@ -270,7 +270,7 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     /// Extra environment; `${NAME}` reads the Gateway's own.
     pub env: BTreeMap<String, String>,
-    /// Working directory; default: where openclaw-rs was started.
+    /// Working directory; default: where runo was started.
     pub cwd: Option<PathBuf>,
     /// Streamable HTTP endpoint, instead of `command`.
     pub url: Option<String>,
@@ -511,7 +511,7 @@ impl ZulipConfig {
 #[serde(default)]
 pub struct GatewayConfig {
     pub bind: String,
-    /// Required for non-loopback binds; prefer `OPENCLAW_RS_TOKEN`.
+    /// Required for non-loopback binds; prefer `RUNO_TOKEN`.
     pub token: Option<String>,
     /// What `serve` offers over HTTP; QQ, email and cron run in every mode.
     pub web: WebMode,
@@ -542,8 +542,8 @@ pub enum WebMode {
 
 impl GatewayConfig {
     pub fn token(&self) -> Option<String> {
-        std::env::var("OPENCLAW_RS_TOKEN")
-            .ok()
+        env_var("TOKEN")
+            .and_then(|v| v.into_string().ok())
             .or_else(|| self.token.clone())
             .filter(|t| !t.trim().is_empty())
     }
@@ -1007,20 +1007,38 @@ impl Config {
                     .filter(|key| !key.trim().is_empty())
             })
             .context(
-                "no OpenRouter API key: run `openclaw-rs init`, or set OPENROUTER_API_KEY or model.api_key in config.toml",
+                "no OpenRouter API key: run `runo init`, or set OPENROUTER_API_KEY or model.api_key in config.toml",
             )
     }
 }
 
-/// State root: `OPENCLAW_RS_HOME`, else `~/.openclaw-rs`.
+/// `RUNO_<name>`, else the same setting under the old name
+/// (`OPENCLAW_RS_<name>`), still read for those who set it before 0.5.
+pub fn env_var(name: &str) -> Option<std::ffi::OsString> {
+    [format!("RUNO_{name}"), format!("OPENCLAW_RS_{name}")]
+        .into_iter()
+        .find_map(|key| std::env::var_os(key).filter(|v| !v.is_empty()))
+}
+
+/// The state directory's name in the home directory, and its old name.
+pub const STATE_DIR_NAME: &str = ".runo";
+pub const LEGACY_STATE_DIR_NAME: &str = ".openclaw-rs";
+
+/// State root: `RUNO_HOME` (or the old `OPENCLAW_RS_HOME`), else `~/.runo`;
+/// `~/.openclaw-rs` while that has not been moved yet (see `rename`).
 pub fn state_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("OPENCLAW_RS_HOME").filter(|v| !v.is_empty()) {
+    if let Some(dir) = env_var("HOME") {
         return Ok(PathBuf::from(dir));
     }
-    let home = std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".openclaw-rs"))
+    let home = PathBuf::from(
+        std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .context("HOME is not set")?,
+    );
+    if crate::rename::state_unmoved(&home) {
+        return Ok(home.join(LEGACY_STATE_DIR_NAME));
+    }
+    Ok(home.join(STATE_DIR_NAME))
 }
 
 #[cfg(test)]

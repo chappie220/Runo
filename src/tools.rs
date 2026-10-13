@@ -1476,7 +1476,7 @@ mod tests {
         );
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let dir = std::env::temp_dir().join(format!("openclaw-image-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("runo-image-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("cat.jpg"), [0xFF, 0xD8, 0xFF, 0]).unwrap();

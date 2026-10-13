@@ -1,4 +1,4 @@
-//! `openclaw-rs config`: an interactive editor for config.toml, in English
+//! `runo config`: an interactive editor for config.toml, in English
 //! or Chinese.
 //!
 //! Edits the file in place with `toml_edit`, so comments and keys it does not
@@ -98,8 +98,8 @@ const NO_CHANGES: Tr = tr("No changes.", "没有改动。");
 const NOT_SAVED: Tr = tr("Quit without saving.", "已退出，未保存。");
 const SAVED: Tr = tr("Saved {}.", "已保存 {}。");
 const RESTART: Tr = tr(
-    "Restart a running Gateway (openclaw-rs service restart) to apply it.",
-    "如果 Gateway 正在运行，重启后生效（openclaw-rs service restart）。",
+    "Restart a running Gateway (runo service restart) to apply it.",
+    "如果 Gateway 正在运行，重启后生效（runo service restart）。",
 );
 const RESTARTED: Tr = tr(
     "Restarted the Gateway so the change applies now.",
@@ -139,8 +139,8 @@ const IN_FILE: Tr = tr("set in this file", "已在本文件中设置");
 const NOT_SET: Tr = tr("not set", "未设置");
 const NOT_SIGNED_IN: Tr = tr("not signed in", "未登录");
 const NO_SIGN_IN: Tr = tr(
-    "Signing in is not possible here; run `openclaw-rs login`.",
-    "这里无法登录，请运行 `openclaw-rs login`。",
+    "Signing in is not possible here; run `runo login`.",
+    "这里无法登录，请运行 `runo login`。",
 );
 const SIGN_IN_FAILED: Tr = tr("Could not sign in: {}", "登录失败：{}");
 const SIGN_IN_BROWSER: Tr = tr("Sign in in a browser", "在浏览器里登录");
@@ -925,8 +925,8 @@ const GROUPS: &[Group] = &[
                     path: &["skills", "enabled"],
                     label: tr("Skills", "Skills"),
                     help: tr(
-                        "Task instructions in workspace/skills/<name>/SKILL.md that the agent loads when a request needs them. Manage them with openclaw-rs skills.",
-                        "放在 workspace/skills/<名字>/SKILL.md 里的任务说明，需要时 agent 会自动加载。用 openclaw-rs skills 管理。",
+                        "Task instructions in workspace/skills/<name>/SKILL.md that the agent loads when a request needs them. Manage them with runo skills.",
+                        "放在 workspace/skills/<名字>/SKILL.md 里的任务说明，需要时 agent 会自动加载。用 runo skills 管理。",
                     ),
                     kind: Kind::Bool,
                 }],
@@ -1170,11 +1170,11 @@ const GROUPS: &[Group] = &[
                         path: &["gateway", "token"],
                         label: tr("Access token", "访问 token"),
                         help: tr(
-                            "Required unless bound to loopback; OPENCLAW_RS_TOKEN wins when set. Type + to generate one.",
-                            "不是只监听本机时必须设置；设了 OPENCLAW_RS_TOKEN 时以环境变量为准。输入 + 自动生成。",
+                            "Required unless bound to loopback; RUNO_TOKEN wins when set. Type + to generate one.",
+                            "不是只监听本机时必须设置；设了 RUNO_TOKEN 时以环境变量为准。输入 + 自动生成。",
                         ),
                         kind: Kind::Secret {
-                            env: "OPENCLAW_RS_TOKEN",
+                            env: "RUNO_TOKEN",
                             generate: true,
                         },
                     },
@@ -1182,8 +1182,8 @@ const GROUPS: &[Group] = &[
                         path: &["gateway", "web"],
                         label: tr("Web UI", "Web UI"),
                         help: tr(
-                            "ui: Web UI and WebSocket API; api: only the API (for other clients); off: no HTTP at all, QQ, email and scheduled jobs only. Chat in the terminal with openclaw-rs tui.",
-                            "ui：Web UI 和 WebSocket API；api：只有 API（给其他客户端用）；off：完全不开 HTTP，只运行 QQ、邮件和定时任务。在终端里聊天用 openclaw-rs tui。",
+                            "ui: Web UI and WebSocket API; api: only the API (for other clients); off: no HTTP at all, QQ, email and scheduled jobs only. Chat in the terminal with runo tui.",
+                            "ui：Web UI 和 WebSocket API；api：只有 API（给其他客户端用）；off：完全不开 HTTP，只运行 QQ、邮件和定时任务。在终端里聊天用 runo tui。",
                         ),
                         kind: Kind::Choice(&["ui", "api", "off"]),
                     },

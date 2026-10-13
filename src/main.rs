@@ -1,4 +1,4 @@
-//! `openclaw-rs`: single-binary OpenClaw.
+//! `runo`: single-binary Runo.
 
 mod access;
 mod agent;
@@ -33,6 +33,7 @@ mod net;
 mod onboard;
 mod qq;
 mod reasoning;
+mod rename;
 mod review;
 mod search;
 mod service;
@@ -62,7 +63,7 @@ use crate::store::Store;
 use crate::tools::{BuiltinTools, TerminalApprover, with_approver};
 
 #[derive(Parser)]
-#[command(name = "openclaw-rs", version = update::VERSION, about = "Single-binary OpenClaw")]
+#[command(name = "runo", version = update::VERSION, about = "Single-binary Runo")]
 struct Cli {
     /// Config file (default: <state dir>/config.toml).
     #[arg(long, global = true, value_hint = clap::ValueHint::FilePath)]
@@ -162,6 +163,8 @@ enum Command {
         #[arg(long, conflicts_with = "check")]
         rollback: bool,
     },
+    /// Finish moving an install from its old name (openclaw-rs): binary, service, state.
+    Migrate,
     /// List, install or remove skills.
     Skills {
         #[command(subcommand)]
@@ -169,7 +172,7 @@ enum Command {
     },
     /// Save the config, memory, chats, jobs and workspace to one .tar.gz file.
     Backup {
-        /// File to write (default: openclaw-backup-<date>-<time>.tar.gz here).
+        /// File to write (default: runo-backup-<date>-<time>.tar.gz here).
         file: Option<PathBuf>,
         /// Leave the workspace out.
         #[arg(long)]
@@ -358,9 +361,14 @@ enum SessionsAction {
 async fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Chosen before parsing, so `--help` is in the same language.
+    // Before anything reads the state directory: it may still have its old name.
+    let moved = rename::move_own_state_dir();
     i18n::set(startup_lang(&args));
     let matches = text::command::<Cli>(i18n::current()).get_matches_from(args);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    if let Some(note) = moved {
+        eprintln!("{note}");
+    }
     if let Err(err) = run(cli).await {
         eprintln!("{}", text::ERROR.with(&[&format!("{err:#}")]));
         std::process::exit(1);
@@ -454,6 +462,9 @@ async fn run(cli: Cli) -> Result<()> {
     }
     // Before loading, so a config this version cannot read can still be
     // fixed by the next one.
+    if let Command::Migrate = cli.command {
+        return rename::finish(false).map(|_| ());
+    }
     if let Command::Update { check, rollback } = cli.command {
         let config = Config::load(&config_path).unwrap_or_default();
         return update::run(&config.update, check, rollback, &config.gateway.bind).await;
@@ -554,6 +565,7 @@ async fn run(cli: Cli) -> Result<()> {
         | Command::Backup { .. }
         | Command::Restore { .. }
         | Command::Login { .. }
+        | Command::Migrate
         | Command::Update { .. } => {
             unreachable!("handled before the config is loaded")
         }
@@ -563,6 +575,9 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Serve { bind, web } => {
             if store.identity()?.is_none() {
                 eprintln!("{}", text::FIRST_START.now());
+            }
+            if service::legacy_installed() {
+                eprintln!("{}", rename::SERVICE_UNMOVED.now());
             }
             let agent = Arc::new(build_agent(&config, &config_path, &state, store).await?);
             let bind = bind.unwrap_or_else(|| config.gateway.bind.clone());
@@ -698,7 +713,7 @@ async fn run(cli: Cli) -> Result<()> {
             eprintln!(
                 "{}",
                 text::CHAT_BANNER.with(&[
-                    name.as_deref().unwrap_or("OpenClaw"),
+                    name.as_deref().unwrap_or("Runo"),
                     &session,
                     &config.model.model
                 ])

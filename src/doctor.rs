@@ -1,4 +1,4 @@
-//! `openclaw-rs doctor`: checks that everything configured actually works
+//! `runo doctor`: checks that everything configured actually works
 //! (the config file, the key and its credit, the models and what they can
 //! do, the browser, search, the Gateway, QQ, email, the service) and says
 //! what to change for each problem. With `--offline` it only reads the
@@ -60,7 +60,7 @@ fn info(text: impl Into<String>) -> Finding {
     }
 }
 
-const TITLE: Tr = tr("OpenClaw doctor", "OpenClaw 自检");
+const TITLE: Tr = tr("Runo doctor", "Runo 自检");
 const OFFLINE_NOTE: Tr = tr(
     "Offline: nothing is contacted; only the config and this host are checked.",
     "离线模式：不联网，只检查配置和本机。",
@@ -84,24 +84,24 @@ const S_SERVICE: Tr = tr("Service", "服务");
 
 const CONFIG_OK: Tr = tr("{} loads", "{} 可以正常加载");
 const CONFIG_MISSING: Tr = tr(
-    "{} does not exist yet: run `openclaw-rs init`",
-    "{} 还不存在：运行 `openclaw-rs init`",
+    "{} does not exist yet: run `runo init`",
+    "{} 还不存在：运行 `runo init`",
 );
 const CONFIG_BROKEN: Tr = tr(
-    "{} does not load: {}. Fix that field with `openclaw-rs config`",
-    "{} 无法加载：{}。用 `openclaw-rs config` 修改它指出的字段",
+    "{} does not load: {}. Fix that field with `runo config`",
+    "{} 无法加载：{}。用 `runo config` 修改它指出的字段",
 );
 const WORKSPACE_OK: Tr = tr("workspace {} is writable", "工作区 {} 可写");
 const WORKSPACE_BAD: Tr = tr("workspace {} is not writable: {}", "工作区 {} 不可写：{}");
 
 const NO_MODEL: Tr = tr(
-    "model.model is not set: run `openclaw-rs init`",
-    "没有设置 model.model：运行 `openclaw-rs init`",
+    "model.model is not set: run `runo init`",
+    "没有设置 model.model：运行 `runo init`",
 );
 const MODEL_IS: Tr = tr("main model: {}", "主模型：{}");
 const NO_KEY: Tr = tr(
-    "no API key: set OPENROUTER_API_KEY or run `openclaw-rs init`",
-    "没有 API key：设置 OPENROUTER_API_KEY 或运行 `openclaw-rs init`",
+    "no API key: set OPENROUTER_API_KEY or run `runo init`",
+    "没有 API key：设置 OPENROUTER_API_KEY 或运行 `runo init`",
 );
 const KEY_FROM_ENV: Tr = tr(
     "API key from $OPENROUTER_API_KEY",
@@ -123,8 +123,8 @@ const NO_OPENROUTER: Tr = tr(
 );
 const KEY_OK_CREDIT: Tr = tr("the key works ({})", "key 可用（{}）");
 const KEY_BAD: Tr = tr(
-    "the key was refused ({}): create a new one at https://openrouter.ai/keys and run `openclaw-rs init`",
-    "key 被拒绝（{}）：在 https://openrouter.ai/keys 新建一个，再运行 `openclaw-rs init`",
+    "the key was refused ({}): create a new one at https://openrouter.ai/keys and run `runo init`",
+    "key 被拒绝（{}）：在 https://openrouter.ai/keys 新建一个，再运行 `runo init`",
 );
 const KEY_UNCHECKED: Tr = tr("could not check the key: {}", "无法验证 key：{}");
 const CATALOG_FAILED: Tr = tr(
@@ -132,8 +132,8 @@ const CATALOG_FAILED: Tr = tr(
     "无法获取模型列表（{}），不检查模型能力",
 );
 const NOT_LISTED: Tr = tr(
-    "{} ({}) is not on OpenRouter's model list: check the id with `openclaw-rs init`",
-    "{}（{}）不在 OpenRouter 的模型列表里：用 `openclaw-rs init` 检查 id",
+    "{} ({}) is not on OpenRouter's model list: check the id with `runo init`",
+    "{}（{}）不在 OpenRouter 的模型列表里：用 `runo init` 检查 id",
 );
 const NO_TOOLS: Tr = tr(
     "{} cannot call tools: the agent cannot run commands, read files, search or browse",
@@ -146,8 +146,8 @@ const BLIND_NO_VISION: Tr = tr(
 );
 const VISION_IS: Tr = tr("image model: {}", "图片模型：{}");
 const VISION_BLIND: Tr = tr(
-    "the image model {} cannot see images: pick another with `openclaw-rs init`",
-    "图片模型 {} 不能看图片：用 `openclaw-rs init` 另选一个",
+    "the image model {} cannot see images: pick another with `runo init`",
+    "图片模型 {} 不能看图片：用 `runo init` 另选一个",
 );
 const HEARS: Tr = tr("{} transcribes voice messages", "{} 能把语音消息转成文字");
 const DEAF_NO_AUDIO: Tr = tr(
@@ -225,8 +225,8 @@ const SKILLS_OFF: Tr = tr(
     "已关闭（skills.enabled = false）",
 );
 const SKILLS_NONE: Tr = tr(
-    "none installed (openclaw-rs skills install <directory or git URL>, or put them in {})",
-    "还没有安装（openclaw-rs skills install <目录或 git 地址>，或者放到 {}）",
+    "none installed (runo skills install <directory or git URL>, or put them in {})",
+    "还没有安装（runo skills install <目录或 git 地址>，或者放到 {}）",
 );
 const SKILL_READY: Tr = tr("{}: ready", "{}：可用");
 const SKILL_UNUSABLE: Tr = tr("{}: {}", "{}：{}");
@@ -261,16 +261,16 @@ const UPDATE_AUTO: Tr = tr(
     "新版本会自动安装，Gateway 会在没有对话进行时重启",
 );
 const UPDATE_CANNOT_WRITE: Tr = tr(
-    "update.auto is on but {} cannot be replaced by this account: keep the binary where the service account can write it, or update with `doas openclaw-rs update`",
-    "已开启 update.auto，但当前账号无法替换 {}：请把程序放在服务账号能写入的位置，或用 `doas openclaw-rs update` 更新",
+    "update.auto is on but {} cannot be replaced by this account: keep the binary where the service account can write it, or update with `doas runo update`",
+    "已开启 update.auto，但当前账号无法替换 {}：请把程序放在服务账号能写入的位置，或用 `doas runo update` 更新",
 );
 const UPDATE_LATEST: Tr = tr(
     "up to date ({} is the latest release)",
     "已是最新（最新版本是 {}）",
 );
 const UPDATE_NEWER: Tr = tr(
-    "version {} is available: run `openclaw-rs update`",
-    "有新版本 {}：运行 `openclaw-rs update`",
+    "version {} is available: run `runo update`",
+    "有新版本 {}：运行 `runo update`",
 );
 const UPDATE_NO_ASSET: Tr = tr(
     "the latest release ({}) has no binary for {}",
@@ -287,8 +287,8 @@ const SEARCH_CHATGPT: Tr = tr(
     "使用 ChatGPT 订阅自带的联网搜索，算在套餐里",
 );
 const SEARCH_NOT_CHATGPT: Tr = tr(
-    "search.provider is \"chatgpt\" but the model is not on a ChatGPT subscription: run `openclaw-rs login`",
-    "search.provider 是 \"chatgpt\"，但模型没有使用 ChatGPT 订阅：请运行 `openclaw-rs login`",
+    "search.provider is \"chatgpt\" but the model is not on a ChatGPT subscription: run `runo login`",
+    "search.provider 是 \"chatgpt\"，但模型没有使用 ChatGPT 订阅：请运行 `runo login`",
 );
 const SEARXNG_OK: Tr = tr("SearXNG at {} answers", "SearXNG（{}）可用");
 const SEARXNG_FAILED: Tr = tr(
@@ -305,8 +305,8 @@ const GATEWAY_BAD_BIND: Tr = tr(
     "gateway.bind {} 不是有效地址：{}",
 );
 const GATEWAY_OPEN: Tr = tr(
-    "gateway.bind {} is reachable from other hosts without a token, so `serve` refuses to start: set OPENCLAW_RS_TOKEN or gateway.token",
-    "gateway.bind {} 可被其他设备访问但没有 token，`serve` 会拒绝启动：设置 OPENCLAW_RS_TOKEN 或 gateway.token",
+    "gateway.bind {} is reachable from other hosts without a token, so `serve` refuses to start: set RUNO_TOKEN or gateway.token",
+    "gateway.bind {} 可被其他设备访问但没有 token，`serve` 会拒绝启动：设置 RUNO_TOKEN 或 gateway.token",
 );
 const GATEWAY_LOCAL: Tr = tr(
     "listens on {} (this host only)",
@@ -321,8 +321,8 @@ const GATEWAY_RUNNING: Tr = tr(
     "Gateway 正在运行：http://{}/",
 );
 const GATEWAY_STOPPED: Tr = tr(
-    "no Gateway is running (start it with `openclaw-rs serve`)",
-    "Gateway 没有运行（用 `openclaw-rs serve` 启动）",
+    "no Gateway is running (start it with `runo serve`)",
+    "Gateway 没有运行（用 `runo serve` 启动）",
 );
 
 const OFF: Tr = tr("off", "未启用");
@@ -357,8 +357,8 @@ const SERVICE_INSTALLED: Tr = tr(
     "{}。系统服务以自己的账户运行，用的是那个账户的配置，不一定是这一份",
 );
 const SERVICE_MISSING: Tr = tr(
-    "not installed: openclaw-rs service install (or service start to run it now)",
-    "未安装：openclaw-rs service install（或用 service start 立即运行）",
+    "not installed: runo service install (or service start to run it now)",
+    "未安装：runo service install（或用 service start 立即运行）",
 );
 const CONTEXT_SET: Tr = tr("context budget: {} per call", "上下文预算：每次调用 {}");
 const CONTEXT_OVER: Tr = tr(
@@ -1400,7 +1400,7 @@ mod tests {
     #[test]
     fn an_open_gateway_without_a_token_is_a_problem() {
         // SAFETY: no other test reads this variable.
-        unsafe { std::env::remove_var("OPENCLAW_RS_TOKEN") };
+        unsafe { std::env::remove_var("RUNO_TOKEN") };
         let mut config = Config::default();
         config.gateway.bind = "0.0.0.0:1".into();
         assert_eq!(gateway_findings(&config)[0].status, Status::Fail);

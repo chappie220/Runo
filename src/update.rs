@@ -1,7 +1,8 @@
-//! Updates from GitHub Releases: `openclaw-rs update` by hand, or the
+//! Updates from GitHub Releases: `runo update` by hand, or the
 //! Gateway on its own with `update.auto`.
 //!
-//! A release carries one binary per target (`openclaw-rs-<target>`) and a
+//! A release carries one binary per target (`runo-<target>`, and for
+//! binaries from before the rename the same as `openclaw-rs-<target>`) and a
 //! `SHA256SUMS` file. The download must match its checksum and run
 //! `--version` before it replaces the current binary, which is kept as
 //! `<binary>.old` for `update --rollback`. The Gateway restarts itself by
@@ -17,9 +18,9 @@ use serde_json::Value;
 
 use crate::i18n::{Tr, tr};
 
-pub const VERSION: &str = env!("OPENCLAW_VERSION");
+pub const VERSION: &str = env!("RUNO_VERSION");
 /// The target triple this binary was built for.
-pub const TARGET: &str = env!("OPENCLAW_TARGET");
+pub const TARGET: &str = env!("RUNO_TARGET");
 const SUMS: &str = "SHA256SUMS";
 const MAX_BINARY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -50,12 +51,12 @@ impl Default for UpdateConfig {
     }
 }
 
-const CURRENT: Tr = tr("This is openclaw-rs {} ({})", "当前是 openclaw-rs {}（{}）");
+const CURRENT: Tr = tr("This is runo {} ({})", "当前是 runo {}（{}）");
 const LATEST: Tr = tr("Latest release: {}", "最新版本：{}");
 const UP_TO_DATE: Tr = tr("Already up to date.", "已经是最新版本。");
 const AVAILABLE: Tr = tr(
-    "Version {} is available: run `openclaw-rs update` to install it.",
-    "有新版本 {}：运行 `openclaw-rs update` 安装。",
+    "Version {} is available: run `runo update` to install it.",
+    "有新版本 {}：运行 `runo update` 安装。",
 );
 const DOWNLOADING: Tr = tr("Downloading {} ...", "正在下载 {} ...");
 const UPDATED: Tr = tr(
@@ -64,8 +65,8 @@ const UPDATED: Tr = tr(
 );
 const RESTARTED: Tr = tr("Restarted the service.", "已重启服务。");
 const RESTART_HINT: Tr = tr(
-    "A Gateway is running: restart it to use the new version (openclaw-rs gateway restart).",
-    "Gateway 正在运行：重启后才会用上新版本（openclaw-rs gateway restart）。",
+    "A Gateway is running: restart it to use the new version (runo gateway restart).",
+    "Gateway 正在运行：重启后才会用上新版本（runo gateway restart）。",
 );
 const ROLLED_BACK: Tr = tr(
     "Rolled back: {} is the previous binary again ({}).",
@@ -77,8 +78,8 @@ const NO_ASSET: Tr = tr(
     "版本 {} 里没有适用于 {} 的程序（应为 {}）。",
 );
 const NOT_WRITABLE: Tr = tr(
-    "Cannot replace {}: {}. Run the update as the binary's owner (sudo openclaw-rs update), or keep the binary where the service account can write it.",
-    "无法替换 {}：{}。请用程序文件的所有者运行（sudo openclaw-rs update），或把程序放在服务账号能写入的位置。",
+    "Cannot replace {}: {}. Run the update as the binary's owner (sudo runo update), or keep the binary where the service account can write it.",
+    "无法替换 {}：{}。请用程序文件的所有者运行（sudo runo update），或把程序放在服务账号能写入的位置。",
 );
 
 #[cfg(test)]
@@ -125,7 +126,7 @@ impl Release {
 
 /// The asset name of this target's binary.
 pub fn asset_name() -> String {
-    format!("openclaw-rs-{TARGET}")
+    format!("runo-{TARGET}")
 }
 
 /// Whether version `a` is newer than `b` (`1.2.10` > `1.2.9`, `0.3.5.1` >
@@ -171,7 +172,7 @@ fn http() -> Result<reqwest::Client> {
     crate::net::builder()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(300))
-        .user_agent(format!("openclaw-rs/{VERSION}"))
+        .user_agent(format!("runo/{VERSION}"))
         .build()
         .context("cannot build HTTP client for updates")
 }
@@ -297,7 +298,7 @@ pub fn install(binary: &Path, data: &[u8], version: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let dir = binary.parent().context("the binary has no directory")?;
-    let staged = dir.join(format!(".openclaw-rs-update-{}", std::process::id()));
+    let staged = dir.join(format!(".runo-update-{}", std::process::id()));
     let not_writable = |err: &dyn std::fmt::Display| {
         NOT_WRITABLE.with(&[&binary.display().to_string(), &err.to_string()])
     };
@@ -355,7 +356,7 @@ pub fn rollback(binary: &Path) -> Result<String> {
         .output()
         .context("the previous binary does not run")?;
     let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let swap = binary.with_file_name(format!(".openclaw-rs-rollback-{}", std::process::id()));
+    let swap = binary.with_file_name(format!(".runo-rollback-{}", std::process::id()));
     let fail = |e: std::io::Error| {
         anyhow::anyhow!(NOT_WRITABLE.with(&[&binary.display().to_string(), &e.to_string()]))
     };
@@ -365,7 +366,7 @@ pub fn rollback(binary: &Path) -> Result<String> {
     Ok(version)
 }
 
-/// `openclaw-rs update`.
+/// `runo update`.
 pub async fn run(
     config: &UpdateConfig,
     check_only: bool,
@@ -388,6 +389,16 @@ pub async fn run(
         };
         return crate::elevate::rerun(args);
     }
+    // An install from before the rename moves to the new name first, so the
+    // update replaces the binary the new service runs.
+    let binary = if rollback_only || check_only {
+        binary
+    } else {
+        crate::rename::finish(true).unwrap_or_else(|err| {
+            eprintln!("{err:#}");
+            crate::rename::current_binary(&binary)
+        })
+    };
     if rollback_only {
         let version = rollback(&binary)?;
         println!(
@@ -469,7 +480,7 @@ pub async fn watch(config: UpdateConfig, idle: impl Fn() -> bool + Send + 'stati
             }
             Ok(release) if release.is_newer() && announced != release.version => {
                 eprintln!(
-                    "update: version {} is available (this is {VERSION}); run `openclaw-rs update`, or set update.auto = true",
+                    "update: version {} is available (this is {VERSION}); run `runo update`, or set update.auto = true",
                     release.version
                 );
                 announced = release.version;
@@ -572,12 +583,12 @@ mod tests {
 
     #[test]
     fn checksums_are_found_by_name() {
-        let sums = "abc  openclaw-rs-x86_64-unknown-linux-musl\ndef *openclaw-rs-aarch64-unknown-linux-musl\n";
+        let sums = "abc  runo-x86_64-unknown-linux-musl\ndef *runo-aarch64-unknown-linux-musl\n";
         assert_eq!(
-            expected_sum(sums, "openclaw-rs-aarch64-unknown-linux-musl"),
+            expected_sum(sums, "runo-aarch64-unknown-linux-musl"),
             Some("def")
         );
-        assert_eq!(expected_sum(sums, "openclaw-rs-armv7"), None);
+        assert_eq!(expected_sum(sums, "runo-armv7"), None);
         assert_eq!(
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -613,7 +624,7 @@ mod tests {
         }
     }
 
-    const NEW_BINARY: &[u8] = b"#!/bin/sh\necho openclaw-rs 99.0.0\n";
+    const NEW_BINARY: &[u8] = b"#!/bin/sh\necho runo 99.0.0\n";
 
     #[tokio::test]
     async fn a_release_is_downloaded_checked_installed_and_rolled_back() {
@@ -624,8 +635,8 @@ mod tests {
         let data = fetch(&release).await.unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("openclaw-rs");
-        std::fs::write(&binary, "#!/bin/sh\necho openclaw-rs 0.1.0\n").unwrap();
+        let binary = dir.path().join("runo");
+        std::fs::write(&binary, "#!/bin/sh\necho runo 0.1.0\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         install(&binary, &data, &release.version).unwrap();
@@ -636,7 +647,7 @@ mod tests {
                 .contains("0.1.0")
         );
 
-        assert_eq!(rollback(&binary).unwrap(), "openclaw-rs 0.1.0");
+        assert_eq!(rollback(&binary).unwrap(), "runo 0.1.0");
         assert!(std::fs::read_to_string(&binary).unwrap().contains("0.1.0"));
         assert_eq!(std::fs::read(old_path(&binary)).unwrap(), NEW_BINARY);
         // Only the two binaries are left.
@@ -651,9 +662,9 @@ mod tests {
         assert!(err.contains("checksum"), "{err}");
 
         let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("openclaw-rs");
+        let binary = dir.path().join("runo");
         std::fs::write(&binary, "current").unwrap();
-        let err = install(&binary, b"#!/bin/sh\necho openclaw-rs 1.0.0\n", "99.0.0")
+        let err = install(&binary, b"#!/bin/sh\necho runo 1.0.0\n", "99.0.0")
             .unwrap_err()
             .to_string();
         assert!(err.contains("does not run as version 99.0.0"), "{err}");

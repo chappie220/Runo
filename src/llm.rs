@@ -523,7 +523,7 @@ impl Client {
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
             // OpenRouter attribution headers; harmless for other compatible servers.
-            .header("X-Title", "OpenClaw")
+            .header("X-Title", "Runo")
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_vec())
             .send()
