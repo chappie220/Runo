@@ -603,17 +603,8 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
     /// CLI or tools are picked up on the next tick.
     pub async fn run_scheduler(self: Shared<M, T>) {
         // Tasks a previous run was working on did not finish: say so.
-        match self.agent.store.tasks_interrupted() {
-            Ok(tasks) => {
-                for task in tasks {
-                    let gateway = self.clone();
-                    tokio::spawn(async move {
-                        let result = task.result.clone().unwrap_or_default();
-                        gateway.report_task(&task, "failed", &result).await;
-                    });
-                }
-            }
-            Err(err) => eprintln!("tasks: cannot read tasks: {err:#}"),
+        if let Err(err) = self.agent.store.tasks_interrupted() {
+            eprintln!("tasks: cannot recover tasks: {err:#}");
         }
         let mut tick = tokio::time::interval(SCHEDULER_TICK);
         loop {
@@ -654,7 +645,21 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
     /// there is room.
     fn tasks_tick(self: &Shared<M, T>) {
         let config = crate::live::read(|c| c.tasks.clone()).unwrap_or_default();
+        self.tasks_tick_with_config(&config);
+    }
+
+    fn tasks_tick_with_config(self: &Shared<M, T>, config: &crate::tasks::TasksConfig) {
         let store = &self.agent.store;
+        // Delivery and cancellation continue even while new work is disabled.
+        match store.task_reports_pending() {
+            Ok(tasks) => {
+                for task in tasks {
+                    let gateway = self.clone();
+                    tokio::spawn(async move { gateway.report_task(&task).await });
+                }
+            }
+            Err(err) => eprintln!("tasks: cannot read pending reports: {err:#}"),
+        }
         for task in store.tasks_cancelling().unwrap_or_default() {
             if self.stop(&task.own_session(), &Actor::owner(access::CLI))
                 == StopOutcome::NothingRunning
@@ -662,6 +667,9 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
                 // Between turns: it ends here.
                 let _ = store.task_finish(task.id, "cancelled", "cancelled");
             }
+        }
+        if !config.enabled {
+            return;
         }
         let running = match store.tasks_running() {
             Ok(n) => n,
@@ -713,29 +721,80 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         };
         if let Err(err) = store.task_finish(task.id, state, &text) {
             eprintln!("tasks: cannot record #{}: {err:#}", task.id);
+            return;
         }
         eprintln!("tasks: #{} {:?} {state}", task.id, task.title);
-        self.report_task(&task, state, &text).await;
+        if let Ok(Some(finished)) = store.task(task.id) {
+            self.report_task(&finished).await;
+        }
     }
 
     /// Tells the conversation where `task` was asked how it ended, in the
     /// agent's words (plainly, if that turn fails).
-    async fn report_task(&self, task: &crate::tasks::Task, state: &str, result: &str) {
-        let actor = self.actor(&task.created_by, &task.session);
-        let note = crate::tasks::done_prompt(task, state, result);
-        let text = match self.run_unattended(actor, &task.session, &note).await {
-            Ok(text) => text,
+    async fn report_task(&self, task: &crate::tasks::Task) {
+        let store = &self.agent.store;
+        match store.task_report_claim(task.id) {
+            Ok(true) => {}
+            Ok(false) => return,
             Err(err) => {
-                eprintln!(
-                    "tasks: cannot report #{} in {}: {err:#}",
-                    task.id, task.session
-                );
-                format!("[{} #{}: {state}]\n{result}", task.title, task.id)
+                eprintln!("tasks: cannot claim report #{}: {err:#}", task.id);
+                return;
+            }
+        }
+        let result = self.deliver_task_report(task).await;
+        if let Err(err) = &result {
+            eprintln!("tasks: report #{} will be retried: {err:#}", task.id);
+        }
+        if let Err(err) = store.task_report_complete(task.id, result.is_ok()) {
+            eprintln!("tasks: cannot record report delivery #{}: {err:#}", task.id);
+        }
+    }
+
+    async fn deliver_task_report(&self, task: &crate::tasks::Task) -> Result<()> {
+        let store = &self.agent.store;
+        let text = match store.task_report_text(task.id)? {
+            Some(text) => text,
+            None => {
+                let actor = self.actor(&task.created_by, &task.session);
+                let result = task.result.as_deref().unwrap_or_default();
+                let note = crate::tasks::done_prompt(task, &task.state, result);
+                let text = match self.run_unattended(actor, &task.session, &note).await {
+                    Ok(text) if !text.trim().is_empty() => text,
+                    _ => {
+                        let fallback =
+                            format!("[{} #{}: {}]\n{result}", task.title, task.id, task.state);
+                        let session = store.session_id(&task.session)?;
+                        store.append(session, &crate::llm::ChatMessage::assistant(&fallback))?;
+                        let _ = self.updates.send(ServerMsg::Updated {
+                            session: task.session.clone(),
+                        });
+                        fallback
+                    }
+                };
+                // Reuse this exact report on retries, without another model call.
+                store.task_report_save(task.id, &text)?;
+                text
             }
         };
-        if !text.trim().is_empty() {
-            self.notify(&task.session, &text).await;
+        let notifiers = self
+            .notifiers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let mut handled = false;
+        for notifier in notifiers.iter().filter(|n| n.handles(&task.session)) {
+            notifier.notify(&task.session, &text).await?;
+            handled = true;
         }
+        // Web/terminal conversations read the persisted history. Chat app
+        // sessions must wait until their notifier is registered/enabled.
+        let external = ["qq:", "feishu:", "zulip:", "mail:", "telegram:", "discord:"]
+            .iter()
+            .any(|prefix| task.session.starts_with(prefix));
+        if !handled && external {
+            anyhow::bail!("no notifier for {}", task.session);
+        }
+        Ok(())
     }
 
     /// Gives the agent a heartbeat turn in `session`: what it says is
@@ -1747,6 +1806,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_delivery_retries_after_failure_and_restart_without_model_calls() {
+        struct FailOnce(std::sync::atomic::AtomicBool, Mutex<Vec<String>>);
+        #[async_trait]
+        impl Notifier for FailOnce {
+            fn handles(&self, session: &str) -> bool {
+                session == "qq:c2c:BOSS"
+            }
+            async fn notify(&self, _session: &str, text: &str) -> Result<()> {
+                if self.0.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    anyhow::bail!("network unavailable");
+                }
+                self.1.lock().unwrap().push(text.into());
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path()).unwrap();
+        let make_gateway = |store: crate::store::Store, replies| {
+            Gateway::new(
+                Arc::new(Agent {
+                    model: Says(Mutex::new(replies)),
+                    summarizer: None,
+                    vision: None,
+                    voice: None,
+                    tools: NoTools,
+                    store,
+                    config: crate::config::AgentConfig::default(),
+                }),
+                None,
+                toml::from_str(r#"owners = ["qq:BOSS"]"#).unwrap(),
+            )
+        };
+        let gateway = make_gateway(store.clone(), vec!["work completed", "here is the result"]);
+        let notifier = Arc::new(FailOnce(
+            std::sync::atomic::AtomicBool::new(true),
+            Mutex::default(),
+        ));
+        gateway.add_notifier(notifier.clone());
+        let task = store
+            .task_add("test", "work", "qq:c2c:BOSS", "qq:BOSS", 5)
+            .unwrap();
+        let claimed = store.task_claim(1).unwrap().remove(0);
+        gateway.run_task(claimed, 5).await;
+        assert_eq!(store.task(task.id).unwrap().unwrap().state, "done");
+        assert_eq!(store.task_reports_pending().unwrap().len(), 1);
+        assert!(notifier.1.lock().unwrap().is_empty());
+        // Also emulate death during the next delivery attempt.
+        assert!(store.task_report_claim(task.id).unwrap());
+        assert!(!store.task_report_claim(task.id).unwrap());
+        drop(gateway);
+        drop(store);
+        let store = crate::store::Store::open(dir.path()).unwrap();
+        assert!(store.tasks_interrupted().unwrap().is_empty());
+        let gateway = make_gateway(store.clone(), vec![]); // Any extra model call panics.
+        gateway.add_notifier(notifier.clone());
+        let pending = store.task_reports_pending().unwrap().remove(0);
+        gateway.report_task(&pending).await;
+        assert_eq!(*notifier.1.lock().unwrap(), ["here is the result"]);
+        assert!(store.task_reports_pending().unwrap().is_empty());
+        assert!(store.task_claim(10).unwrap().is_empty());
+        gateway.report_task(&pending).await;
+        assert_eq!(notifier.1.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_background_task_runs_on_its_own_and_reports_back() {
         let store = crate::store::Store::open_in_memory().unwrap();
         let agent = Arc::new(Agent {
@@ -1768,6 +1892,13 @@ mod tests {
         let task = store
             .task_add("周报", "整理这周的资料", "qq:c2c:BOSS", "qq:BOSS", 5)
             .unwrap();
+        let off = crate::tasks::TasksConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        gateway.tasks_tick_with_config(&off);
+        assert_eq!(store.task(task.id).unwrap().unwrap().state, "pending");
+        assert!(gateway.agent.model.0.lock().unwrap().len() == 2);
         gateway.tasks_tick();
         for _ in 0..100 {
             if !chat.0.lock().unwrap().is_empty() {

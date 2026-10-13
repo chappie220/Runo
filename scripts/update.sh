@@ -3,7 +3,7 @@
 # (checksum checked, a running Gateway restarted when this account may).
 #
 #   curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
-#   sh update.sh --version 0.4.1      # a given release: how to go back
+#   sh update.sh --version 0.4.1      # restore a pre-0.5 backup first (see docs/guide.md)
 #
 # Takes the same options as install.sh (--dir, --version, --force).
 # `runo update` does the same from the binary itself; this script

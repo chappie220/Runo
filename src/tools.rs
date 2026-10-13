@@ -460,6 +460,9 @@ impl BuiltinTools {
         let relative = crate::imagegen::save(&self.workspace, &made)
             .await
             .map_err(|e| format!("error: {e:#}"))?;
+        self.store
+            .image_asset_add(&relative, &actor.id, &made.data)
+            .map_err(|e| format!("error: cannot record image ownership: {e:#}"))?;
         let shown = match send_image(&made.mime, &made.data).await {
             Ok(true) => "It is already shown in the chat; do not send it again or repeat its path."
                 .to_owned(),
@@ -595,10 +598,7 @@ impl BuiltinTools {
 
     /// Speaks `text` in the identity's voice and sends it as a voice message.
     async fn voice_send(&self, actor: &Actor, args: VoiceArgs) -> Result<String, String> {
-        let speaker = self
-            .speaker
-            .as_ref()
-            .ok_or("error: voice messages are off")?;
+        let speaker = self.speaker().ok_or("error: voice messages are off")?;
         if !plays_voice() {
             return Ok(
                 "This chat cannot play voice messages, so nothing was spoken. Answer in \
@@ -711,10 +711,7 @@ impl BuiltinTools {
         actor: &Actor,
         args: VoiceProfileArgs,
     ) -> Result<String, String> {
-        let speaker = self
-            .speaker
-            .as_ref()
-            .ok_or("error: voice messages are off")?;
+        let speaker = self.speaker().ok_or("error: voice messages are off")?;
         let voice = args.voice.trim();
         let instructions = args.instructions.trim();
         if voice.is_empty() || instructions.is_empty() {
@@ -812,17 +809,44 @@ impl BuiltinTools {
     }
 
     /// Files a picture (usually one image_generate just drew) as a sticker.
-    fn sticker_save(&self, args: StickerSaveArgs) -> Result<String, String> {
+    fn sticker_save(&self, actor: &Actor, args: StickerSaveArgs) -> Result<String, String> {
         let config = self.stickers().ok_or("error: stickers are off")?;
         let name = self.identity_name()?;
-        let source = self.resolve(&args.path);
+        let source = self
+            .resolve(&args.path)
+            .canonicalize()
+            .map_err(|e| format!("error: cannot resolve sticker source: {e}"))?;
+        let data = if actor.can(Capability::FilesRead) {
+            std::fs::read(&source).map_err(|e| format!("error: {e}"))?
+        } else {
+            let workspace = self
+                .workspace
+                .canonicalize()
+                .map_err(|e| format!("error: {e}"))?;
+            let relative = source
+                .strip_prefix(&workspace)
+                .map_err(|_| "error: sticker source requires files_read")?;
+            let relative = relative.to_string_lossy();
+            // Check ownership before reading, then verify the exact bytes being
+            // imported. Neither a symlink nor replacing a granted file grants access.
+            let digest = self
+                .store
+                .image_asset_digest(&relative, &actor.id)
+                .map_err(|e| format!("error: {e:#}"))?
+                .ok_or("error: sticker source requires files_read or an image generated for you")?;
+            let data = std::fs::read(&source).map_err(|e| format!("error: {e}"))?;
+            if aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &data).as_ref() != digest {
+                return Err("error: sticker source changed; files_read is required".into());
+            }
+            data
+        };
         let (id, path) = crate::stickers::save(
             &self.store,
             &self.workspace,
             &name,
             &args.mood,
             &args.description,
-            &source,
+            &data,
             config.per_mood,
         )
         .map_err(|e| format!("error: {e:#}"))?;
@@ -1960,7 +1984,7 @@ impl BuiltinTools {
                 Ok(args) => self.sticker_send(actor, args).await,
                 Err(e) => Err(e),
             },
-            "sticker_save" => parse(call).and_then(|args| self.sticker_save(args)),
+            "sticker_save" => parse(call).and_then(|args| self.sticker_save(actor, args)),
             "task_start" => parse(call).and_then(|args| self.task_start(actor, args)),
             "task_list" => self.task_list(actor),
             "task_cancel" => parse(call).and_then(|args| self.task_cancel(actor, args)),
@@ -2111,6 +2135,13 @@ mod tests {
             assert_eq!(shown.len(), 1);
             assert_eq!(shown[0].0, "image/png");
         }
+        assert!(
+            tools
+                .store
+                .image_asset_digest(saved, access::CLI)
+                .unwrap()
+                .is_some()
+        );
         let body = seen.lock().unwrap()[0].clone();
         assert_eq!(body["model"], "x/draw");
         assert_eq!(body["aspect_ratio"], "16:9");
@@ -2193,7 +2224,7 @@ mod tests {
         config.model.base_url = base;
         config.speech.model = Some("t/tts".into());
         let skills = Skills::new(dir.path(), &crate::config::SkillsConfig::default());
-        let tools = BuiltinTools::new(
+        let mut tools = BuiltinTools::new(
             dir.path().into(),
             ToolsConfig::default(),
             Store::open_in_memory().unwrap(),
@@ -2272,6 +2303,79 @@ mod tests {
         let guest = Config::default().access.resolve("qq:G", "qq:c2c:G");
         let offered = access::with_actor(guest, async { tools.specs() }).await;
         assert!(!offered.iter().any(|s| s.function.name == "voice_send"));
+        // Cached tool specs must not bypass an off switch at execution time.
+        tools.speech_enabled = false;
+        let out = owner(with_approver(
+            phone.clone(),
+            tools.call(&call("voice_send", json!({"text": "off"}))),
+        ))
+        .await;
+        assert!(out.contains("voice messages are off"), "{out}");
+        let out = owner(tools.call(&call(
+            "voice_profile_save",
+            json!({"voice": "rex", "instructions": "off"}),
+        )))
+        .await;
+        assert!(out.contains("voice messages are off"), "{out}");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert_eq!(phone.voices.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sticker_import_requires_read_access_or_unchanged_own_image() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("images")).unwrap();
+        let png = b"\x89PNG\r\n\x1a\nprivate";
+        let private = root.path().join("private.png");
+        std::fs::write(&private, png).unwrap();
+        std::fs::write(workspace.join("images/own.png"), png).unwrap();
+        std::fs::write(workspace.join("images/other.png"), png).unwrap();
+        let store = Store::open(&root.path().join("state")).unwrap();
+        store
+            .image_asset_add("images/own.png", "qq:G", png)
+            .unwrap();
+        store
+            .image_asset_add("images/other.png", "qq:OTHER", png)
+            .unwrap();
+        drop(store);
+        let store = Store::open(&root.path().join("state")).unwrap();
+        let tools = BuiltinTools::new(workspace.clone(), ToolsConfig::default(), store.clone())
+            .unwrap()
+            .with_stickers(Some(crate::config::StickersConfig::default()));
+        let mut access = crate::access::AccessConfig::default();
+        access.guest.push(Capability::ImageGenerate);
+        let guest = access.resolve("qq:G", "qq:c2c:G");
+        let import = |path: String, actor: Actor| {
+            let request = call(
+                "sticker_save",
+                json!({"path": path, "mood": "happy", "description": "test"}),
+            );
+            let tools = &tools;
+            async move { access::with_actor(actor, tools.call(&request)).await }
+        };
+        for path in [
+            private.to_string_lossy().into_owned(),
+            "../private.png".into(),
+            "images/other.png".into(),
+        ] {
+            let out = import(path, guest.clone()).await;
+            assert!(out.contains("requires files_read"), "{out}");
+        }
+        std::os::unix::fs::symlink(&private, workspace.join("images/link.png")).unwrap();
+        let out = import("images/link.png".into(), guest.clone()).await;
+        assert!(out.contains("requires files_read"), "{out}");
+        let out = import("images/own.png".into(), guest.clone()).await;
+        assert!(out.contains("saved sticker"), "{out}");
+        std::fs::write(workspace.join("images/own.png"), b"\x89PNGchanged").unwrap();
+        let out = import("images/own.png".into(), guest.clone()).await;
+        assert!(out.contains("source changed"), "{out}");
+        std::fs::remove_file(workspace.join("images/own.png")).unwrap();
+        std::os::unix::fs::symlink(&private, workspace.join("images/own.png")).unwrap();
+        let out = import("images/own.png".into(), guest).await;
+        assert!(out.contains("requires files_read"), "{out}");
+        let out = import(private.to_string_lossy().into_owned(), Actor::owner("cli")).await;
+        assert!(out.contains("saved sticker"), "{out}");
     }
 
     #[tokio::test]

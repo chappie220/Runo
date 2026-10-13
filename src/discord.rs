@@ -7,7 +7,6 @@
 //! › Bot). Pictures and voice messages go out as attachments.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -15,7 +14,6 @@ use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent::{Model, Tools};
@@ -416,8 +414,27 @@ async fn connect<M: Model + 'static, T: Tools + 'static>(
     let socket = crate::net::websocket(&url, bot.config.proxy)
         .await
         .with_context(|| format!("cannot connect to {url}"))?;
+    gateway_session(socket, &bot.token, |payload, me| {
+        if let Some(incoming) = parse_incoming(payload, me) {
+            handle(bot.clone(), gateway.clone(), incoming);
+        }
+    })
+    .await
+}
+
+async fn gateway_session<S, F>(
+    socket: tokio_tungstenite::WebSocketStream<S>,
+    token: &str,
+    mut on_message: F,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    F: FnMut(&Value, &str),
+{
     let (mut sink, mut stream) = socket.split();
-    let hello = next_payload(&mut stream).await?;
+    let hello = tokio::time::timeout(Duration::from_secs(30), next_payload(&mut stream))
+        .await
+        .context("Discord Hello timed out")??;
     if hello["op"] != 10 {
         bail!("expected Hello, got {hello}");
     }
@@ -428,46 +445,34 @@ async fn connect<M: Model + 'static, T: Tools + 'static>(
             .max(1_000),
     );
     let identify = json!({ "op": 2, "d": {
-        "token": bot.token, "intents": INTENTS,
+        "token": token, "intents": INTENTS,
         "properties": {"os": "linux", "browser": "runo", "device": "runo"},
     }});
-    sink.send(Message::Text(identify.to_string().into()))
-        .await?;
-    let (out, mut outbox) = mpsc::unbounded_channel::<Value>();
-    let writer = tokio::spawn(async move {
-        while let Some(payload) = outbox.recv().await {
-            if sink
-                .send(Message::Text(payload.to_string().into()))
-                .await
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-    let seq = Arc::new(AtomicI64::new(-1));
-    let heartbeat_seq = seq.clone();
-    let heartbeat_out = out.clone();
-    let heartbeat = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(interval);
-        tick.tick().await;
-        loop {
-            tick.tick().await;
-            let last = heartbeat_seq.load(Ordering::Relaxed);
-            let d = if last >= 0 { json!(last) } else { Value::Null };
-            if heartbeat_out.send(json!({ "op": 1, "d": d })).is_err() {
-                break;
-            }
-        }
-    });
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        sink.send(Message::Text(identify.to_string().into())),
+    )
+    .await
+    .context("Discord Identify timed out")??;
+    let mut seq = Value::Null;
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut awaiting_ack = false;
     let mut me = String::new();
-    let result = loop {
-        let payload = match next_payload(&mut stream).await {
-            Ok(payload) => payload,
-            Err(err) => break Err(err),
+    loop {
+        let payload = tokio::select! {
+            payload = next_payload(&mut stream) => payload?,
+            _ = heartbeat.tick() => {
+                if awaiting_ack {
+                    bail!("Discord heartbeat ACK timed out; reconnecting");
+                }
+                send_heartbeat(&mut sink, &seq, interval).await?;
+                awaiting_ack = true;
+                continue;
+            }
         };
-        if let Some(s) = payload["s"].as_i64() {
-            seq.store(s, Ordering::Relaxed);
+        if !payload["s"].is_null() {
+            seq = payload["s"].clone();
         }
         match payload["op"].as_i64() {
             Some(0) => match payload["t"].as_str().unwrap_or("") {
@@ -479,28 +484,39 @@ async fn connect<M: Model + 'static, T: Tools + 'static>(
                     );
                 }
                 "MESSAGE_CREATE" => {
-                    if let Some(incoming) = parse_incoming(&payload["d"], &me) {
-                        handle(bot.clone(), gateway.clone(), incoming);
-                    }
+                    on_message(&payload["d"], &me);
                 }
                 _ => {}
             },
             // The gateway asks for a heartbeat now.
             Some(1) => {
-                let last = seq.load(Ordering::Relaxed);
-                let _ = out.send(
-                    json!({ "op": 1, "d": if last >= 0 { json!(last) } else { Value::Null } }),
-                );
+                send_heartbeat(&mut sink, &seq, interval).await?;
+                // Keep the next scheduled ACK deadline. Server requests must
+                // not postpone it indefinitely.
+                if !awaiting_ack {
+                    heartbeat.reset();
+                }
+                awaiting_ack = true;
             }
+            Some(11) => awaiting_ack = false,
             Some(7) => break Ok(()),
             Some(9) => break Err(anyhow::anyhow!("session invalidated; identifying again")),
             _ => {}
         }
-    };
-    heartbeat.abort();
-    drop(out);
-    writer.abort();
-    result
+    }
+}
+
+async fn send_heartbeat<S>(sink: &mut S, seq: &Value, deadline: Duration) -> Result<()>
+where
+    S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    tokio::time::timeout(
+        deadline,
+        sink.send(Message::Text(json!({"op": 1, "d": seq}).to_string().into())),
+    )
+    .await
+    .context("Discord heartbeat write timed out")??;
+    Ok(())
 }
 
 async fn next_payload<S>(stream: &mut S) -> Result<Value>
@@ -585,6 +601,85 @@ fn handle<M: Model + 'static, T: Tools + 'static>(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn gateway_reconnects_when_heartbeat_ack_is_missing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"op": 10, "d": {"heartbeat_interval": 1000}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            let identify = next_payload(&mut socket).await.unwrap();
+            assert_eq!(identify["op"], 2);
+            let heartbeat = next_payload(&mut socket).await.unwrap();
+            assert_eq!(heartbeat["op"], 1);
+            // Hold the socket open without an ACK: the client must end the session.
+            let _ = socket.next().await;
+        });
+        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(4),
+            gateway_session(socket, "test", |_, _| {}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error.to_string().contains("ACK timed out"), "{error:#}");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn gateway_acks_keep_connection_alive_and_sequence_is_reused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            for payload in [
+                json!({"op": 10, "d": {"heartbeat_interval": 1000}}),
+                json!({"op": 0, "t": "READY", "s": 42, "d": {"user": {"id": "1"}}}),
+            ] {
+                socket
+                    .send(Message::Text(payload.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(next_payload(&mut socket).await.unwrap()["op"], 2);
+            for _ in 0..3 {
+                let heartbeat = next_payload(&mut socket).await.unwrap();
+                assert_eq!(heartbeat, json!({"op": 1, "d": 42}));
+                socket
+                    .send(Message::Text(json!({"op": 11}).to_string().into()))
+                    .await
+                    .unwrap();
+            }
+            socket
+                .send(Message::Text(json!({"op": 7}).to_string().into()))
+                .await
+                .unwrap();
+        });
+        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            gateway_session(socket, "test", |_, _| {}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.await.unwrap();
+    }
+
     use super::*;
 
     #[test]

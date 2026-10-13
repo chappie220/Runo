@@ -51,6 +51,26 @@ fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sticker> {
 }
 
 impl Store {
+    pub fn image_asset_add(&self, path: &str, actor: &str, data: &[u8]) -> Result<()> {
+        let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, data);
+        self.runtime().execute(
+            "INSERT OR REPLACE INTO image_assets(path, created_by, digest) VALUES (?1, ?2, ?3)",
+            params![path, actor, digest.as_ref()],
+        )?;
+        Ok(())
+    }
+
+    pub fn image_asset_digest(&self, path: &str, actor: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .runtime()
+            .query_row(
+                "SELECT digest FROM image_assets WHERE path = ?1 AND created_by = ?2",
+                params![path, actor],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// Files `path` (already in the library) as a sticker of `identity`.
     pub fn sticker_add(
         &self,
@@ -119,7 +139,7 @@ impl Store {
     }
 }
 
-/// Copies the picture at `source` into the library and files it; drops the
+/// Copies the authorized picture bytes into the library and files it; drops the
 /// least used stickers of that mood beyond `per_mood`. Returns the new
 /// sticker's id and path.
 pub fn save(
@@ -128,15 +148,13 @@ pub fn save(
     identity: &str,
     mood: &str,
     description: &str,
-    source: &Path,
+    data: &[u8],
     per_mood: usize,
 ) -> Result<(i64, String)> {
     let mood = mood_key(mood)?;
-    let data =
-        std::fs::read(source).with_context(|| format!("cannot read {}", source.display()))?;
-    let mime = crate::imagegen::sniff(&data);
-    if !looks_like_image(&data) {
-        bail!("{} is not a picture", source.display());
+    let mime = crate::imagegen::sniff(data);
+    if !looks_like_image(data) {
+        bail!("sticker source is not a picture");
     }
     let extension = match mime {
         "image/jpeg" => "jpg",
@@ -150,7 +168,7 @@ pub fn save(
         file_safe(&mood),
         chrono::Local::now().format("%Y%m%d-%H%M%S%.3f")
     );
-    std::fs::write(workspace.join(&relative), &data)
+    std::fs::write(workspace.join(&relative), data)
         .with_context(|| format!("cannot save {relative}"))?;
     let id = store.sticker_add(identity, &mood, description, &relative)?;
     // Keep the library small: the newest stays, the least used go.
@@ -196,21 +214,10 @@ mod tests {
     fn stickers_are_kept_per_identity_and_mood_and_take_turns() {
         let store = Store::open_in_memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("drawn.png");
-        std::fs::write(&source, PNG).unwrap();
-        let (a, path) = save(
-            &store,
-            dir.path(),
-            "小白",
-            " Happy ",
-            "跳起来笑",
-            &source,
-            2,
-        )
-        .unwrap();
+        let (a, path) = save(&store, dir.path(), "小白", " Happy ", "跳起来笑", PNG, 2).unwrap();
         assert!(path.starts_with("stickers/happy-"), "{path}");
         assert_eq!(std::fs::read(dir.path().join(&path)).unwrap(), PNG);
-        let (b, _) = save(&store, dir.path(), "小白", "happy", "比耶", &source, 2).unwrap();
+        let (b, _) = save(&store, dir.path(), "小白", "happy", "比耶", PNG, 2).unwrap();
         assert_eq!(pick(&store, "小白", "HAPPY").unwrap().unwrap().id, a);
         store.sticker_used(a).unwrap();
         assert_eq!(pick(&store, "小白", "happy").unwrap().unwrap().id, b);
@@ -221,7 +228,7 @@ mod tests {
         );
         // A third beyond per_mood replaces the least used (b), file and all.
         let b_path = store.stickers_for("小白", "happy").unwrap()[0].path.clone();
-        let (c, _) = save(&store, dir.path(), "小白", "happy", "转圈", &source, 2).unwrap();
+        let (c, _) = save(&store, dir.path(), "小白", "happy", "转圈", PNG, 2).unwrap();
         let ids: Vec<i64> = store
             .stickers_for("小白", "happy")
             .unwrap()
@@ -237,13 +244,9 @@ mod tests {
     fn only_pictures_and_short_moods_are_saved() {
         let store = Store::open_in_memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let text = dir.path().join("note.txt");
-        std::fs::write(&text, "hello").unwrap();
-        assert!(save(&store, dir.path(), "x", "happy", "", &text, 3).is_err());
-        let png = dir.path().join("a.png");
-        std::fs::write(&png, PNG).unwrap();
-        assert!(save(&store, dir.path(), "x", " ", "", &png, 3).is_err());
-        assert!(save(&store, dir.path(), "x", &"m".repeat(30), "", &png, 3).is_err());
+        assert!(save(&store, dir.path(), "x", "happy", "", b"hello", 3).is_err());
+        assert!(save(&store, dir.path(), "x", " ", "", PNG, 3).is_err());
+        assert!(save(&store, dir.path(), "x", &"m".repeat(30), "", PNG, 3).is_err());
         assert_eq!(file_safe("开心/笑"), "开心-笑");
     }
 }

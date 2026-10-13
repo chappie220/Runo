@@ -23,7 +23,7 @@ pub const MAX_RESULT_CHARS: usize = 6000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TasksConfig {
-    /// Off: no task tools.
+    /// Off: no task tools and no new task claims; running work may finish.
     pub enabled: bool,
     /// Model calls one task may make (a turn gets `agent.max_steps`).
     pub max_steps: usize,
@@ -186,10 +186,17 @@ impl Store {
     }
 
     pub fn task_finish(&self, id: i64, state: &str, result: &str) -> Result<()> {
-        self.runtime().execute(
+        let mut conn = self.runtime();
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE tasks SET state = ?2, result = ?3, finished_at = ?4 WHERE id = ?1",
             params![id, state, result, now()],
         )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO task_reports(task_id) VALUES (?1)",
+            [id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -214,15 +221,70 @@ impl Store {
 
     /// Tasks left running by a process that ended: they did not finish.
     pub fn tasks_interrupted(&self) -> Result<Vec<Task>> {
-        let conn = self.runtime();
-        let mut stmt = conn.prepare(&format!(
+        let mut conn = self.runtime();
+        let tx = conn.transaction()?;
+        let mut stmt = tx.prepare(&format!(
             "UPDATE tasks SET state = 'failed', result = 'interrupted: the Gateway stopped while it ran',
              finished_at = ?1 WHERE state IN ('running', 'cancelling') RETURNING {COLUMNS}"
         ))?;
-        let found = stmt
+        let found: Vec<Task> = stmt
             .query_map([now()], row)?
             .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for task in &found {
+            tx.execute(
+                "INSERT OR IGNORE INTO task_reports(task_id) VALUES (?1)",
+                [task.id],
+            )?;
+        }
+        // A previous process may have died before or during delivery.
+        tx.execute(
+            "UPDATE task_reports SET state = 'pending' WHERE state = 'sending'",
+            [],
+        )?;
+        tx.commit()?;
         Ok(found)
+    }
+
+    pub fn task_reports_pending(&self) -> Result<Vec<Task>> {
+        let conn = self.runtime();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM tasks WHERE id IN
+             (SELECT task_id FROM task_reports WHERE state = 'pending') ORDER BY id"
+        ))?;
+        Ok(stmt.query_map([], row)?.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Atomically acquire a report so scheduler ticks cannot deliver it concurrently.
+    pub fn task_report_claim(&self, id: i64) -> Result<bool> {
+        Ok(self.runtime().execute(
+            "UPDATE task_reports SET state = 'sending' WHERE task_id = ?1 AND state = 'pending'",
+            [id],
+        )? == 1)
+    }
+
+    pub fn task_report_text(&self, id: i64) -> Result<Option<String>> {
+        Ok(self.runtime().query_row(
+            "SELECT text FROM task_reports WHERE task_id = ?1",
+            [id],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn task_report_save(&self, id: i64, text: &str) -> Result<()> {
+        self.runtime().execute(
+            "UPDATE task_reports SET text = ?2 WHERE task_id = ?1",
+            params![id, text],
+        )?;
+        Ok(())
+    }
+
+    pub fn task_report_complete(&self, id: i64, delivered: bool) -> Result<()> {
+        self.runtime().execute(
+            "UPDATE task_reports SET state = ?2 WHERE task_id = ?1",
+            params![id, if delivered { "delivered" } else { "pending" }],
+        )?;
+        Ok(())
     }
 }
 

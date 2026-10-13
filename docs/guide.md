@@ -752,6 +752,9 @@ consistent style (from the drawing profile, else clean chibi), a transparent
 square picture, an existing sticker passed as a reference so the set
 matches; `sticker_save` then files the picture under its mood in
 `workspace/stickers/`. Stickers belong to the identity that saved them.
+With only `image_generate` permission, a person can import their own
+unchanged generated pictures. Importing other files requires `files_read`;
+absolute paths, parent paths and symlinks do not bypass that check.
 
 ```toml
 [stickers]
@@ -898,6 +901,14 @@ results; `task_cancel` stops one. Tools set to `ask` are declined in a
 task, since nobody is there to approve. A task the Gateway was running when
 it stopped is reported as interrupted at the next start. Tasks need
 `serve`, and the `cron` [capability](#access).
+
+Task results and pending reports are saved separately. Failed delivery is
+retried on scheduler ticks, including after a restart, without rerunning
+the work or regenerating an already saved report. Delivery is at least
+once: if the process stops after the chat app accepts a message but before
+that success is saved locally, the report may be sent again.
+Setting `tasks.enabled = false` pauses waiting tasks and hides task tools;
+running tasks may finish, and cancellations and pending reports still run.
 
 ```toml
 [tasks]
@@ -1127,8 +1138,12 @@ of 0.5 the identity, its diary and drawing profile are retired (kept in
 `soul.sqlite`), and all conversations are archived (`sessions_0_4` and
 `messages_0_4` in `chats.sqlite`); the agent then asks who it should be, as
 on a new install. Memories of the people it talks to, scheduled jobs and
-spending records stay. Take a `runo backup` first if you may want to go
-back to 0.4 with the old conversations.
+spending records stay. Before migrating a complete 0.4 store, 0.5 automatically
+saves the three databases and the state directory's `config.toml` to
+`<state>/before-0.5.tar.gz`. Migration stops if that backup fails; later
+starts do not overwrite it. It excludes workspace files and any config
+kept elsewhere. Before upgrading, also take a full `openclaw-rs backup`
+for those files. An already migrated 0.5 store cannot create a 0.4 backup.
 
 The simplest way over is the update script, which installs runo and moves
 everything:
@@ -1146,9 +1161,28 @@ reminder at start.
 
 A service that set its own state directory (`OPENCLAW_RS_HOME` other than
 `~/.openclaw-rs`) keeps it; only the default directory moves. The conf.d
-file sets each variable under both names, so going back to 0.4
-(`update.sh --version 0.4.1`, then `rc-service runo restart`) finds the
-same state and token. Backups made by openclaw-rs restore as they are.
+file sets each variable under both names, so 0.4 finds the same state and
+token. **Replacing the binary alone cannot downgrade the database schema.**
+To return to 0.4, stop the service and use the **0.5 binary** to restore a
+pre-upgrade backup before replacing it:
+
+```sh
+rc-service runo stop
+runo backup ~/runo-0.5-before-downgrade.tar.gz
+runo restore ~/.runo/before-0.5.tar.gz --force
+sh scripts/update.sh --version 0.4.1
+rc-service runo start
+```
+
+Run backup/restore as the service account, with the same `RUNO_HOME` and
+config arguments the service uses; replace `~/.runo` with its actual state
+directory. Do not start 0.5 between restore and replacement:
+it would migrate the restored databases again. Restoration returns the
+persona, conversations, memories, jobs and usage to the backup's point in
+time; newer state is kept in the separate 0.5 backup and in the restore's
+`before-restore-*` directory. Without a pre-upgrade backup, stay on 0.5;
+changing SQLite's version number does not undo migrations. Backups made
+by openclaw-rs restore as they are.
 
 ## Backup and restore
 
