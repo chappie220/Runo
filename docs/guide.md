@@ -22,9 +22,13 @@ Runo (formerly openclaw-rs) is a single-binary Rust rewrite of OpenClaw. No plug
 | Image generation (ChatGPT plan or OpenRouter), sent to the chat | ✅ |
 | Backup and restore (`backup`, `restore`) | ✅ |
 | Voice messages to text (QQ, email, Web UI) | ✅ |
-| Speaking: voice messages in the character's voice (QQ, Web UI, Zulip) | ✅ |
+| Speaking: voice messages in the character's voice (QQ, Telegram, Discord, Zulip, Web UI) | ✅ |
 | A sticker library the character draws once and reuses by mood | ✅ |
 | Memory search by meaning (embeddings in SQLite, mixed with keywords) | ✅ |
+| Background tasks that report back when done | ✅ |
+| Status page in the Web UI (spending, mood, diary, profiles, jobs, tasks) | ✅ |
+| Telegram and Discord bots | ✅ |
+| Persona checks with a judge model (`eval`) | ✅ |
 | MCP client (stdio and Streamable HTTP servers) | ✅ |
 | Skills (`SKILL.md`, compatible with OpenClaw and Agent Skills) | ✅ |
 | Spending limits (daily, monthly, per guest, per turn) | ✅ |
@@ -407,6 +411,17 @@ clients) and answers `/` with 404; `web = "off"` opens no port at all, and
 on such a host with `runo tui`. `serve --web off` does the same for
 one run.
 
+### Status page
+
+**Status** at the top of the Web UI's sidebar shows how the agent is doing,
+on a phone as well: what it spent today and this month (and today by kind:
+turns, summaries, pictures, speech, embeddings), its mood and the last
+week of its diary, its saved drawing and voice profiles, its stickers, how
+many memories it keeps, background tasks and scheduled jobs, and which of
+heartbeat, inner life, voice messages, stickers, tasks and memory by meaning
+are on. It reads `/api/status`, which takes the same token as the
+WebSocket (`?token=`).
+
 ## Images and files
 
 Files sent with a message are saved in the workspace as
@@ -475,7 +490,8 @@ The agent can also talk back. With a speech model set, it gets
 says a short text in the agent's voice, and it goes out as a voice message:
 
 - **QQ:** a voice message (QQ takes the mp3 as it is).
-- **Web UI:** a player in the conversation. **Zulip:** an uploaded mp3.
+- **Telegram:** a voice message. **Discord, Zulip:** an mp3 attachment.
+- **Web UI:** a player in the conversation.
 - **Feishu, terminal, email:** they cannot play one; the tool says so, the
   agent answers in text, and the mp3 stays in `workspace/voice/`.
 
@@ -868,6 +884,29 @@ runo cron remove check-in
 The model can also create, list and remove jobs (`cron_add`, `cron_list`,
 `cron_remove`); a job it creates runs in the conversation that asked for it.
 
+## Background tasks
+
+Long work ("look through this week's sources and write it up") does not
+have to hold up the conversation. The model starts it with `task_start`
+(a title and everything the task needs to know) and says so; the Gateway's
+scheduler runs it in its own session, `task:<id>` (readable in the Web UI),
+with the permissions of whoever asked and up to `max_steps` model calls
+instead of a turn's `agent.max_steps`. When it ends, the agent tells the
+conversation where it was asked, in its own words, and the chat app (QQ,
+Telegram, …) delivers it like a heartbeat. `task_list` shows tasks and their
+results; `task_cancel` stops one. Tools set to `ask` are declined in a
+task, since nobody is there to approve. A task the Gateway was running when
+it stopped is reported as interrupted at the next start. Tasks need
+`serve`, and the `cron` [capability](#access).
+
+```toml
+[tasks]
+enabled = true
+max_steps = 80     # model calls one task may make
+concurrent = 2     # tasks running at once
+max_open = 5       # tasks one person may have waiting or running
+```
+
 ## Time sense
 
 Each message reaches the model with the local time (the host's time zone; set
@@ -959,8 +998,9 @@ Owners can change the companion settings by asking, in QQ or anywhere else:
 "say good morning at 9", "don't message me first any more", "no messages
 after 22:00", "my birthday is March 14", "send each reply as one message".
 The model uses the `settings` tool, which can show and change only these:
-time sense, the heartbeat and inner-life settings, `qq.split_replies` and
-`language`. Keys, permissions, `access` and everything else stay with
+time sense, the heartbeat and inner-life settings, `qq.split_replies` (and
+the other chat apps'), `language`, and whether the agent sends voice messages
+(`speech.enabled`) and stickers (`stickers.enabled`) — "别发语音了", "可以发表情包". Keys, permissions, `access` and everything else stay with
 `runo config`. Each change is checked like one made in the editor
 (a bad time or a session that is not an owner's is refused), written to
 config.toml with its comments kept, and applied at once without a restart:
@@ -1080,6 +1120,15 @@ name, and the old names keep working as links:
 | service `openclaw-rs` (`/etc/init.d`, or `~/.config/rc/init.d`) | service `runo`, with the same conf.d settings and secrets | `runo update` or `runo migrate` (asks for root for the system service) |
 | `OPENCLAW_RS_HOME`, `OPENCLAW_RS_TOKEN` | `RUNO_HOME`, `RUNO_TOKEN` | the old names are still read for now; the service's conf.d file sets both |
 | `OPENCLAW_REPO`, `OPENCLAW_*_URL` (scripts) | `RUNO_REPO`, `RUNO_*_URL` | the old names are still read for now |
+
+**0.5 starts the persona and every conversation over.** On the first start
+of 0.5 the identity, its diary and drawing profile are retired (kept in
+`identity_retired`, `diary_retired` and `drawing_profile_retired` in
+`soul.sqlite`), and all conversations are archived (`sessions_0_4` and
+`messages_0_4` in `chats.sqlite`); the agent then asks who it should be, as
+on a new install. Memories of the people it talks to, scheduled jobs and
+spending records stay. Take a `runo backup` first if you may want to go
+back to 0.4 with the old conversations.
 
 The simplest way over is the update script, which installs runo and moves
 everything:
@@ -1226,8 +1275,56 @@ attached. Zulip has no buttons for bots, so an owner (`zulip:<email>`) answers
 
 Both channels split chatty replies like QQ (`split_replies`), send scheduled
 job results and heartbeats to their sessions, and are checked by `doctor`.
-The heartbeat and inner life reach the first owner on QQ, Feishu or Zulip
-(in the order of `access.owners`) unless `session` says otherwise.
+The heartbeat and inner life reach the first owner on QQ, Feishu, Zulip,
+Telegram or Discord (in the order of `access.owners`) unless `session` says
+otherwise.
+
+## Telegram
+
+1. Talk to [@BotFather](https://t.me/BotFather): `/newbot`, and note the
+   token. In a group the bot only sees messages that mention it unless you
+   turn its privacy mode off (`/setprivacy`), which it does not need.
+2. Configure and restart `serve`:
+
+```toml
+[telegram]
+enabled = true
+# token = "..."     # prefer TELEGRAM_BOT_TOKEN
+proxy = true        # through network.proxy, where Telegram is blocked
+allow = []          # user ids, @usernames or group chat ids
+```
+
+The bot long-polls `getUpdates`, so it needs no public address. Private
+chats are `telegram:dm:<user id>` (the owner is `telegram:<user id>`;
+`first_chat_owner` works as for QQ); groups are `telegram:group:<chat id>`,
+answered when the bot is @-mentioned or replied to. Photos, files and voice
+messages that come in are attachments (voice is transcribed); pictures go
+out with `sendPhoto` and [voice messages](#speaking) as real voice messages.
+An owner answers `ask` tools with `是`/`yes` or `否`/`no`.
+
+## Discord
+
+1. In the [Developer Portal](https://discord.com/developers/applications),
+   create an application, add a **Bot**, turn on **Message Content Intent**,
+   copy the token, and invite it with the `bot` scope and the Send Messages
+   and Attach Files permissions.
+2. Configure and restart `serve`:
+
+```toml
+[discord]
+enabled = true
+# token = "..."     # prefer DISCORD_BOT_TOKEN
+proxy = true        # through network.proxy, where Discord is blocked
+allow = []          # user ids or channel ids
+```
+
+The bot connects to Discord's Gateway (a WebSocket, so again no public
+address). Direct messages are `discord:dm:<user id>` (the owner is
+`discord:<user id>`); server channels are `discord:channel:<channel id>`,
+answered when the bot is @-mentioned or replied to. Attachments come in as
+files (voice messages are transcribed); pictures and voice messages go out
+as attachments. Replies never ping anyone. An owner answers `ask` tools with
+`是`/`yes` or `否`/`no`.
 
 ## Email
 
@@ -1361,7 +1458,7 @@ section (also offered by `init`) removes the owner you pick; with
 `first_chat_owner` on, the next private chat on that app claims it again.
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
-`memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
+`memory`, `cron` (also background tasks), `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
 `mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)),
 `image_generate` (see [Image generation](#image-generation); also `sticker_save`),
 `voice` (`voice_send`, see [Speaking](#speaking)). `shell`, `files_write`, `identity` and `mail` still follow
@@ -1733,6 +1830,48 @@ Each verdict is logged with the command, and the reviewer's rating appears on
 the approval prompt and at the top of the command's output. The command, the
 shell and the working directory are sent to the reviewer, nothing else from
 the conversation.
+
+## Checking the persona
+
+`cargo test` checks the code; `runo eval` checks the behaviour, which
+changes with every edit to a prompt, a skill or the identity. It plays
+scripted conversations against the saved identity in a scratch copy of the
+state (identity, drawing and voice profiles and memories are copied;
+nothing real is touched, MCP servers are not started, memories are recalled
+by keyword), and checks:
+
+- **leaks**: a reply that repeats a sentence of the system prompt or
+  SOUL.md fails;
+- **repeated research**: `max_calls` limits tools per scenario, e.g. no
+  `web_search` when a drawing or voice profile is saved. Tools that reach
+  outside (search, browser, pictures, voice, shell, files, settings…) are
+  counted but not run;
+- **staying in character**: a judge model (`--judge`, else
+  `agent.summary_model`, else the main model) checks the replies against
+  each scenario's criteria: sounds like the character, does not turn into an
+  assistant over a long conversation, does not name a model or prompt.
+
+```sh
+runo eval                       # built-in scenarios + <workspace>/evals/*.toml
+runo eval my-scenarios.toml --judge openai/gpt-5-mini
+```
+
+It prints ✓/✗ per scenario with the reasons, saves the transcripts to
+`<state>/evals/<time>.json`, and exits 1 when one failed, so it can run
+after every change. Scenarios are TOML; see
+[the built-in ones](../evals/persona.toml):
+
+```toml
+[[scenario]]
+name = "goodnight"
+turns = ["我要睡了", "晚安"]
+criteria = ["Says good night as {name} would", "Stays short"]
+max_calls = { web_search = 0 }
+# leak = true                       # default
+# requires = "voice_profile"        # skipped unless one is saved
+```
+
+It costs a few model calls per scenario.
 
 ## Development
 

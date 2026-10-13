@@ -1052,8 +1052,8 @@ const GROUPS: &[Group] = &[
                         path: &["speech", "enabled"],
                         label: tr("voice_send tool", "voice_send 工具"),
                         help: tr(
-                            "The agent can speak: it sends voice messages on QQ (and a player in the Web UI and Zulip). Needs an OpenRouter key.",
-                            "智能体可以说话：在 QQ 上发语音消息（Web UI 和 Zulip 里是播放器）。需要 OpenRouter key。",
+                            "The agent can speak: voice messages on QQ and Telegram, an mp3 on Discord and Zulip, a player in the Web UI. Can also be switched in chat. Needs an OpenRouter key.",
+                            "智能体可以说话：QQ 和 Telegram 上是语音消息，Discord 和 Zulip 上是 mp3，Web UI 里是播放器。也可以在聊天里开关。需要 OpenRouter key。",
                         ),
                         kind: Kind::Bool,
                     },

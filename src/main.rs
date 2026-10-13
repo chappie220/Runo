@@ -16,6 +16,7 @@ mod discord;
 mod doctor;
 mod elevate;
 mod embed;
+mod eval;
 mod feishu;
 mod fetch;
 mod gateway;
@@ -140,6 +141,14 @@ enum Command {
     },
     /// Guided first-time setup: language, OpenRouter key, model.
     Init,
+    /// Check that the persona stays in character, keeps its prompt and does not research again.
+    Eval {
+        /// Scenario files (default: the built-in ones and <workspace>/evals/*.toml).
+        files: Vec<PathBuf>,
+        /// Model that judges the replies (default: agent.summary_model, else the main model).
+        #[arg(long)]
+        judge: Option<String>,
+    },
     /// Check that the key, models, browser, channels and service work.
     Doctor {
         /// Only read the config and this host; contact nothing.
@@ -681,6 +690,12 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Eval { files, judge } => {
+            if !eval_command(&config, &config_path, &state, &store, &files, judge).await? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Usage { days } => {
             let since = store::now() - i64::from(days) * 86_400;
             print!(
@@ -945,6 +960,109 @@ async fn build_agent(
             ..config.agent.clone()
         },
     })
+}
+
+/// `runo eval`: plays the scenarios against a scratch copy of the persona
+/// (identity, profiles and memories; nothing outside is touched) and says
+/// how each went. `false` when one failed.
+async fn eval_command(
+    config: &Config,
+    config_path: &Path,
+    state: &Path,
+    store: &Store,
+    files: &[PathBuf],
+    judge: Option<String>,
+) -> Result<bool> {
+    let identity = store
+        .identity()?
+        .context("there is no identity to check yet: set one up first (runo identity set)")?;
+    let workspace = config
+        .tools
+        .workspace
+        .clone()
+        .unwrap_or_else(|| state.join("workspace"));
+    let scenarios = eval::load(files, &workspace)?;
+    let scratch = std::env::temp_dir().join(format!("runo-eval-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let scratch_store = Store::open(&scratch.join("state"))?;
+    scratch_store.identity_set(&identity)?;
+    if let Some(profile) = store.drawing_profile(&identity.name)? {
+        scratch_store.drawing_profile_set(&identity.name, &profile)?;
+    }
+    if let Some((voice, how)) = store.voice_profile(&identity.name)? {
+        scratch_store.voice_profile_set(&identity.name, &voice, &how)?;
+    }
+    for memory in store.memory_list(500)?.into_iter().rev() {
+        scratch_store.memory_save(&memory.content)?;
+    }
+    // The scratch workspace has the same skills; MCP servers are not started.
+    let scratch_workspace = scratch.join("workspace");
+    copy_dir(
+        &workspace.join(skills::DIR),
+        &scratch_workspace.join(skills::DIR),
+    )?;
+    let mut scratch_config = config.clone();
+    scratch_config.tools.workspace = Some(scratch_workspace);
+    scratch_config.mcp.servers.clear();
+    // Memories are copied without their vectors: recall is by keyword here.
+    scratch_config.embedding.model = None;
+    let built = build_agent(
+        &scratch_config,
+        config_path,
+        &scratch.join("state"),
+        scratch_store,
+    )
+    .await?;
+    let agent = agent::Agent {
+        model: built.model,
+        summarizer: built.summarizer,
+        vision: built.vision,
+        voice: built.voice,
+        tools: eval::EvalTools::new(built.tools),
+        store: built.store,
+        config: built.config,
+    };
+    let judge_model = judge
+        .or_else(|| config.agent.summary_model.clone())
+        .filter(|m| !m.trim().is_empty());
+    let judge = match judge_model {
+        Some(model) => llm::Client::new(&config.side_model(&model), config.model_key()?)?,
+        None => llm::Client::new(&config.model, config.model_key()?)?,
+    };
+    let base = config.agent.system_prompt.clone();
+    let fragments = eval::secret_fragments(&base, &identity);
+    let mut outcomes = Vec::new();
+    for scenario in &scenarios {
+        eprintln!("eval: {} …", scenario.name);
+        outcomes.push(eval::run_scenario(&agent, &judge, &identity, &fragments, scenario).await);
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    print!("{}", eval::report(&outcomes));
+    let reports = state.join("evals");
+    std::fs::create_dir_all(&reports)?;
+    let file = reports.join(format!(
+        "{}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    std::fs::write(&file, serde_json::to_string_pretty(&outcomes)?)?;
+    eprintln!("eval: transcripts saved to {}", file.display());
+    Ok(outcomes.iter().all(|o| o.passed || o.skipped))
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(to)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            copy_dir(&path, &to.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 /// A file named on the command line, to send with a message.

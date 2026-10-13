@@ -157,6 +157,13 @@ const COMMANDS: &[(&str, Tr)] = &[
         tr("Delete a fact by id", "按编号删除一条记忆"),
     ),
     (
+        "eval",
+        tr(
+            "Check that the persona stays in character, keeps its prompt and does not research again",
+            "检查人设：有没有跑偏、有没有泄露提示词、有没有重复研究人设",
+        ),
+    ),
+    (
         "doctor",
         tr(
             "Check that the key, models, browser, channels and service work",
@@ -364,6 +371,22 @@ const ARGS: &[(&str, &str, Tr)] = &[
         tr(
             "Replace an existing config and state; what is replaced is moved aside",
             "替换现有的配置和数据；被替换的文件会移到一旁",
+        ),
+    ),
+    (
+        "eval",
+        "files",
+        tr(
+            "Scenario files (default: the built-in ones and <workspace>/evals/*.toml)",
+            "场景文件（默认：内置场景和 <workspace>/evals/*.toml）",
+        ),
+    ),
+    (
+        "eval",
+        "judge",
+        tr(
+            "Model that judges the replies (default: agent.summary_model, else the main model)",
+            "评判回复的模型（默认：agent.summary_model，否则用主模型）",
         ),
     ),
     (
