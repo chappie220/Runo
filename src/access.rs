@@ -46,10 +46,13 @@ pub enum Capability {
     /// `image_generate`: draws pictures, which spends the image model's
     /// credits or the ChatGPT plan's image quota.
     ImageGenerate,
+    /// `voice_send`: speaks messages aloud, which spends the speech
+    /// model's credits.
+    Voice,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 14] = [
+    pub const ALL: [Capability; 15] = [
         Capability::Shell,
         Capability::FilesRead,
         Capability::FilesWrite,
@@ -64,6 +67,7 @@ impl Capability {
         Capability::Mail,
         Capability::Settings,
         Capability::ImageGenerate,
+        Capability::Voice,
     ];
 
     /// The capability a built-in tool needs; `None` for tools anyone may call.
@@ -73,7 +77,8 @@ impl Capability {
             "read_file" | "list_dir" => Capability::FilesRead,
             "write_file" | "edit_file" => Capability::FilesWrite,
             "memory_save" | "memory_search" | "memory_delete" => Capability::Memory,
-            "cron_add" | "cron_list" | "cron_remove" => Capability::Cron,
+            "cron_add" | "cron_list" | "cron_remove" | "task_start" | "task_list"
+            | "task_cancel" => Capability::Cron,
             "identity_set" | "identity_propose" => Capability::Identity,
             "web_search" => Capability::WebSearch,
             "browser" => Capability::Browser,
@@ -81,7 +86,8 @@ impl Capability {
             "skill" => Capability::Skills,
             "send_mail" => Capability::Mail,
             "settings" => Capability::Settings,
-            "image_generate" | "drawing_profile_save" => Capability::ImageGenerate,
+            "image_generate" | "drawing_profile_save" | "sticker_save" => Capability::ImageGenerate,
+            "voice_send" | "voice_profile_save" => Capability::Voice,
             name if crate::mcp::is_mcp_tool(name) => Capability::Mcp,
             _ => return None,
         })

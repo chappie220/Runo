@@ -1,5 +1,5 @@
 //! Skills: instructions for particular tasks, in the `SKILL.md` format of
-//! Agent Skills and OpenClaw, so most published skills work as they are.
+//! Agent Skills and Runo, so most published skills work as they are.
 //!
 //! Each skill is a directory `<workspace>/skills/<name>/` holding a
 //! `SKILL.md` (front matter with `name` and `description`, then the steps)
@@ -34,10 +34,14 @@ const MAX_LISTED: usize = 100;
 /// Drawing as the agent's character, built in and offered while
 /// `image_generate` is.
 pub const DRAWING: &str = include_str!("../skills/drawing/SKILL.md");
+/// The built-in voice skill, offered while `voice_send` is.
+pub const VOICE: &str = include_str!("../skills/voice/SKILL.md");
+/// The built-in stickers skill, offered while stickers can be drawn.
+pub const STICKERS: &str = include_str!("../skills/stickers/SKILL.md");
 
 const NONE: Tr = tr(
-    "No skills installed. Install one with `openclaw-rs skills install <directory or git URL>`, or put it in {}",
-    "还没有安装 skill。用 `openclaw-rs skills install <目录或 git 地址>` 安装，或者直接放到 {}",
+    "No skills installed. Install one with `runo skills install <directory or git URL>`, or put it in {}",
+    "还没有安装 skill。用 `runo skills install <目录或 git 地址>` 安装，或者直接放到 {}",
 );
 const READY: Tr = tr("ready", "可用");
 const OFF: Tr = tr("off (skills.disabled)", "已关闭（skills.disabled）");
@@ -359,7 +363,7 @@ fn list_files(dir: &Path, prefix: &Path, out: &mut Vec<String>, cap: usize) {
 /// The top-level keys of a YAML front matter block and the text after it.
 /// Handles what SKILL.md files use: `key: value` (plain or quoted), block
 /// scalars (`|`, `>`), and a key whose value is on the indented lines below
-/// it (OpenClaw writes `metadata` as JSON there).
+/// it (Runo writes `metadata` as JSON there).
 pub fn front_matter(text: &str) -> (BTreeMap<String, String>, &str) {
     let mut keys = BTreeMap::new();
     let text = text.trim_start_matches('\u{feff}');

@@ -1,7 +1,7 @@
 fn main() {
     // The target triple, so `update` picks the matching release binary.
     println!(
-        "cargo:rustc-env=OPENCLAW_TARGET={}",
+        "cargo:rustc-env=RUNO_TARGET={}",
         std::env::var("TARGET").unwrap_or_default()
     );
     // The release number, which may have a fourth part Cargo does not allow.
@@ -14,17 +14,17 @@ fn main() {
     let number = number.split_once('-').map_or(number, |(n, _)| n);
     assert!(
         number == version || number.starts_with(&format!("{version}.")),
-        "package.metadata.openclaw.release {release} must be {version} or {version}.<n>, optionally with a leading a or b and a -<revision>"
+        "package.metadata.runo.release {release} must be {version} or {version}.<n>, optionally with a leading a or b and a -<revision>"
     );
-    println!("cargo:rustc-env=OPENCLAW_VERSION={release}");
+    println!("cargo:rustc-env=RUNO_VERSION={release}");
 }
 
-/// `release = "..."` in `[package.metadata.openclaw]`.
+/// `release = "..."` in `[package.metadata.runo]`.
 fn release(manifest: &str) -> Option<String> {
     let mut inside = false;
     for line in manifest.lines().map(str::trim) {
         if line.starts_with('[') {
-            inside = line == "[package.metadata.openclaw]";
+            inside = line == "[package.metadata.runo]";
             continue;
         }
         if !inside {

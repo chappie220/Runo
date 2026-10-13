@@ -225,14 +225,20 @@ impl ZulipBot {
             chrono::Local::now().format("%Y%m%d-%H%M%S"),
             mime.rsplit('/').next().unwrap_or("png")
         );
-        let (kind, body) = crate::net::multipart(&[(
-            "file",
-            crate::net::Part::File {
-                name: &name,
-                mime,
-                data,
-            },
-        )]);
+        self.send_upload(target, &name, mime, data).await
+    }
+
+    /// Uploads a file and sends a message linking it (Zulip shows a player
+    /// for audio and the picture for images).
+    pub async fn send_upload(
+        &self,
+        target: &Target,
+        name: &str,
+        mime: &str,
+        data: &[u8],
+    ) -> Result<()> {
+        let (kind, body) =
+            crate::net::multipart(&[("file", crate::net::Part::File { name, mime, data })]);
         let path = "/api/v1/user_uploads";
         let request = self
             .request(reqwest::Method::POST, path)
@@ -242,7 +248,7 @@ impl ZulipBot {
         let uri = uploaded["url"]
             .as_str()
             .or_else(|| uploaded["uri"].as_str())
-            .context("Zulip returned no address for the picture")?;
+            .context("Zulip returned no address for the upload")?;
         let mut pairs = target.address();
         pairs.push(("content", format!("[{name}]({uri})")));
         self.post("/api/v1/messages", &pairs).await?;
@@ -423,6 +429,18 @@ impl Approver for ZulipApprover {
         let prompt = crate::i18n::chat::APPROVAL_ASK.with(&[tool, &format!("```\n{shown}\n```")]);
         let asked = self.bot.send(&self.target, &prompt).await;
         self.bot.approvals.wait(&session, asked, answer).await
+    }
+
+    fn plays_voice(&self) -> bool {
+        true
+    }
+
+    async fn send_voice(&self, mime: &str, data: &[u8]) -> Result<bool> {
+        let name = format!("voice-{}.mp3", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+        self.bot
+            .send_upload(&self.target, &name, mime, data)
+            .await?;
+        Ok(true)
     }
 
     async fn send_image(&self, mime: &str, data: &[u8]) -> Result<bool> {

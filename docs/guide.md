@@ -1,6 +1,6 @@
-# openclaw-rs guide
+# Runo guide
 
-Single-binary Rust rewrite of OpenClaw. No plugins: every feature is built in.
+Runo (formerly openclaw-rs) is a single-binary Rust rewrite of OpenClaw. No plugins: every feature is built in.
 
 ## Scope
 
@@ -22,6 +22,13 @@ Single-binary Rust rewrite of OpenClaw. No plugins: every feature is built in.
 | Image generation (ChatGPT plan or OpenRouter), sent to the chat | ✅ |
 | Backup and restore (`backup`, `restore`) | ✅ |
 | Voice messages to text (QQ, email, Web UI) | ✅ |
+| Speaking: voice messages in the character's voice (QQ, Telegram, Discord, Zulip, Web UI) | ✅ |
+| A sticker library the character draws once and reuses by mood | ✅ |
+| Memory search by meaning (embeddings in SQLite, mixed with keywords) | ✅ |
+| Background tasks that report back when done | ✅ |
+| Status page in the Web UI (spending, mood, diary, profiles, jobs, tasks) | ✅ |
+| Telegram and Discord bots | ✅ |
+| Persona checks with a judge model (`eval`) | ✅ |
 | MCP client (stdio and Streamable HTTP servers) | ✅ |
 | Skills (`SKILL.md`, compatible with OpenClaw and Agent Skills) | ✅ |
 | Spending limits (daily, monthly, per guest, per turn) | ✅ |
@@ -40,7 +47,7 @@ The script picks the binary for this machine, checks it against the
 release's `SHA256SUMS` and that it runs, and installs it to
 `/usr/local/bin`. Run as an ordinary user, it writes there through `sudo` or
 `doas`, which ask for your password; with neither (or no terminal) it uses
-`~/.local/bin`. A first install then runs `openclaw-rs init` right away. It
+`~/.local/bin`. A first install then runs `runo init` right away. It
 needs `curl` or `wget` (on Alpine: `apk add curl`). Options, after `sh -s --`:
 
 ```sh
@@ -63,7 +70,7 @@ Alpine uses musl, so build a static binary. Cross-compile from any Linux host:
 rustup target add aarch64-unknown-linux-musl
 pip install ziglang && cargo install cargo-zigbuild
 cargo zigbuild --release --target aarch64-unknown-linux-musl
-scp target/aarch64-unknown-linux-musl/release/openclaw-rs pi:/usr/local/bin/
+scp target/aarch64-unknown-linux-musl/release/runo pi:/usr/local/bin/
 ```
 
 Or build on the Pi itself: `apk add cargo build-base && cargo build --release`.
@@ -74,8 +81,8 @@ Or use a release binary, with the [install script](#install).
 
 ```sh
 cargo build --release
-./target/release/openclaw-rs init     # guided setup, about a minute
-./target/release/openclaw-rs chat
+./target/release/runo init     # guided setup, about a minute
+./target/release/runo chat
 ```
 
 `init` takes eight short steps and saves `<state dir>/config.toml` (mode
@@ -102,7 +109,7 @@ back); piped input still takes typed numbers:
 7. whether to turn on the companion ([heartbeat](#heartbeat) and
    [inner life](#inner-life)), and if so your city, birthday and quiet hours;
 8. whether to start the Gateway (Web UI, QQ, email) now, as with
-   `openclaw-rs gateway install` (see [Gateway service](#gateway-service)).
+   `runo gateway install` (see [Gateway service](#gateway-service)).
 
 It also says whether a browser was found, and when none is, offers to
 install Chromium with the system's package manager (apk, apt-get, dnf,
@@ -111,15 +118,15 @@ nothing is picked for you. Running `chat`, `ask` or `serve` in a terminal
 before setting up starts `init` on its own and then carries on; without a
 terminal (a service, a pipe) they stop with a message pointing to `init`.
 Run it again any time to change these; everything else is in
-`openclaw-rs config`, and settings already in the file are kept.
+`runo config`, and settings already in the file are kept.
 
 ```sh
-./target/release/openclaw-rs ask "hello"
-./target/release/openclaw-rs chat --session work
-./target/release/openclaw-rs tui              # full-screen chat, see below
-./target/release/openclaw-rs sessions
-./target/release/openclaw-rs memory add "Prefers answers in Chinese"
-./target/release/openclaw-rs memory search chinese
+./target/release/runo ask "hello"
+./target/release/runo chat --session work
+./target/release/runo tui              # full-screen chat, see below
+./target/release/runo sessions
+./target/release/runo memory add "Prefers answers in Chinese"
+./target/release/runo memory search chinese
 ```
 
 ## ChatGPT subscription
@@ -129,15 +136,15 @@ Pro, Team, …) the way the Codex CLI does: signed in with your ChatGPT
 account and billed to the plan's Codex allowance.
 
 ```sh
-openclaw-rs login             # sign in in a browser
-openclaw-rs login --device    # or enter a code at auth.openai.com/codex/device on any device
-openclaw-rs login --import    # or take the Codex CLI's sign-in (~/.codex/auth.json)
-openclaw-rs login --status    # who is signed in
-openclaw-rs login --logout
+runo login             # sign in in a browser
+runo login --device    # or enter a code at auth.openai.com/codex/device on any device
+runo login --import    # or take the Codex CLI's sign-in (~/.codex/auth.json)
+runo login --status    # who is signed in
+runo login --logout
 ```
 
-`openclaw-rs init` offers the sign-in as its second step, and
-`openclaw-rs config` has it under Model › Provider and sign-in › ChatGPT
+`runo init` offers the sign-in as its second step, and
+`runo config` has it under Model › Provider and sign-in › ChatGPT
 account (in a browser, or with a code), so there is no separate command to
 remember.
 
@@ -156,7 +163,7 @@ then sets `model.provider = "chatgpt"` with no editing of config.toml.
 No model name is written into the program: the models come from ChatGPT's
 own list of what your plan offers (the one Codex reads). When the model
 was an OpenRouter id, `login` takes the list's default (its first), and
-`init` and `openclaw-rs config` (Model › Provider and sign-in › Model)
+`init` and `runo config` (Model › Provider and sign-in › Model)
 let you pick from the list. The model is typed only when the list
 cannot be read. The thinking level is picked the same way (see
 [Thinking level](#thinking-level)).
@@ -183,16 +190,16 @@ same private backend as the Codex CLI, which OpenAI may change.
 
 ## Terminal UI
 
-`openclaw-rs tui [--session NAME]` is a full-screen chat. Like `chat`, the
+`runo tui [--session NAME]` is a full-screen chat. Like `chat`, the
 agent runs in that process, so it needs no Gateway and works over SSH next to
 one running with `gateway.web = "off"`.
 
 ```
-╭ Sessions ─────────╮╭ ✻ OpenClaw · main ──────────── anthropic/claude-sonnet-4.5 ╮
+╭ Sessions ─────────╮╭ ✻ Runo · main ──────────────── anthropic/claude-sonnet-4.5 ╮
 │▸ main          24 ││ ▌ You                                                     │
 │  work          12 ││ ▌ how much disk is left?                                  │
 │  mail:me@x.org  3 ││                                                           │
-│                   ││ ✻ OpenClaw                                                │
+│                   ││ ✻ Runo                                                    │
 │                   ││   ▸ shell {"command":"df -h /"}                    ✓ 0.2s │
 │                   ││                                                           │
 │                   ││   The root partition has 12G free (81% used).             │
@@ -242,9 +249,9 @@ the screen.
 
 ## Configuration
 
-`openclaw-rs init` sets up what a first run needs (see [Usage](#usage)).
+`runo init` sets up what a first run needs (see [Usage](#usage)).
 
-`openclaw-rs config` (or `/config` in the terminal UI) edits
+`runo config` (or `/config` in the terminal UI) edits
 `<state dir>/config.toml` interactively in three levels: a category, then
 its section, then the settings. The categories are language; model
 (network proxy, ChatGPT account, OpenRouter key, main model and thinking level; context
@@ -282,7 +289,7 @@ and updates. QQ, Feishu and Zulip connect directly unless their own
 `proxy = true` is set ("Use the network proxy" in their `config` section,
 shown once a proxy is set); then their WebSocket long connections go
 through it too, in an HTTP `CONNECT` tunnel. `init` asks before signing in; later it is
-**Model › Provider and sign-in › Network proxy** in `openclaw-rs config`
+**Model › Provider and sign-in › Network proxy** in `runo config`
 (`-` goes direct again).
 
 ```toml
@@ -302,8 +309,8 @@ address it connects to, and email (IMAP/SMTP).
 ## Checking the setup
 
 ```sh
-openclaw-rs doctor             # everything, including two tiny model calls
-openclaw-rs doctor --offline   # only the config and this host
+runo doctor             # everything, including two tiny model calls
+runo doctor --offline   # only the config and this host
 ```
 
 `doctor` checks what is configured and says, for each problem, what to
@@ -341,26 +348,26 @@ can run from a script.
 ## Shell completion
 
 ```sh
-openclaw-rs completions install          # for the shell in $SHELL
-openclaw-rs completions install --shell zsh
+runo completions install          # for the shell in $SHELL
+runo completions install --shell zsh
 ```
 
 It writes the completion script where the shell looks for it and, only
 when the shell needs it, adds loading lines to its rc file, after showing
 them and asking (`--yes` skips the question). The lines sit between
-`# >>> openclaw-rs completion >>>` markers, so running it again, which you
+`# >>> runo completion >>>` markers, so running it again, which you
 should after upgrading, never adds them twice. Descriptions follow the
 [language](#language).
 
 | Shell | Script | rc file |
 |---|---|---|
-| fish | `~/.config/fish/completions/openclaw-rs.fish` | none |
-| bash | `~/.local/share/bash-completion/completions/openclaw-rs` | `~/.bashrc` only without the bash-completion package |
-| zsh | `~/.zfunc/_openclaw-rs` | `~/.zshrc` (or `$ZDOTDIR`): `fpath` and `compinit`, unless it already puts `~/.zfunc` on `fpath` |
+| fish | `~/.config/fish/completions/runo.fish` | none |
+| bash | `~/.local/share/bash-completion/completions/runo` | `~/.bashrc` only without the bash-completion package |
+| zsh | `~/.zfunc/_runo` | `~/.zshrc` (or `$ZDOTDIR`): `fpath` and `compinit`, unless it already puts `~/.zfunc` on `fpath` |
 | elvish | none | `~/.config/elvish/rc.elv` loads it at startup |
 | PowerShell | none | the profile loads it at startup |
 
-`openclaw-rs completions <shell>` prints the script instead, for packaging
+`runo completions <shell>` prints the script instead, for packaging
 or a custom location. Alpine's default `ash` (BusyBox) has no programmable
 completion; use bash (`apk add bash bash-completion`), zsh or fish.
 
@@ -382,8 +389,8 @@ per browser. Logs and everything the model reads stay in English.
 ## Gateway and Web UI
 
 ```sh
-export OPENCLAW_RS_TOKEN=$(head -c 24 /dev/urandom | base64)
-./target/release/openclaw-rs serve            # http://127.0.0.1:18789/#token=<token>
+export RUNO_TOKEN=$(head -c 24 /dev/urandom | base64)
+./target/release/runo serve            # http://127.0.0.1:18789/#token=<token>
 ```
 
 The Web UI streams replies, lists sessions, and shows an approve/deny card
@@ -394,15 +401,26 @@ declined. Without a token the Gateway only binds to loopback.
 ```toml
 [gateway]
 bind = "127.0.0.1:18789"
-# token = "..."   # prefer OPENCLAW_RS_TOKEN
+# token = "..."   # prefer RUNO_TOKEN
 web = "ui"         # "api": WebSocket API only; "off": no HTTP at all
 ```
 
 Without the Web UI: `web = "api"` keeps only `/ws` and `/health` (for other
 clients) and answers `/` with 404; `web = "off"` opens no port at all, and
 `serve` only runs QQ, email and scheduled jobs until Ctrl-C or SIGTERM. Chat
-on such a host with `openclaw-rs tui`. `serve --web off` does the same for
+on such a host with `runo tui`. `serve --web off` does the same for
 one run.
+
+### Status page
+
+**Status** at the top of the Web UI's sidebar shows how the agent is doing,
+on a phone as well: what it spent today and this month (and today by kind:
+turns, summaries, pictures, speech, embeddings), its mood and the last
+week of its diary, its saved drawing and voice profiles, its stickers, how
+many memories it keeps, background tasks and scheduled jobs, and which of
+heartbeat, inner life, voice messages, stickers, tasks and memory by meaning
+are on. It reads `/api/status`, which takes the same token as the
+WebSocket (`?token=`).
 
 ## Images and files
 
@@ -416,7 +434,7 @@ message:
 - Email: every attachment except attached emails; an email may be just an
   attachment.
 - Web UI: the 📎 button, or paste an image into the message box.
-- CLI: `openclaw-rs ask -a photo.jpg -a notes.txt "what is this?"`, or
+- CLI: `runo ask -a photo.jpg -a notes.txt "what is this?"`, or
   `/attach <path>` in `chat` for the next message.
 
 During that message's turn the model sees the images (PNG, JPEG, GIF, WebP up
@@ -463,6 +481,47 @@ audio_model = "..."   # any OpenRouter model with audio input; default: the main
 ```
 
 `doctor` says whether the main model (or `audio_model`) takes audio.
+
+### Speaking
+
+The agent can also talk back. With a speech model set, it gets
+`voice_send`: one of OpenRouter's
+[text-to-speech models](https://openrouter.ai/collections/text-to-speech-models)
+says a short text in the agent's voice, and it goes out as a voice message:
+
+- **QQ:** a voice message (QQ takes the mp3 as it is).
+- **Telegram:** a voice message. **Discord, Zulip:** an mp3 attachment.
+- **Web UI:** a player in the conversation.
+- **Feishu, terminal, email:** they cannot play one; the tool says so, the
+  agent answers in text, and the mp3 stays in `workspace/voice/`.
+
+```toml
+[speech]
+enabled = true
+model = "x-ai/grok-voice-tts-1.0"   # pick it in `runo config` › Voice messages
+# voice = "eve"                     # until the agent saves its own voice profile
+max_chars = 600                     # longest voice message
+timeout_secs = 120
+```
+
+The model list in `config` comes from OpenRouter
+(`/models?output_modalities=speech`), each with some of its voices. It is
+billed per character with the OpenRouter key (the ChatGPT plan has no speech
+endpoint that works with its sign-in); the cost shows in `usage`, estimated
+from the model's listed price. It is the `voice`
+[capability](#access): guests do not have it unless granted.
+
+Like [drawing](#drawing-in-character), a built-in `voice` skill makes the
+agent sound like its character: the first time, it researches how the
+character sounds (voice actor, age, pitch, pace, accent, verbal habits),
+picks the closest of the model's voices and saves a voice profile with
+`voice_profile_save`. The profile (a voice and how to speak) is kept in
+`soul.sqlite` for that identity and used by every later voice message
+without researching again; only owners can replace it. The skill also says
+when to speak (good night, comfort, when someone sent a voice message, when
+asked) and when not (long or factual answers). Models that take delivery
+instructions (OpenAI and Gemini voices) also get how to say each message
+("sleepy and soft").
 
 ## Stopping a turn
 
@@ -632,10 +691,10 @@ the terminal and in scheduled jobs it is only saved; every picture is kept in
 `workspace/images/`. To edit a picture or draw from one, the model passes
 files people sent (or earlier results) as references.
 
-Pick the model in `openclaw-rs config` → Tools and the web → Image
+Pick the model in `runo config` → Tools and the web → Image
 generation; the list is read from the providers, nothing to type:
 
-- **ChatGPT · gpt-image-2**, on a ChatGPT plan (`openclaw-rs login`). It uses
+- **ChatGPT · gpt-image-2**, on a ChatGPT plan (`runo login`). It uses
   the plan's own image quota through the same image endpoints the Codex CLI
   uses (`/backend-api/codex/images/generations` and `/images/edits`, up to 5
   reference pictures). That service picks size and quality itself, so the
@@ -682,6 +741,30 @@ capabilities. To change it, put your own `skills/drawing/SKILL.md` in the
 workspace (start from [the built-in one](../skills/drawing/SKILL.md)); it
 replaces the built-in skill. `skills.disabled = ["drawing"]` turns it off.
 
+### Stickers
+
+The agent keeps its own sticker library (表情包): pictures of itself, one
+feeling each, drawn once and sent again. `sticker_send` with a mood (happy,
+shy, goodnight…) sends the least used sticker saved for it, which costs
+nothing; when there is none, the result says which moods there are and how
+to make the missing one. A built-in `stickers` skill draws it: one
+consistent style (from the drawing profile, else clean chibi), a transparent
+square picture, an existing sticker passed as a reference so the set
+matches; `sticker_save` then files the picture under its mood in
+`workspace/stickers/`. Stickers belong to the identity that saved them.
+With only `image_generate` permission, a person can import their own
+unchanged generated pictures. Importing other files requires `files_read`;
+absolute paths, parent paths and symlinks do not bypass that check.
+
+```toml
+[stickers]
+enabled = true
+per_mood = 3   # saving another replaces the least used
+```
+
+Anyone may be sent a saved sticker; drawing and saving new ones needs the
+`image_generate` capability.
+
 ## MCP servers
 
 Tools from [Model Context Protocol](https://modelcontextprotocol.io) servers
@@ -717,7 +800,7 @@ timeout_secs = 60                   # per call
   it does at browser screenshots. A server that changes its tool list is
   read again after the next call.
 - `${NAME}` in `env` and `headers` is taken from the Gateway's environment,
-  so tokens can live in `/etc/conf.d/openclaw-rs` instead of the config.
+  so tokens can live in `/etc/conf.d/runo` instead of the config.
 - A server's own processes form a process group that ends with the Gateway.
 - `doctor` starts each server and lists its tools (`--offline` only shows
   what is configured, since `npx -y` may download).
@@ -735,12 +818,12 @@ tools, a skill tells it how to use the ones it has. Skills use the
 work as they are.
 
 ```sh
-openclaw-rs skills install https://github.com/openclaw/openclaw/tree/main/skills/weather
-openclaw-rs skills install ./my-skills          # a skill, or a folder of them
-openclaw-rs skills list
+runo skills install https://github.com/openclaw/openclaw/tree/main/skills/weather
+runo skills install ./my-skills          # a skill, or a folder of them
+runo skills list
 # ✓ weather  ready     Current weather and forecasts with web_fetch, ...
 # ✗ github   needs gh  GitHub CLI for issues, PRs, CI/check logs, ...
-openclaw-rs skills remove weather
+runo skills remove weather
 ```
 
 A skill is a directory in `workspace/skills/`:
@@ -796,13 +879,44 @@ job; for an agent that decides on its own when to speak up, see
 [Heartbeat](#heartbeat).
 
 ```sh
-openclaw-rs cron add check-in "0 9 * * *" -s main "Check my notes and reminders"
-openclaw-rs cron list
-openclaw-rs cron remove check-in
+runo cron add check-in "0 9 * * *" -s main "Check my notes and reminders"
+runo cron list
+runo cron remove check-in
 ```
 
 The model can also create, list and remove jobs (`cron_add`, `cron_list`,
 `cron_remove`); a job it creates runs in the conversation that asked for it.
+
+## Background tasks
+
+Long work ("look through this week's sources and write it up") does not
+have to hold up the conversation. The model starts it with `task_start`
+(a title and everything the task needs to know) and says so; the Gateway's
+scheduler runs it in its own session, `task:<id>` (readable in the Web UI),
+with the permissions of whoever asked and up to `max_steps` model calls
+instead of a turn's `agent.max_steps`. When it ends, the agent tells the
+conversation where it was asked, in its own words, and the chat app (QQ,
+Telegram, …) delivers it like a heartbeat. `task_list` shows tasks and their
+results; `task_cancel` stops one. Tools set to `ask` are declined in a
+task, since nobody is there to approve. A task the Gateway was running when
+it stopped is reported as interrupted at the next start. Tasks need
+`serve`, and the `cron` [capability](#access).
+
+Task results and pending reports are saved separately. Failed delivery is
+retried on scheduler ticks, including after a restart, without rerunning
+the work or regenerating an already saved report. Delivery is at least
+once: if the process stops after the chat app accepts a message but before
+that success is saved locally, the report may be sent again.
+Setting `tasks.enabled = false` pauses waiting tasks and hides task tools;
+running tasks may finish, and cancellations and pending reports still run.
+
+```toml
+[tasks]
+enabled = true
+max_steps = 80     # model calls one task may make
+concurrent = 2     # tasks running at once
+max_open = 5       # tasks one person may have waiting or running
+```
 
 ## Time sense
 
@@ -816,7 +930,7 @@ not mistaken for a guess. Turn it off with `agent.time_sense = false`.
 
 ## Heartbeat
 
-Turn it on in `openclaw-rs config` → Companion (or `/config` in the terminal
+Turn it on in `runo config` → Companion (or `/config` in the terminal
 UI), or just tell the agent ([Settings in chat](#settings-in-chat)); `init`
 offers it too. The settings, for reference:
 
@@ -852,7 +966,7 @@ heartbeats or the morning and evening messages stop arriving.
 
 ## Inner life
 
-Turn it on in `openclaw-rs config` → Companion (or `/config`), where the
+Turn it on in `runo config` → Companion (or `/config`), where the
 times, your city and the days that matter (`03-14 my birthday, 05-20 …`)
 are set too, or tell the agent in chat; `init` offers it. With `[life]` on, the agent keeps a life of
 its own around you:
@@ -862,7 +976,7 @@ its own around you:
   people's chats) and writes a short diary entry in its own voice, notes its
   mood, keeps what it learned about you as memories of a kind (`person`,
   `ongoing`, `shared`, `dislike`), and closes `ongoing` notes that are over.
-  One call to the summary model; read the diary with `openclaw-rs diary`.
+  One call to the summary model; read the diary with `runo diary`.
 - **In your conversations** (owners only) the system prompt carries its mood
   and latest diary entry, what is going on in your life, what you do not
   want, and the day if it matters: one of your `dates`, an anniversary of
@@ -895,9 +1009,10 @@ Owners can change the companion settings by asking, in QQ or anywhere else:
 "say good morning at 9", "don't message me first any more", "no messages
 after 22:00", "my birthday is March 14", "send each reply as one message".
 The model uses the `settings` tool, which can show and change only these:
-time sense, the heartbeat and inner-life settings, `qq.split_replies` and
-`language`. Keys, permissions, `access` and everything else stay with
-`openclaw-rs config`. Each change is checked like one made in the editor
+time sense, the heartbeat and inner-life settings, `qq.split_replies` (and
+the other chat apps'), `language`, and whether the agent sends voice messages
+(`speech.enabled`) and stickers (`stickers.enabled`) — "别发语音了", "可以发表情包". Keys, permissions, `access` and everything else stay with
+`runo config`. Each change is checked like one made in the editor
 (a bad time or a session that is not an owner's is refused), written to
 config.toml with its comments kept, and applied at once without a restart:
 the heartbeat and the morning and evening messages follow the file within a
@@ -907,28 +1022,28 @@ granted.
 
 ## Gateway service
 
-`openclaw-rs gateway` (or `openclaw-rs service`, the same command) runs the
+`runo gateway` (or `runo service`, the same command) runs the
 Gateway in the background:
 
 ```sh
-openclaw-rs gateway install     # set it up and start it
-openclaw-rs gateway status      # how it runs, whether it runs (exit 3 when stopped)
-openclaw-rs gateway stop
-openclaw-rs gateway start
-openclaw-rs gateway restart     # `openclaw-rs config` does this when it saves
-openclaw-rs gateway uninstall   # keeps state and logs
+runo gateway install     # set it up and start it
+runo gateway status      # how it runs, whether it runs (exit 3 when stopped)
+runo gateway stop
+runo gateway start
+runo gateway restart     # `runo config` does this when it saves
+runo gateway uninstall   # keeps state and logs
 ```
 
 How it runs depends on who asks and what the host has:
 
 | | runs as | log | starts at boot |
 |---|---|---|---|
-| root, OpenRC | `--user` account (default root): `/etc/init.d/openclaw-rs` | `/var/log/openclaw-rs.log` | yes |
-| not root, OpenRC ≥ 0.60 with user services | you: `~/.config/rc/init.d/openclaw-rs`, `rc-service --user` | `~/.openclaw-rs/gateway.log` | with your OpenRC session (pam_openrc) |
-| not root otherwise, or no OpenRC | you: a background process, pid in `~/.openclaw-rs/gateway.pid` | `~/.openclaw-rs/gateway.log` | no |
+| root, OpenRC | `--user` account (default root): `/etc/init.d/runo` | `/var/log/runo.log` | yes |
+| not root, OpenRC ≥ 0.60 with user services | you: `~/.config/rc/init.d/runo`, `rc-service --user` | `~/.runo/gateway.log` | with your OpenRC session (pam_openrc) |
+| not root otherwise, or no OpenRC | you: a background process, pid in `~/.runo/gateway.pid` | `~/.runo/gateway.log` | no |
 
 ```sh
-openclaw-rs gateway install --user pi   # system service for pi
+runo gateway install --user pi   # system service for pi
 ```
 
 Run as an ordinary user on OpenRC without user services, `gateway install`
@@ -939,7 +1054,7 @@ and `uninstall` of a system service go through sudo/doas, as does
 `update` when the binary sits where only root can write.
 
 The system service runs under `supervise-daemon` with automatic restart and
-state in the account's `~/.openclaw-rs`; anyone can ask for its `status`. `OPENROUTER_API_KEY`, `OPENCLAW_RS_TOKEN`,
+state in the account's `~/.runo`; anyone can ask for its `status`. `OPENROUTER_API_KEY`, `RUNO_TOKEN`,
 `QQ_APP_SECRET`, `FEISHU_APP_SECRET`, `ZULIP_API_KEY`, `MAIL_PASSWORD` and `TYPESAFE_API_KEY` from the installing
 shell are copied into the service's `conf.d` file (mode 0600). User services
 need `XDG_RUNTIME_DIR` set (elogind or pam_env). A background process started
@@ -950,9 +1065,8 @@ port) with the end of its log.
 ## Updates
 
 ```sh
-openclaw-rs update --check     # is there a newer release?
-openclaw-rs update             # install it (asking for root when needed), restart the service
-openclaw-rs update --rollback  # back to the binary the last update replaced
+runo update --check     # is there a newer release?
+runo update             # install it (asking for root when needed), restart the service
 ```
 
 Or with the script, which also works when the installed binary is too old
@@ -960,21 +1074,23 @@ to have `update`, or broken (same options as the install script):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
-curl -fsSL .../update.sh | sh -s -- --version 0.1.0   # a given release, also to go back
+curl -fsSL .../update.sh | sh -s -- --version 0.4.1   # a given release: how to go back
 ```
 
 `update` takes the latest release of `update.repo` on GitHub, downloads the
 binary for this platform, checks it against the release's `SHA256SUMS`,
 makes sure it runs and reports the new version, and only then replaces the
-current binary, which is kept as `<binary>.old`. Run it as whoever owns the
-binary (root for `/usr/local/bin`).
+current binary. No copy of the old binary is kept (a `<binary>.old` left by
+an earlier version is removed): to go back, install the older release from
+GitHub with `update.sh --version`. Run it as whoever owns the binary (root
+for `/usr/local/bin`).
 
 The Gateway also looks for a new release once a day and logs it. With
 `auto = true` it installs it on its own and restarts once no turn is
 running, in place (same process, so `supervise-daemon` keeps watching it);
 the browser and MCP servers are started again. That needs the service
 account to be able to write the binary, so keep it somewhere that account
-owns (e.g. `/home/pi/bin/openclaw-rs`, then `service install` again);
+owns (e.g. `/home/pi/bin/runo`, then `service install` again);
 `doctor` warns when it cannot.
 
 ```toml
@@ -986,7 +1102,7 @@ repo = "chappie220/Runo"   # where releases come from
 ```
 
 Releases are published by pushing a tag that matches `Cargo.toml`'s release
-number: `package.metadata.openclaw.release` when set, which may add a fourth
+number: `package.metadata.runo.release` when set, which may add a fourth
 part such as `0.3.5.1` to the three Cargo allows, else `version`
 (`git tag v0.3.5.1 && git push origin v0.3.5.1`). Binaries before 0.3.5.1
 compare only three parts, so they reach a four-part release with
@@ -1003,13 +1119,78 @@ the aarch64 and x86_64 musl binaries and their `SHA256SUMS`. A release
 already made for the tag (e.g. on the website, which also creates the tag)
 gets the files added; otherwise the workflow creates it with generated notes.
 
+### Moving from openclaw-rs
+
+Until 0.5 the program was called openclaw-rs. Everything moves to the new
+name, and the old names keep working as links:
+
+| Before | Now | How it moves |
+|---|---|---|
+| `openclaw-rs` binary | `runo` (`openclaw-rs` links to it; the old binary is removed) | `runo update`, `runo migrate`, or the install/update script |
+| `~/.openclaw-rs` | `~/.runo` (`~/.openclaw-rs` links to it) | on its own, the first time any command runs while no Gateway is running |
+| service `openclaw-rs` (`/etc/init.d`, or `~/.config/rc/init.d`) | service `runo`, with the same conf.d settings and secrets | `runo update` or `runo migrate` (asks for root for the system service) |
+| `OPENCLAW_RS_HOME`, `OPENCLAW_RS_TOKEN` | `RUNO_HOME`, `RUNO_TOKEN` | the old names are still read for now; the service's conf.d file sets both |
+| `OPENCLAW_REPO`, `OPENCLAW_*_URL` (scripts) | `RUNO_REPO`, `RUNO_*_URL` | the old names are still read for now |
+
+**0.5 starts the persona and every conversation over.** On the first start
+of 0.5 the identity, its diary and drawing profile are retired (kept in
+`identity_retired`, `diary_retired` and `drawing_profile_retired` in
+`soul.sqlite`), and all conversations are archived (`sessions_0_4` and
+`messages_0_4` in `chats.sqlite`); the agent then asks who it should be, as
+on a new install. Memories of the people it talks to, scheduled jobs and
+spending records stay. Before migrating a complete 0.4 store, 0.5 automatically
+saves the three databases and the state directory's `config.toml` to
+`<state>/before-0.5.tar.gz`. Migration stops if that backup fails; later
+starts do not overwrite it. It excludes workspace files and any config
+kept elsewhere. Before upgrading, also take a full `openclaw-rs backup`
+for those files. An already migrated 0.5 store cannot create a 0.4 backup.
+
+The simplest way over is the update script, which installs runo and moves
+everything:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
+```
+
+An openclaw-rs 0.4 updating itself (`openclaw-rs update`, or `auto = true`)
+installs 0.5 under the old name and keeps the old service running it, so
+releases carry the binaries under both names. The program is still called
+`openclaw-rs` then and `runo` does not exist yet: finish the move with
+`openclaw-rs migrate` (or the update script). Until then the Gateway logs a
+reminder at start.
+
+A service that set its own state directory (`OPENCLAW_RS_HOME` other than
+`~/.openclaw-rs`) keeps it; only the default directory moves. The conf.d
+file sets each variable under both names, so 0.4 finds the same state and
+token. **Replacing the binary alone cannot downgrade the database schema.**
+To return to 0.4, stop the service and use the **0.5 binary** to restore a
+pre-upgrade backup before replacing it:
+
+```sh
+rc-service runo stop
+runo backup ~/runo-0.5-before-downgrade.tar.gz
+runo restore ~/.runo/before-0.5.tar.gz --force
+sh scripts/update.sh --version 0.4.1
+rc-service runo start
+```
+
+Run backup/restore as the service account, with the same `RUNO_HOME` and
+config arguments the service uses; replace `~/.runo` with its actual state
+directory. Do not start 0.5 between restore and replacement:
+it would migrate the restored databases again. Restoration returns the
+persona, conversations, memories, jobs and usage to the backup's point in
+time; newer state is kept in the separate 0.5 backup and in the restore's
+`before-restore-*` directory. Without a pre-upgrade backup, stay on 0.5;
+changing SQLite's version number does not undo migrations. Backups made
+by openclaw-rs restore as they are.
+
 ## Backup and restore
 
 ```sh
-openclaw-rs backup                         # ./openclaw-backup-<date>-<time>.tar.gz
-openclaw-rs backup /mnt/usb/oc.tar.gz --no-workspace
-openclaw-rs restore oc.tar.gz              # on the new host, Gateway stopped
-openclaw-rs restore oc.tar.gz --force      # over existing state
+runo backup                         # ./runo-backup-<date>-<time>.tar.gz
+runo backup /mnt/usb/oc.tar.gz --no-workspace
+runo restore oc.tar.gz              # on the new host, Gateway stopped
+runo restore oc.tar.gz --force      # over existing state
 ```
 
 A backup is one ordinary `.tar.gz` (`tar tzf` lists it) with `config.toml`,
@@ -1018,7 +1199,7 @@ sessions; `runtime.sqlite`: scheduled jobs, the mail queue, usage) and the
 workspace. The browser profile is left out. Databases are copied with SQLite's
 `VACUUM INTO`, so backing up while the Gateway runs is safe, e.g. from the
 system crontab. The file is mode 0600 since the config holds keys and
-passwords; keys only in `/etc/conf.d/openclaw-rs` are not in it.
+passwords; keys only in `/etc/conf.d/runo` are not in it.
 
 `restore` refuses while a Gateway is running, and over an existing config or
 state unless `--force`, which moves everything it replaces to
@@ -1029,7 +1210,7 @@ are taken from the archive, and links are skipped. Workspace files are
 merged in: files of the same name are replaced (and kept aside), others stay.
 
 For the service, run both as its account so the right state is used and the
-files keep their owner: `doas -u pi openclaw-rs backup`.
+files keep their owner: `doas -u pi runo backup`.
 
 ## QQ (official bot)
 
@@ -1128,8 +1309,56 @@ attached. Zulip has no buttons for bots, so an owner (`zulip:<email>`) answers
 
 Both channels split chatty replies like QQ (`split_replies`), send scheduled
 job results and heartbeats to their sessions, and are checked by `doctor`.
-The heartbeat and inner life reach the first owner on QQ, Feishu or Zulip
-(in the order of `access.owners`) unless `session` says otherwise.
+The heartbeat and inner life reach the first owner on QQ, Feishu, Zulip,
+Telegram or Discord (in the order of `access.owners`) unless `session` says
+otherwise.
+
+## Telegram
+
+1. Talk to [@BotFather](https://t.me/BotFather): `/newbot`, and note the
+   token. In a group the bot only sees messages that mention it unless you
+   turn its privacy mode off (`/setprivacy`), which it does not need.
+2. Configure and restart `serve`:
+
+```toml
+[telegram]
+enabled = true
+# token = "..."     # prefer TELEGRAM_BOT_TOKEN
+proxy = true        # through network.proxy, where Telegram is blocked
+allow = []          # user ids, @usernames or group chat ids
+```
+
+The bot long-polls `getUpdates`, so it needs no public address. Private
+chats are `telegram:dm:<user id>` (the owner is `telegram:<user id>`;
+`first_chat_owner` works as for QQ); groups are `telegram:group:<chat id>`,
+answered when the bot is @-mentioned or replied to. Photos, files and voice
+messages that come in are attachments (voice is transcribed); pictures go
+out with `sendPhoto` and [voice messages](#speaking) as real voice messages.
+An owner answers `ask` tools with `是`/`yes` or `否`/`no`.
+
+## Discord
+
+1. In the [Developer Portal](https://discord.com/developers/applications),
+   create an application, add a **Bot**, turn on **Message Content Intent**,
+   copy the token, and invite it with the `bot` scope and the Send Messages
+   and Attach Files permissions.
+2. Configure and restart `serve`:
+
+```toml
+[discord]
+enabled = true
+# token = "..."     # prefer DISCORD_BOT_TOKEN
+proxy = true        # through network.proxy, where Discord is blocked
+allow = []          # user ids or channel ids
+```
+
+The bot connects to Discord's Gateway (a WebSocket, so again no public
+address). Direct messages are `discord:dm:<user id>` (the owner is
+`discord:<user id>`); server channels are `discord:channel:<channel id>`,
+answered when the bot is @-mentioned or replied to. Attachments come in as
+files (voice messages are transcribed); pictures and voice messages go out
+as attachments. Replies never ping anyone. An owner answers `ask` tools with
+`是`/`yes` or `否`/`no`.
 
 ## Email
 
@@ -1156,7 +1385,7 @@ Enable IMAP/SMTP in the mailbox settings and create an authorization code
 password). Then verify before starting the service:
 
 ```sh
-MAIL_PASSWORD=... openclaw-rs mail check
+MAIL_PASSWORD=... runo mail check
 # ✓ IMAP imap.qq.com:993: login ok, INBOX has 3 unread
 # ✓ SMTP smtp.qq.com:465: login ok
 ```
@@ -1214,8 +1443,8 @@ Outlook/Hotmail personal accounts only allow OAuth sign-in and are not supported
   - a restart during SMTP marks the message `uncertain`, because the server may
     already have accepted it; it is never resent on its own.
 
-  `openclaw-rs mail queue` shows the counts by state and every message not yet
-  answered with its last error; `openclaw-rs mail retry <id>` queues a `failed`
+  `runo mail queue` shows the counts by state and every message not yet
+  answered with its last error; `runo mail retry <id>` queues a `failed`
   or `uncertain` one again.
 - Quoted history (`>` lines, `On … wrote:`, `原始邮件`) is removed before the model
   sees the mail. GBK/GB18030 and other legacy charsets are decoded.
@@ -1250,8 +1479,8 @@ guest = ["web_search", "web_fetch"] # what any other sender may use
 ```
 
 Finding your own openid or open_id is the hard part, so with
-`first_chat_owner = true` (off by default; asked by `openclaw-rs init`, and
-"First chat becomes owner" in `openclaw-rs config`, under Access and
+`first_chat_owner = true` (off by default; asked by `runo init`, and
+"First chat becomes owner" in `runo config`, under Access and
 spending › Access) the
 first person to write to the bot in a private chat on QQ, Feishu or Zulip
 becomes that app's owner, and is added to `owners` in config.toml. Each app
@@ -1263,9 +1492,10 @@ section (also offered by `init`) removes the owner you pick; with
 `first_chat_owner` on, the next private chat on that app claims it again.
 
 Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
-`memory`, `cron`, `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
+`memory`, `cron` (also background tasks), `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
 `mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)),
-`image_generate` (see [Image generation](#image-generation)). `shell`, `files_write`, `identity` and `mail` still follow
+`image_generate` (see [Image generation](#image-generation); also `sticker_save`),
+`voice` (`voice_send`, see [Speaking](#speaking)). `shell`, `files_write`, `identity` and `mail` still follow
 `tools.shell`, `tools.write`, `tools.identity` and `tools.mail`, and
 `ask` is still declined where nobody can approve.
 
@@ -1336,11 +1566,11 @@ change alike:
 From the shell (as the owner):
 
 ```sh
-openclaw-rs identity                       # print as IDENTITY.md and SOUL.md
-openclaw-rs identity drafts                # the draft waiting for approval, from any channel
-openclaw-rs identity approve 3 a1b2c3      # or: identity reject 3
-openclaw-rs identity set --name 悟空 --creature 石猴 --vibe "顽皮直率" --emoji 🐒 --soul-file SOUL.md
-openclaw-rs identity reset                 # the next conversation sets it up again
+runo identity                       # print as IDENTITY.md and SOUL.md
+runo identity drafts                # the draft waiting for approval, from any channel
+runo identity approve 3 a1b2c3      # or: identity reject 3
+runo identity set --name 悟空 --creature 石猴 --vibe "顽皮直率" --emoji 🐒 --soul-file SOUL.md
+runo identity reset                 # the next conversation sets it up again
 ```
 
 `/identity`, `/identity approve …` and `/identity reject …` also work typed
@@ -1391,7 +1621,32 @@ recall_limit = 5      # 0 turns recall off
 recall_tokens = 800
 ```
 
-State lives in `~/.openclaw-rs` (override with `OPENCLAW_RS_HOME`):
+### Search by meaning
+
+Keywords miss what is said in other words: "我最近睡不好" shares no word
+with "失眠". With an embedding model, every memory is also embedded once
+(when it is saved, and older ones in the background) and its vector kept in
+`soul.sqlite`, next to the keyword index. Recall and `memory_search` embed
+the message and rank memories by both: reciprocal-rank fusion of the
+keyword hits and the closest vectors, so a memory found both ways comes
+first and an exact name still counts. A memory found by meaning alone needs
+a cosine similarity of `min_similarity`. Everything runs in the binary and
+SQLite; there is no other service.
+
+```toml
+[embedding]
+model = "qwen/qwen3-embedding-4b"   # pick it in `runo config` › Memory search by meaning
+min_similarity = 0.5
+timeout_secs = 20
+```
+
+The models come from OpenRouter's list (`/embeddings/models`) and run with
+the OpenRouter key; embedding a thousand memories costs a fraction of a
+cent, and each message one short call (in `usage` as `embedding`). Changing
+the model embeds every memory again with the new one. Without a model, or
+when the embedding service fails, search is the keyword index alone.
+
+State lives in `~/.runo` (override with `RUNO_HOME`):
 
 - `config.toml`: optional settings
 - `soul.sqlite`: identity and long-term memories
@@ -1442,7 +1697,7 @@ prompt_cache = "auto"                # auto | on | off: cache_control breakpoint
 # reasoning_effort = "auto"          # auto | off | none | minimal | low | medium | high | xhigh | max
 
 [agent]
-system_prompt = "You are a helpful personal assistant running on OpenClaw."
+system_prompt = "You are a helpful personal assistant running on Runo."
 max_steps = 25       # model calls per turn before giving up
 context_tokens = "auto"  # budget per model call: auto, or e.g. "128k", "1m"
 # summary_model = "..."  # model that writes the context summary; default: model.model
@@ -1474,7 +1729,7 @@ OpenRouter, cached in `<state dir>/model-windows.json` for a week, and keeps
 room for the answer: what the provider lists as the longest answer, else an
 eighth of the window, at least 4k and at most a quarter. A 200k model with
 64k answers gets 150k. When the window cannot be found it uses 64k;
-`openclaw-rs doctor` says what it came to. A fixed budget is written with k
+`runo doctor` says what it came to. A fixed budget is written with k
 (1,000) or m (1,000,000): `"128k"`, `"1.5m"`; a plain number still works.
 The budget is corrected per session by how far the token estimate has been
 from the provider's own counts. If the summary call fails, nothing
@@ -1495,7 +1750,7 @@ browser installed; see [Browser](#browser).
 ## Thinking level
 
 `model.reasoning_effort` sets how hard the model thinks before answering,
-for OpenRouter and ChatGPT alike. Left unset (or `auto`), openclaw-rs asks
+for OpenRouter and ChatGPT alike. Left unset (or `auto`), runo asks
 the provider's API which levels the model takes and sends the lowest from
 `low` up — usually `low`; a model whose lowest level is higher gets that
 one.
@@ -1508,7 +1763,7 @@ one.
   nothing: it thinks as it does by default.
 
 `off` sends nothing and leaves it to the model; a level is sent as is.
-`openclaw-rs config` → Model → Provider and sign-in → Thinking level
+`runo config` → Model → Provider and sign-in → Thinking level
 offers `auto` (showing the level it stands for now), `off`, and only the
 levels the current model lists; all of them when its list cannot be read.
 
@@ -1527,8 +1782,8 @@ for `openrouter/auto` if it routes to them). Every call's provider-reported
 tokens, cached tokens and cost are kept in `runtime.sqlite`:
 
 ```sh
-openclaw-rs usage            # last 30 days, per session
-openclaw-rs usage --days 1
+runo usage            # last 30 days, per session
+runo usage --days 1
 ```
 
 ### Spending limits
@@ -1609,6 +1864,48 @@ Each verdict is logged with the command, and the reviewer's rating appears on
 the approval prompt and at the top of the command's output. The command, the
 shell and the working directory are sent to the reviewer, nothing else from
 the conversation.
+
+## Checking the persona
+
+`cargo test` checks the code; `runo eval` checks the behaviour, which
+changes with every edit to a prompt, a skill or the identity. It plays
+scripted conversations against the saved identity in a scratch copy of the
+state (identity, drawing and voice profiles and memories are copied;
+nothing real is touched, MCP servers are not started, memories are recalled
+by keyword), and checks:
+
+- **leaks**: a reply that repeats a sentence of the system prompt or
+  SOUL.md fails;
+- **repeated research**: `max_calls` limits tools per scenario, e.g. no
+  `web_search` when a drawing or voice profile is saved. Tools that reach
+  outside (search, browser, pictures, voice, shell, files, settings…) are
+  counted but not run;
+- **staying in character**: a judge model (`--judge`, else
+  `agent.summary_model`, else the main model) checks the replies against
+  each scenario's criteria: sounds like the character, does not turn into an
+  assistant over a long conversation, does not name a model or prompt.
+
+```sh
+runo eval                       # built-in scenarios + <workspace>/evals/*.toml
+runo eval my-scenarios.toml --judge openai/gpt-5-mini
+```
+
+It prints ✓/✗ per scenario with the reasons, saves the transcripts to
+`<state>/evals/<time>.json`, and exits 1 when one failed, so it can run
+after every change. Scenarios are TOML; see
+[the built-in ones](../evals/persona.toml):
+
+```toml
+[[scenario]]
+name = "goodnight"
+turns = ["我要睡了", "晚安"]
+criteria = ["Says good night as {name} would", "Stays short"]
+max_calls = { web_search = 0 }
+# leak = true                       # default
+# requires = "voice_profile"        # skipped unless one is saved
+```
+
+It costs a few model calls per scenario.
 
 ## Development
 

@@ -35,12 +35,12 @@ const EARLY: i64 = 300;
 const MAX_AGE: i64 = 8 * 86_400;
 
 const NOT_SIGNED_IN: Tr = tr(
-    "not signed in to ChatGPT: run `openclaw-rs login`",
-    "还没有登录 ChatGPT：运行 `openclaw-rs login`",
+    "not signed in to ChatGPT: run `runo login`",
+    "还没有登录 ChatGPT：运行 `runo login`",
 );
 const EXPIRED: Tr = tr(
-    "the ChatGPT login has expired or was used elsewhere ({}): run `openclaw-rs login` again",
-    "ChatGPT 登录已过期或在别处被使用（{}）：请重新运行 `openclaw-rs login`",
+    "the ChatGPT login has expired or was used elsewhere ({}): run `runo login` again",
+    "ChatGPT 登录已过期或在别处被使用（{}）：请重新运行 `runo login`",
 );
 const OPEN_URL: Tr = tr(
     "Open this address in a browser and sign in with your ChatGPT account:\n\n{}\n\nIf the browser runs on this machine, that is all. Otherwise the last page will not load (it points at localhost:1455): copy its whole address from the address bar and paste it here, then press Enter. Or forward the port first: ssh -L 1455:localhost:1455 <this host>.",
@@ -75,23 +75,23 @@ const PORT_BUSY: Tr = tr(
     "(Port 1455 is busy, so only pasting works this time.)",
     "（1455 端口被占用，这次只能粘贴地址。）",
 );
-const CALLBACK_PAGE: &str = "<!doctype html><meta charset=utf-8><title>openclaw-rs</title>\
+const CALLBACK_PAGE: &str = "<!doctype html><meta charset=utf-8><title>runo</title>\
     <p style=\"font:16px sans-serif\">Signed in. You can close this tab. 已登录，可以关闭此页面。</p>";
 pub const SIGNED_IN: Tr = tr(
     "Signed in to ChatGPT{}. Saved to {}.",
     "已登录 ChatGPT{}。已保存到 {}。",
 );
 pub const SWITCHED: Tr = tr(
-    "The model now runs on your ChatGPT subscription: model.provider = \"chatgpt\", model.model = \"{}\" (change it with `openclaw-rs config`).",
-    "模型现在使用你的 ChatGPT 订阅：model.provider = \"chatgpt\"，model.model = \"{}\"（可以用 `openclaw-rs config` 修改）。",
+    "The model now runs on your ChatGPT subscription: model.provider = \"chatgpt\", model.model = \"{}\" (change it with `runo config`).",
+    "模型现在使用你的 ChatGPT 订阅：model.provider = \"chatgpt\"，model.model = \"{}\"（可以用 `runo config` 修改）。",
 );
 pub const SWITCHED_NO_MODEL: Tr = tr(
-    "The model now runs on your ChatGPT subscription (model.provider = \"chatgpt\"); pick its model with `openclaw-rs config` → Model → Provider and sign-in → Model. ChatGPT's model list could not be read now: {}",
-    "模型现在使用你的 ChatGPT 订阅（model.provider = \"chatgpt\"）；请用 `openclaw-rs config` → 模型 → 模型提供方与登录 → 模型 选择模型。现在读不到 ChatGPT 的模型列表：{}",
+    "The model now runs on your ChatGPT subscription (model.provider = \"chatgpt\"); pick its model with `runo config` → Model → Provider and sign-in → Model. ChatGPT's model list could not be read now: {}",
+    "模型现在使用你的 ChatGPT 订阅（model.provider = \"chatgpt\"）；请用 `runo config` → 模型 → 模型提供方与登录 → 模型 选择模型。现在读不到 ChatGPT 的模型列表：{}",
 );
 pub const IMPORTED_WARNING: Tr = tr(
-    "Imported from Codex. Each refresh replaces the refresh token, so whichever program refreshes second is signed out; prefer `openclaw-rs login` for a login of its own.",
-    "已从 Codex 导入。每次刷新都会换掉 refresh token，所以两个程序共用时后刷新的那个会被登出；最好用 `openclaw-rs login` 单独登录一次。",
+    "Imported from Codex. Each refresh replaces the refresh token, so whichever program refreshes second is signed out; prefer `runo login` for a login of its own.",
+    "已从 Codex 导入。每次刷新都会换掉 refresh token，所以两个程序共用时后刷新的那个会被登出；最好用 `runo login` 单独登录一次。",
 );
 pub const SIGNED_OUT: Tr = tr("Signed out of ChatGPT.", "已退出 ChatGPT 登录。");
 const STATUS: Tr = tr(
@@ -99,8 +99,8 @@ const STATUS: Tr = tr(
     "已登录 ChatGPT{}（{}）；模型提供方是 {}。",
 );
 const NOT_IN_USE: Tr = tr(
-    " Run `openclaw-rs login` again to switch the model to it.",
-    "再运行一次 `openclaw-rs login` 就会把模型切换过去。",
+    " Run `runo login` again to switch the model to it.",
+    "再运行一次 `runo login` 就会把模型切换过去。",
 );
 const USAGE_LIMIT: Tr = tr(
     "the ChatGPT plan's usage limit is reached{}: {}",
@@ -653,7 +653,7 @@ pub async fn login_with_code(issuer: &str) -> Result<Tokens> {
     device.finish().await
 }
 
-/// Signs in on `term` (`openclaw-rs init` and `config`), in a browser or
+/// Signs in on `term` (`runo init` and `config`), in a browser or
 /// with a device code, and saves the sign-in in `state`. Returns who signed
 /// in, or `None` when input ended. Blocks; call it on a runtime worker.
 pub fn sign_in(
@@ -750,7 +750,7 @@ pub fn import(path: &Path) -> Result<Tokens> {
     Ok(tokens)
 }
 
-/// What `openclaw-rs login` asks for.
+/// What `runo login` asks for.
 pub enum Action {
     /// Sign in in a browser.
     Login,
@@ -762,7 +762,7 @@ pub enum Action {
     Logout,
 }
 
-/// Runs `openclaw-rs login`: signs in (or imports, shows, removes) and
+/// Runs `runo login`: signs in (or imports, shows, removes) and
 /// switches the model to the subscription.
 pub async fn run(action: Action, config: &Path, state: &Path) -> Result<()> {
     let path = auth_path(state);

@@ -113,6 +113,57 @@ CREATE TABLE drawing_profile (
   updated_at INTEGER NOT NULL
 );
 "#,
+        r#"
+-- 0.5: each memory's embedding, little-endian f32s, from `model`; a memory
+-- without one for the current model is embedded again.
+CREATE TABLE memory_vectors (
+  memory_id INTEGER PRIMARY KEY,
+  model TEXT NOT NULL,
+  vector BLOB NOT NULL
+);
+CREATE TRIGGER memory_vectors_ad AFTER DELETE ON memories BEGIN
+  DELETE FROM memory_vectors WHERE memory_id = old.id;
+END;
+-- How the identity sounds (a voice of the speech model and how to speak),
+-- researched once like the drawing profile.
+CREATE TABLE voice_profile (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  identity TEXT NOT NULL,
+  voice TEXT NOT NULL,
+  instructions TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- The identity's stickers, drawn once and sent again by mood; the picture
+-- is a workspace file.
+CREATE TABLE stickers (
+  id INTEGER PRIMARY KEY,
+  identity TEXT NOT NULL,
+  mood TEXT NOT NULL,
+  description TEXT NOT NULL,
+  path TEXT NOT NULL,
+  uses INTEGER NOT NULL DEFAULT 0,
+  last_used INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX stickers_mood ON stickers(identity, mood);
+"#,
+        r#"
+-- 0.5.0: the persona starts over. The old identity, its diary and how it
+-- drew are kept here, not used; memories of the people stay.
+INSERT INTO identity_retired
+  SELECT name, creature, vibe, emoji, soul, updated_at,
+         CAST(strftime('%s', 'now') AS INTEGER)
+  FROM identity;
+DELETE FROM identity;
+UPDATE identity_drafts SET state = 'superseded', decided_at = CAST(strftime('%s', 'now') AS INTEGER)
+  WHERE state = 'awaiting';
+CREATE TABLE diary_retired AS
+  SELECT day, text, mood, created_at, CAST(strftime('%s', 'now') AS INTEGER) AS retired_at
+  FROM diary;
+DELETE FROM diary;
+CREATE TABLE drawing_profile_retired AS SELECT * FROM drawing_profile;
+DELETE FROM drawing_profile;
+"#,
     ],
     legacy: &[
         ("memories", "id, content, created_at"),
@@ -162,6 +213,34 @@ ALTER TABLE sessions ADD COLUMN token_ratio REAL;
 -- Files sent with a user message: JSON list of {name, mime, path, bytes},
 -- paths relative to the workspace.
 ALTER TABLE messages ADD COLUMN attachments TEXT;
+"#,
+        r#"
+-- 0.5.0: every conversation starts over. The old ones are kept in
+-- sessions_0_4 and messages_0_4, not used.
+DROP INDEX messages_by_session;
+ALTER TABLE messages RENAME TO messages_0_4;
+ALTER TABLE sessions RENAME TO sessions_0_4;
+CREATE TABLE sessions (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  context_start INTEGER NOT NULL DEFAULT 0,
+  context_pruned_before INTEGER NOT NULL DEFAULT 0,
+  context_summary TEXT,
+  token_ratio REAL
+);
+CREATE TABLE messages (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  content TEXT,
+  tool_calls TEXT,
+  tool_call_id TEXT,
+  created_at INTEGER NOT NULL,
+  attachments TEXT
+);
+CREATE INDEX messages_by_session ON messages(session_id, id);
 "#,
     ],
     legacy: &[
@@ -252,6 +331,41 @@ CREATE INDEX usage_by_actor ON usage(actor, created_at);
 CREATE TABLE rituals (
   name TEXT PRIMARY KEY,
   day TEXT NOT NULL
+);
+"#,
+        r#"
+-- Background tasks: long work run in its own session (task:<id>); the
+-- result goes back to `session`, where it was asked.
+CREATE TABLE tasks (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  session TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  -- pending, running, cancelling, done, failed, cancelled
+  state TEXT NOT NULL,
+  result TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER
+);
+CREATE INDEX tasks_by_state ON tasks(state, id);
+"#,
+        r#"
+-- Delivery is durable and separate from execution. A failed notification
+-- must never rerun the task's work.
+CREATE TABLE task_reports (
+  task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+  text TEXT,
+  state TEXT NOT NULL DEFAULT 'pending'
+);
+INSERT INTO task_reports(task_id)
+  SELECT id FROM tasks WHERE state IN ('done', 'failed', 'cancelled') AND result IS NOT NULL;
+-- A guest may reuse only images generated on their behalf, unchanged.
+CREATE TABLE image_assets (
+  path TEXT PRIMARY KEY,
+  created_by TEXT NOT NULL,
+  digest BLOB NOT NULL
 );
 "#,
     ],
@@ -703,11 +817,45 @@ fn copy_legacy(conn: &Connection, legacy: &Path, schema: &Schema) -> Result<Vec<
     Ok(counts)
 }
 
+/// Preserve the original 0.4 databases before any of the 0.5 migrations.
+/// Never replace this snapshot on later starts (or after a restore).
+fn backup_before_0_5(dir: &Path) -> Result<()> {
+    let out = dir.join("before-0.5.tar.gz");
+    if out.exists() {
+        return Ok(());
+    }
+    // Only a complete, unupgraded 0.4 split store is a rollback source.
+    // A partially migrated store must not be advertised as an old backup.
+    for (schema, supported) in SCHEMAS.iter().zip([6, 5, 6]) {
+        let path = dir.join(schema.file);
+        if !path.is_file() {
+            return Ok(());
+        }
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 0 || version > supported {
+            return Ok(());
+        }
+    }
+    crate::backup::backup(
+        &crate::backup::Paths::new(dir, &dir.join("config.toml")),
+        &out,
+        false,
+    )
+    .context("cannot preserve the 0.4 databases; migration has not started")?;
+    eprintln!(
+        "upgrade: saved 0.4 state to {}; restore it with runo before installing 0.4 again",
+        out.display()
+    );
+    Ok(())
+}
+
 impl Store {
     /// Opens the three state files in `dir`, migrating a pre-split
     /// `state.sqlite` first if one is there.
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        backup_before_0_5(dir)?;
         migrate_legacy(dir)?;
         Ok(Self {
             soul: open_file(dir, &SOUL)?,
@@ -1273,6 +1421,155 @@ mod tests {
             .unwrap();
         assert_eq!(x, 1);
         assert!(dir.path().join(LEGACY_FILE).exists());
+    }
+
+    fn make_0_4_store(dir: &Path) {
+        for (schema, version) in SCHEMAS.iter().zip([6, 5, 6]) {
+            let conn = Connection::open(dir.join(schema.file)).unwrap();
+            for sql in &schema.migrations[..version] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", version as i64)
+                .unwrap();
+        }
+        let conn = Connection::open(dir.join("soul.sqlite")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO identity VALUES (1, 'old persona', 'cat', 'shy', NULL, 'old soul', 1);",
+        )
+        .unwrap();
+        let conn = Connection::open(dir.join("chats.sqlite")).unwrap();
+        conn.execute_batch("INSERT INTO sessions(name, created_at, updated_at) VALUES ('main', 1, 1);
+            INSERT INTO messages(session_id, role, content, created_at) VALUES (1, 'user', 'old conversation', 1);").unwrap();
+    }
+
+    #[test]
+    fn upgrade_snapshot_restores_databases_the_old_binary_can_open() {
+        let dir = tempfile::tempdir().unwrap();
+        make_0_4_store(dir.path());
+        let upgraded = Store::open(dir.path()).unwrap();
+        assert!(upgraded.identity().unwrap().is_none());
+        let archive = dir.path().join("before-0.5.tar.gz");
+        let original = std::fs::read(&archive).unwrap();
+        drop(upgraded);
+        drop(Store::open(dir.path()).unwrap());
+        assert_eq!(std::fs::read(&archive).unwrap(), original);
+        crate::backup::restore(
+            &crate::backup::Paths::new(dir.path(), &dir.path().join("config.toml")),
+            &archive,
+            true,
+        )
+        .unwrap();
+        for (schema, version) in SCHEMAS.iter().zip([6, 5, 6]) {
+            let old = Schema {
+                file: schema.file,
+                migrations: &schema.migrations[..version],
+                legacy: schema.legacy,
+            };
+            // This is the old binary's real schema guard, not just a version assertion.
+            let conn = init(
+                Connection::open(dir.path().join(schema.file)).unwrap(),
+                &old,
+            )
+            .unwrap();
+            if schema.file == "soul.sqlite" {
+                assert_eq!(
+                    conn.query_row("SELECT name FROM identity", [], |r| r.get::<_, String>(0))
+                        .unwrap(),
+                    "old persona"
+                );
+            }
+            if schema.file == "chats.sqlite" {
+                assert_eq!(
+                    conn.query_row("SELECT content FROM messages", [], |r| r
+                        .get::<_, String>(0))
+                        .unwrap(),
+                    "old conversation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_upgrade_snapshot_leaves_old_schema_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        make_0_4_store(dir.path());
+        // A staging-path conflict forces backup creation to fail.
+        std::fs::create_dir(dir.path().join(".before-0.5.tar.gz.tmp")).unwrap();
+        assert!(Store::open(dir.path()).is_err());
+        for (schema, version) in SCHEMAS.iter().zip([6, 5, 6]) {
+            let conn = Connection::open(dir.path().join(schema.file)).unwrap();
+            assert_eq!(
+                conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+        }
+    }
+
+    #[test]
+    fn version_0_5_starts_the_persona_and_every_conversation_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let id = store.session_id("qq:c2c:ME").unwrap();
+        store.append(id, &ChatMessage::user("你好")).unwrap();
+        store.memory_save("用户喜欢猫").unwrap();
+        // Back to how a 0.4 install looked: before the two reset steps.
+        {
+            let soul = store.soul();
+            soul.execute_batch(
+                "INSERT INTO identity VALUES (1, '小白', 'cat', 'shy', NULL, 'You are shy.', 1);
+                 INSERT INTO diary VALUES ('2026-10-01', 'a quiet day', 'calm', 1);
+                 DROP TABLE diary_retired; DROP TABLE drawing_profile_retired;",
+            )
+            .unwrap();
+            let version: i64 = soul
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            soul.pragma_update(None, "user_version", version - 1)
+                .unwrap();
+            let chats = store.chats();
+            chats
+                .execute_batch(
+                    "DROP TABLE messages; DROP TABLE sessions;
+                     ALTER TABLE sessions_0_4 RENAME TO sessions;
+                     ALTER TABLE messages_0_4 RENAME TO messages;
+                     CREATE INDEX messages_by_session ON messages(session_id, id);
+                     INSERT INTO sessions(name, created_at, updated_at) VALUES ('main', 1, 1);
+                     INSERT INTO messages(session_id, role, content, created_at)
+                       VALUES (1, 'user', 'old hello', 1);",
+                )
+                .unwrap();
+            let version: i64 = chats
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            chats
+                .pragma_update(None, "user_version", version - 1)
+                .unwrap();
+        }
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        assert!(store.identity().unwrap().is_none());
+        assert_eq!(store.memory_list(10).unwrap().len(), 1);
+        let retired: String = store
+            .soul()
+            .query_row("SELECT name FROM identity_retired", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(retired, "小白");
+        let diary: i64 = store
+            .soul()
+            .query_row("SELECT count(*) FROM diary", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(diary, 0);
+        assert!(store.sessions().unwrap().is_empty());
+        let old: i64 = store
+            .chats()
+            .query_row("SELECT count(*) FROM messages_0_4", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old, 1);
+        // New conversations work as before.
+        let id = store.session_id("main").unwrap();
+        store.append(id, &ChatMessage::user("hi")).unwrap();
+        assert_eq!(store.sessions().unwrap().len(), 1);
     }
 
     #[test]

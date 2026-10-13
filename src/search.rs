@@ -114,7 +114,7 @@ impl Searcher {
                     .http
                     .post(format!("{base_url}/chat/completions"))
                     .bearer_auth(api_key)
-                    .header("X-Title", "OpenClaw")
+                    .header("X-Title", "Runo")
                     .json(&body)
                     .send()
                     .await

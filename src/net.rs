@@ -191,7 +191,7 @@ pub enum Part<'a> {
 /// A `multipart/form-data` body and its `Content-Type`, for the uploads
 /// that take no JSON.
 pub fn multipart(fields: &[(&str, Part<'_>)]) -> (String, Vec<u8>) {
-    let boundary = format!("openclaw-{:032x}", rand_u128());
+    let boundary = format!("runo-{:032x}", rand_u128());
     let mut body = Vec::new();
     for (field, part) in fields {
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());

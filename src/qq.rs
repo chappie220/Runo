@@ -309,9 +309,22 @@ impl QqBot {
         reply_to: &str,
         seq: &AtomicUsize,
     ) -> Result<()> {
+        self.send_media(target, 1, data, reply_to, seq).await
+    }
+
+    /// Uploads media of `file_type` (1 picture, 3 voice: silk, mp3 or wav)
+    /// and sends it, replying to `reply_to` while QQ still accepts that.
+    async fn send_media(
+        &self,
+        target: &Target,
+        file_type: u8,
+        data: &[u8],
+        reply_to: &str,
+        seq: &AtomicUsize,
+    ) -> Result<()> {
         use base64::Engine;
         let upload = json!({
-            "file_type": 1,
+            "file_type": file_type,
             "file_data": base64::engine::general_purpose::STANDARD.encode(data),
             "srv_send_msg": false,
         });
@@ -320,7 +333,7 @@ impl QqBot {
             .await?;
         let file_info = uploaded["file_info"]
             .as_str()
-            .context("QQ returned no file_info for the picture")?;
+            .context("QQ returned no file_info for the media")?;
         let message = json!({ "msg_type": 7, "content": " ", "media": { "file_info": file_info } });
         let mut passive = message.clone();
         passive["msg_id"] = json!(reply_to);
@@ -330,7 +343,7 @@ impl QqBot {
             .await
         {
             // An expired reply window rejects msg_id; send it as an active message.
-            eprintln!("qq: passive picture failed ({err:#}); sending as an active message");
+            eprintln!("qq: passive media failed ({err:#}); sending as an active message");
             self.api(reqwest::Method::POST, &target.path(), Some(message))
                 .await?;
         }
@@ -459,6 +472,17 @@ impl Approver for QqApprover {
     async fn send_image(&self, _mime: &str, data: &[u8]) -> Result<bool> {
         self.bot
             .send_image(&self.target, data, &self.reply_to, &self.seq)
+            .await?;
+        Ok(true)
+    }
+
+    fn plays_voice(&self) -> bool {
+        true
+    }
+
+    async fn send_voice(&self, _mime: &str, data: &[u8]) -> Result<bool> {
+        self.bot
+            .send_media(&self.target, 3, data, &self.reply_to, &self.seq)
             .await?;
         Ok(true)
     }

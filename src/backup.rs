@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::i18n::{Tr, tr};
 
-const MANIFEST: &str = "openclaw-backup.json";
+const MANIFEST: &str = "runo-backup.json";
+/// The manifest of backups made before the rename (openclaw-rs).
+const LEGACY_MANIFEST: &str = "openclaw-backup.json";
 const CONFIG: &str = "config.toml";
 const WORKSPACE: &str = "workspace";
 const DATABASES: [&str; 3] = ["soul.sqlite", "chats.sqlite", "runtime.sqlite"];
@@ -43,16 +45,16 @@ const EXISTS: Tr = tr(
     "{} 里已经有配置或数据；加 --force 替换（现有文件会被移到一旁，不会删除）",
 );
 const RUNNING: Tr = tr(
-    "a Gateway is running at {}: stop it first (openclaw-rs gateway stop)",
-    "{} 上有正在运行的 Gateway：请先停止（openclaw-rs gateway stop）",
+    "a Gateway is running at {}: stop it first (runo gateway stop)",
+    "{} 上有正在运行的 Gateway：请先停止（runo gateway stop）",
 );
 const NOT_A_BACKUP: Tr = tr(
-    "{} is not an openclaw-rs backup (no {})",
-    "{} 不是 openclaw-rs 的备份（没有 {}）",
+    "{} is not a Runo backup (no {})",
+    "{} 不是 runo 的备份（没有 {}）",
 );
 const NEWER_FORMAT: Tr = tr(
-    "{} was made by a newer openclaw-rs (format {}); update this one first",
-    "{} 是更新版本的 openclaw-rs 做的（格式 {}）；请先升级",
+    "{} was made by a newer runo (format {}); update this one first",
+    "{} 是更新版本的 runo 做的（格式 {}）；请先升级",
 );
 const BAD_DATABASE: Tr = tr("{} in the backup is damaged: {}", "备份里的 {} 已损坏：{}");
 const OUT_EXISTS: Tr = tr("{} already exists", "{} 已存在");
@@ -124,7 +126,7 @@ impl Summary {
 /// Default file name in the current directory.
 pub fn default_name() -> PathBuf {
     PathBuf::from(format!(
-        "openclaw-backup-{}.tar.gz",
+        "runo-backup-{}.tar.gz",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     ))
 }
@@ -303,6 +305,7 @@ fn restore_from(paths: &Paths, archive: &Path, staging: &Path, force: bool) -> R
     let skipped = unpack(archive, staging)?;
 
     let manifest: Manifest = std::fs::read(staging.join(MANIFEST))
+        .or_else(|_| std::fs::read(staging.join(LEGACY_MANIFEST)))
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok())
         .with_context(|| NOT_A_BACKUP.with(&[&shown, MANIFEST]))?;
@@ -424,7 +427,11 @@ fn allowed_path(path: &Path) -> Option<PathBuf> {
     }
     let first = parts.first()?.to_str()?;
     let single = parts.len() == 1;
-    let known = (single && (first == MANIFEST || first == CONFIG || DATABASES.contains(&first)))
+    let known = (single
+        && (first == MANIFEST
+            || first == LEGACY_MANIFEST
+            || first == CONFIG
+            || DATABASES.contains(&first)))
         || first == WORKSPACE;
     known.then(|| parts.iter().collect())
 }

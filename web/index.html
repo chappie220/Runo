@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenClaw</title>
+<title>Runo</title>
 <style>
   :root {
     --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -18,6 +18,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--text);
     font: 15px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
   aside { width: 230px; flex: none; border-right: 1px solid var(--line); background: var(--panel);
@@ -58,6 +59,18 @@
   button { padding: 0 16px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-text); font: inherit; cursor: pointer; min-height: 36px; }
   button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
   button:disabled { opacity: .5; cursor: default; }
+  #statusPage { flex: 1; overflow-y: auto; padding: 24px max(16px, calc(50% - 380px)); }
+  #statusPage h2 { font-size: 15px; margin: 0 0 8px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .card .big { font-size: 26px; font-weight: 600; }
+  .card .muted, .card small { color: var(--muted); }
+  .card ul { margin: 6px 0 0; padding-left: 18px; }
+  .card p { margin: 6px 0 0; white-space: pre-wrap; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .tiles .card { margin: 0; }
+  .pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); margin: 2px 4px 2px 0; }
+  .pill.on { background: var(--user); }
+  #showStatus { min-height: 28px; padding: 0 10px; font-size: 12px; }
   @media (max-width: 700px) {
     body { flex-direction: column; }
     aside { width: auto; max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -67,12 +80,13 @@
 </head>
 <body>
 <aside>
-  <header><h1>OpenClaw</h1><button id="lang" class="secondary" type="button"></button></header>
+  <header><h1>Runo</h1><span><button id="showStatus" class="secondary" type="button" data-i18n="statusPage"></button> <button id="lang" class="secondary" type="button"></button></span></header>
   <form id="new"><input id="newName" data-i18n-placeholder="newName" maxlength="64"><button data-i18n="create"></button></form>
   <ul id="sessions"></ul>
   <div id="status"></div>
 </aside>
 <main>
+  <section id="statusPage" hidden></section>
   <div id="log"></div>
   <form id="composer">
     <div id="files"></div>
@@ -93,20 +107,42 @@ const STRINGS = {
     newName: "New session name", create: "New", input: "Message — Enter to send, Shift+Enter for a new line",
     send: "Send", stop: "Stop", attach: "Attach files (or paste an image)",
     tooBig: "Files can be at most 20 MB per message.", removeFile: "Remove {name}", connecting: "Connecting…", connected: "Connected", reconnecting: "Disconnected, retrying in 3 s",
-    token: "Access token needed (OPENCLAW_RS_TOKEN):", allowTool: "Allow {tool}?", allow: "Allow", deny: "Deny",
+    token: "Access token needed (RUNO_TOKEN):", allowTool: "Allow {tool}?", allow: "Allow", deny: "Deny",
     allowed: "Allowed {tool}", denied: "Denied {tool}", switchTo: "中文",
     waiting: "⏳ Waiting for a good moment to add this", added: "✓ Added to the conversation", nextTurn: "↪ Answered next",
+    statusPage: "Status", backToChat: "Chat", spentToday: "Spent today", spentMonth: "This month", memories: "Memories",
+    mood: "Mood", diary: "Diary", noDiary: "No diary yet.", profiles: "How it draws and sounds", drawing: "Drawing",
+    voice: "Voice", none: "not saved yet", stickers: "Stickers", noStickers: "No stickers yet.", jobs: "Scheduled jobs",
+    noJobs: "No scheduled jobs.", tasks: "Background tasks", noTasks: "No background tasks.", next: "next",
+    features: "Switched on", byKind: "Today by kind", calls: "calls", noIdentity: "No identity yet: it asks who to be in the first chat.",
+    heartbeat: "heartbeat", life: "inner life", voiceOn: "voice messages", stickersOn: "stickers", tasksOn: "tasks", meaning: "memory by meaning",
+    loadFailed: "Cannot load the status: {error}",
   },
   zh: {
     newName: "新会话名称", create: "新建", input: "输入消息，Enter 发送，Shift+Enter 换行",
     send: "发送", stop: "停止", attach: "添加文件（也可以直接粘贴图片）",
     tooBig: "每条消息的文件最多 20 MB。", removeFile: "移除 {name}", connecting: "连接中…", connected: "已连接", reconnecting: "连接断开，3 秒后重试",
-    token: "需要访问令牌（OPENCLAW_RS_TOKEN）：", allowTool: "允许执行 {tool}？", allow: "允许", deny: "拒绝",
+    token: "需要访问令牌（RUNO_TOKEN）：", allowTool: "允许执行 {tool}？", allow: "允许", deny: "拒绝",
     allowed: "已允许 {tool}", denied: "已拒绝 {tool}", switchTo: "EN",
     waiting: "⏳ 等待合适的时机插入", added: "✓ 已插入对话", nextTurn: "↪ 接着单独回答",
+    statusPage: "状态", backToChat: "聊天", spentToday: "今天花费", spentMonth: "本月", memories: "记忆",
+    mood: "心情", diary: "日记", noDiary: "还没有日记。", profiles: "画画和声音", drawing: "画画",
+    voice: "声音", none: "还没有保存", stickers: "表情包", noStickers: "还没有表情包。", jobs: "定时任务",
+    noJobs: "没有定时任务。", tasks: "后台任务", noTasks: "没有后台任务。", next: "下次",
+    features: "已开启", byKind: "今天按类型", calls: "次", noIdentity: "还没有身份：第一次聊天时它会问你它该是谁。",
+    heartbeat: "主动找你", life: "内心生活", voiceOn: "语音消息", stickersOn: "表情包", tasksOn: "后台任务", meaning: "按意思检索记忆",
+    loadFailed: "无法加载状态：{error}",
   },
 };
-const LANG_KEY = "openclaw.lang";
+const LANG_KEY = "runo.lang";
+// Carry over what the browser saved under the old name (openclaw.*).
+for (const key of ["lang", "session", "token"]) {
+  try {
+    const legacy = localStorage.getItem("openclaw." + key);
+    if (legacy !== null && localStorage.getItem("runo." + key) === null) localStorage.setItem("runo." + key, legacy);
+    localStorage.removeItem("openclaw." + key);
+  } catch (e) {}
+}
 function preferredLang() {
   const saved = localStorage.getItem(LANG_KEY);
   if (saved && STRINGS[saved]) return saved;
@@ -136,7 +172,7 @@ $("lang").onclick = () => {
   applyLang();
 };
 const log = $("log"), input = $("input");
-let ws, current = localStorage.getItem("openclaw.session") || "main";
+let ws, current = localStorage.getItem("runo.session") || "main";
 let streaming = null; // assistant bubble receiving deltas for the current session
 const busy = new Set();
 // Bubbles of messages sent while the current session's turn runs, oldest first.
@@ -146,8 +182,8 @@ let ackAnchors = [];
 
 function token() {
   const fromHash = new URLSearchParams(location.hash.slice(1)).get("token");
-  if (fromHash) { localStorage.setItem("openclaw.token", fromHash); history.replaceState(null, "", location.pathname); }
-  return localStorage.getItem("openclaw.token") || "";
+  if (fromHash) { localStorage.setItem("runo.token", fromHash); history.replaceState(null, "", location.pathname); }
+  return localStorage.getItem("runo.token") || "";
 }
 
 function connect() {
@@ -158,7 +194,7 @@ function connect() {
     setStatus("reconnecting");
     if (e.code === 1006 && !ws.everOpened) {
       const entered = prompt(t("token"));
-      if (entered !== null) localStorage.setItem("openclaw.token", entered.trim());
+      if (entered !== null) localStorage.setItem("runo.token", entered.trim());
     }
     setTimeout(connect, 3000);
   };
@@ -183,9 +219,99 @@ function bubble(cls, text, files = []) {
   return div;
 }
 
+// The status page: how the agent is doing, read from /api/status.
+let showingStatus = false;
+function el(tag, text, cls) {
+  const node = document.createElement(tag);
+  if (text !== undefined && text !== null) node.textContent = text;
+  if (cls) node.className = cls;
+  return node;
+}
+function card(title, ...children) {
+  const c = el("div", undefined, "card");
+  if (title) c.appendChild(el("h2", title));
+  for (const child of children) if (child) c.appendChild(child);
+  return c;
+}
+function usd(v) { return "$" + (v >= 1 ? v.toFixed(2) : v.toFixed(4)); }
+function when(ts) { return ts ? new Date(ts * 1000).toLocaleString(lang === "zh" ? "zh-CN" : undefined) : ""; }
+function list(items, empty) {
+  if (!items.length) return el("p", t(empty), "muted");
+  const ul = el("ul");
+  for (const item of items) ul.appendChild(item);
+  return ul;
+}
+async function loadStatus() {
+  const page = $("statusPage");
+  page.textContent = "";
+  let s;
+  try {
+    const res = await fetch(`/api/status?token=${encodeURIComponent(token())}`);
+    if (!res.ok) throw new Error(await res.text() || res.status);
+    s = await res.json();
+  } catch (e) {
+    page.appendChild(card("", el("p", t("loadFailed", { error: e.message }), "muted")));
+    return;
+  }
+  const head = s.identity
+    ? `${s.identity.emoji || ""} ${s.identity.name} · ${s.identity.vibe}`.trim()
+    : t("noIdentity");
+  page.appendChild(card("", el("div", head)));
+  const tiles = el("div", undefined, "tiles");
+  tiles.append(
+    card(t("spentToday"), el("div", usd(s.spent.today), "big")),
+    card(t("spentMonth"), el("div", usd(s.spent.month), "big")),
+    card(t("mood"), el("div", s.mood || "—", "big")),
+    card(t("memories"), el("div", String(s.memories), "big")),
+  );
+  page.appendChild(tiles);
+  if (s.spent.today_by_kind.length) {
+    page.appendChild(card(t("byKind"), list(s.spent.today_by_kind.map((k) =>
+      el("li", `${k.kind}: ${usd(k.cost)} · ${k.calls} ${t("calls")}`)), "none")));
+  }
+  page.appendChild(card(t("diary"), list(s.diary.map((d) => {
+    const li = el("li");
+    li.append(el("strong", `${d.day} · ${d.mood}`), el("p", d.text));
+    return li;
+  }), "noDiary")));
+  const voice = s.voice_profile ? `${s.voice_profile.voice} — ${s.voice_profile.instructions}` : t("none");
+  page.appendChild(card(t("profiles"),
+    el("strong", t("drawing")), el("p", s.drawing_profile || t("none")),
+    el("strong", t("voice")), el("p", voice)));
+  const stickers = el("p");
+  if (s.stickers.length) for (const m of s.stickers) stickers.appendChild(el("span", `${m.mood} ×${m.count}`, "pill"));
+  else stickers.textContent = t("noStickers");
+  page.appendChild(card(t("stickers"), stickers));
+  page.appendChild(card(t("tasks"), list(s.tasks.map((task) => {
+    const li = el("li", `#${task.id} ${task.title} · ${task.state} · ${when(task.finished_at || task.created_at)}`);
+    if (task.result) li.appendChild(el("p", task.result, "muted"));
+    return li;
+  }), "noTasks")));
+  page.appendChild(card(t("jobs"), list(s.jobs.map((j) =>
+    el("li", `${j.name} (${j.schedule}) · ${t("next")} ${when(j.next_run)}${j.last_status ? " · " + j.last_status : ""}`)), "noJobs")));
+  if (s.settings) {
+    const on = el("p");
+    for (const [key, label] of [["heartbeat", "heartbeat"], ["life", "life"], ["voice", "voiceOn"], ["stickers", "stickersOn"], ["tasks", "tasksOn"], ["memory_by_meaning", "meaning"]]) {
+      on.appendChild(el("span", (s.settings[key] ? "✓ " : "✗ ") + t(label), "pill" + (s.settings[key] ? " on" : "")));
+    }
+    page.appendChild(card(t("features"), on));
+  }
+}
+function toggleStatus(show) {
+  showingStatus = show;
+  $("statusPage").hidden = !show;
+  log.hidden = show;
+  $("composer").hidden = show;
+  $("showStatus").dataset.i18n = show ? "backToChat" : "statusPage";
+  $("showStatus").textContent = t($("showStatus").dataset.i18n);
+  if (show) loadStatus();
+}
+$("showStatus").onclick = () => toggleStatus(!showingStatus);
+
 function open(name) {
+  if (showingStatus) toggleStatus(false);
   current = name;
-  localStorage.setItem("openclaw.session", name);
+  localStorage.setItem("runo.session", name);
   streaming = null;
   waiting = []; ackAnchors = [];
   log.textContent = "";
@@ -268,6 +394,16 @@ function handle(m) {
       img.src = `data:${m.mime};base64,${m.data}`;
       img.onload = () => { log.scrollTop = log.scrollHeight; };
       div.appendChild(img);
+      break;
+    }
+    case "audio": {
+      streaming = null;
+      const div = bubble("assistant", "");
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = `data:${m.mime};base64,${m.data}`;
+      div.appendChild(audio);
+      log.scrollTop = log.scrollHeight;
       break;
     }
     case "approval": {

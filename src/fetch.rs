@@ -54,8 +54,8 @@ impl Fetcher {
                 // Each hop is checked before it is followed.
                 .redirect(reqwest::redirect::Policy::none())
                 .user_agent(concat!(
-                    "Mozilla/5.0 (compatible; OpenClaw/",
-                    env!("OPENCLAW_VERSION"),
+                    "Mozilla/5.0 (compatible; Runo/",
+                    env!("RUNO_VERSION"),
                     ")"
                 ));
             if public {

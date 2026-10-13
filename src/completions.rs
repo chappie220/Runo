@@ -1,4 +1,4 @@
-//! `openclaw-rs completions install`: puts the completion script where the
+//! `runo completions install`: puts the completion script where the
 //! user's shell loads it, and adds the loading lines to its rc file only
 //! when needed and only after asking.
 
@@ -10,8 +10,8 @@ use clap_complete::Shell;
 
 use crate::i18n::{Lang, Tr, tr};
 
-const BEGIN: &str = "# >>> openclaw-rs completion >>>";
-const END: &str = "# <<< openclaw-rs completion <<<";
+const BEGIN: &str = "# >>> runo completion >>>";
+const END: &str = "# <<< runo completion <<<";
 
 const UNKNOWN_SHELL: Tr = tr(
     "cannot tell the shell from $SHELL ({}); pass --shell bash, zsh, fish, elvish or powershell",
@@ -113,13 +113,13 @@ struct Plan {
 fn plan(shell: Shell, home: &Home, bash_package: bool) -> Plan {
     match shell {
         Shell::Fish => Plan {
-            file: Some(home.config.join("fish/completions/openclaw-rs.fish")),
+            file: Some(home.config.join("fish/completions/runo.fish")),
             rc: None,
             why: None,
             tip: None,
         },
         Shell::Bash => {
-            let file = home.data.join("bash-completion/completions/openclaw-rs");
+            let file = home.data.join("bash-completion/completions/runo");
             let rc = (!bash_package).then(|| {
                 let quoted = file.display().to_string().replace('"', "\\\"");
                 (
@@ -135,7 +135,7 @@ fn plan(shell: Shell, home: &Home, bash_package: bool) -> Plan {
             }
         }
         Shell::Zsh => Plan {
-            file: Some(home.home.join(".zfunc/_openclaw-rs")),
+            file: Some(home.home.join(".zfunc/_runo")),
             rc: Some((
                 home.zdotdir.join(".zshrc"),
                 "fpath=(~/.zfunc $fpath)\nautoload -Uz compinit && compinit".into(),
@@ -147,7 +147,7 @@ fn plan(shell: Shell, home: &Home, bash_package: bool) -> Plan {
             file: None,
             rc: Some((
                 home.config.join("elvish/rc.elv"),
-                "eval (openclaw-rs completions elvish | slurp)".into(),
+                "eval (runo completions elvish | slurp)".into(),
             )),
             why: None,
             tip: None,
@@ -157,7 +157,7 @@ fn plan(shell: Shell, home: &Home, bash_package: bool) -> Plan {
             rc: Some((
                 home.config
                     .join("powershell/Microsoft.PowerShell_profile.ps1"),
-                "openclaw-rs completions powershell | Out-String | Invoke-Expression".into(),
+                "runo completions powershell | Out-String | Invoke-Expression".into(),
             )),
             why: None,
             tip: None,
@@ -308,7 +308,7 @@ mod tests {
     fn fish_only_needs_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let out = run(dir.path(), None, Some("/usr/bin/fish"), true, "").unwrap();
-        let file = dir.path().join(".config/fish/completions/openclaw-rs.fish");
+        let file = dir.path().join(".config/fish/completions/runo.fish");
         assert_eq!(std::fs::read_to_string(file).unwrap(), "script for fish\n");
         assert!(out.contains("exec fish"), "{out}");
         assert!(!out.contains("[Y/n]"), "{out}");
@@ -320,7 +320,7 @@ mod tests {
         run(dir.path(), Some(Shell::Bash), None, true, "").unwrap();
         assert!(
             dir.path()
-                .join(".local/share/bash-completion/completions/openclaw-rs")
+                .join(".local/share/bash-completion/completions/runo")
                 .exists()
         );
         assert!(!dir.path().join(".bashrc").exists());
@@ -337,11 +337,11 @@ mod tests {
         );
         let rc = std::fs::read_to_string(dir.path().join(".bashrc")).unwrap();
         assert!(
-            rc.starts_with("alias ll='ls -l'\n\n# >>> openclaw-rs completion >>>\n"),
+            rc.starts_with("alias ll='ls -l'\n\n# >>> runo completion >>>\n"),
             "{rc}"
         );
         assert!(
-            rc.contains("bash-completion/completions/openclaw-rs\" ] && . \""),
+            rc.contains("bash-completion/completions/runo\" ] && . \""),
             "{rc}"
         );
     }
@@ -357,7 +357,7 @@ mod tests {
             std::fs::read_to_string(&zshrc).unwrap(),
             "export EDITOR=vi\n"
         );
-        assert!(dir.path().join(".zfunc/_openclaw-rs").exists());
+        assert!(dir.path().join(".zfunc/_runo").exists());
 
         let out = run(dir.path(), None, Some("/bin/zsh"), true, "y\n").unwrap();
         assert!(out.contains("fpath=(~/.zfunc $fpath)"), "{out}");

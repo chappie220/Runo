@@ -1,4 +1,4 @@
-//! `openclaw-rs`: single-binary OpenClaw.
+//! `runo`: single-binary Runo.
 
 mod access;
 mod agent;
@@ -12,8 +12,11 @@ mod completions;
 mod config;
 mod context;
 mod cron;
+mod discord;
 mod doctor;
 mod elevate;
+mod embed;
+mod eval;
 mod feishu;
 mod fetch;
 mod gateway;
@@ -33,13 +36,19 @@ mod net;
 mod onboard;
 mod qq;
 mod reasoning;
+mod rename;
 mod review;
 mod search;
 mod service;
 mod setup;
 mod skills;
+mod status;
+mod stickers;
 mod store;
+mod tasks;
+mod telegram;
 mod tools;
+mod tts;
 mod tui;
 mod update;
 mod usage;
@@ -62,7 +71,7 @@ use crate::store::Store;
 use crate::tools::{BuiltinTools, TerminalApprover, with_approver};
 
 #[derive(Parser)]
-#[command(name = "openclaw-rs", version = update::VERSION, about = "Single-binary OpenClaw")]
+#[command(name = "runo", version = update::VERSION, about = "Single-binary Runo")]
 struct Cli {
     /// Config file (default: <state dir>/config.toml).
     #[arg(long, global = true, value_hint = clap::ValueHint::FilePath)]
@@ -132,6 +141,14 @@ enum Command {
     },
     /// Guided first-time setup: language, OpenRouter key, model.
     Init,
+    /// Check that the persona stays in character, keeps its prompt and does not research again.
+    Eval {
+        /// Scenario files (default: the built-in ones and <workspace>/evals/*.toml).
+        files: Vec<PathBuf>,
+        /// Model that judges the replies (default: agent.summary_model, else the main model).
+        #[arg(long)]
+        judge: Option<String>,
+    },
     /// Check that the key, models, browser, channels and service work.
     Doctor {
         /// Only read the config and this host; contact nothing.
@@ -153,15 +170,14 @@ enum Command {
         #[arg(long, conflicts_with_all = ["import", "status", "logout"])]
         device: bool,
     },
-    /// Install the latest release from GitHub, or go back to the previous binary.
+    /// Install the latest release from GitHub.
     Update {
         /// Only say whether a newer version exists.
         #[arg(long)]
         check: bool,
-        /// Put back the binary the last update replaced.
-        #[arg(long, conflicts_with = "check")]
-        rollback: bool,
     },
+    /// Finish moving an install from its old name (openclaw-rs): binary, service, state.
+    Migrate,
     /// List, install or remove skills.
     Skills {
         #[command(subcommand)]
@@ -169,7 +185,7 @@ enum Command {
     },
     /// Save the config, memory, chats, jobs and workspace to one .tar.gz file.
     Backup {
-        /// File to write (default: openclaw-backup-<date>-<time>.tar.gz here).
+        /// File to write (default: runo-backup-<date>-<time>.tar.gz here).
         file: Option<PathBuf>,
         /// Leave the workspace out.
         #[arg(long)]
@@ -358,9 +374,14 @@ enum SessionsAction {
 async fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Chosen before parsing, so `--help` is in the same language.
+    // Before anything reads the state directory: it may still have its old name.
+    let moved = rename::move_own_state_dir();
     i18n::set(startup_lang(&args));
     let matches = text::command::<Cli>(i18n::current()).get_matches_from(args);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    if let Some(note) = moved {
+        eprintln!("{note}");
+    }
     if let Err(err) = run(cli).await {
         eprintln!("{}", text::ERROR.with(&[&format!("{err:#}")]));
         std::process::exit(1);
@@ -454,9 +475,12 @@ async fn run(cli: Cli) -> Result<()> {
     }
     // Before loading, so a config this version cannot read can still be
     // fixed by the next one.
-    if let Command::Update { check, rollback } = cli.command {
+    if let Command::Migrate = cli.command {
+        return rename::finish(false).map(|_| ());
+    }
+    if let Command::Update { check } = cli.command {
         let config = Config::load(&config_path).unwrap_or_default();
-        return update::run(&config.update, check, rollback, &config.gateway.bind).await;
+        return update::run(&config.update, check, &config.gateway.bind).await;
     }
     // Before loading: signing in is how a config gets its model.
     if let Command::Login {
@@ -554,6 +578,7 @@ async fn run(cli: Cli) -> Result<()> {
         | Command::Backup { .. }
         | Command::Restore { .. }
         | Command::Login { .. }
+        | Command::Migrate
         | Command::Update { .. } => {
             unreachable!("handled before the config is loaded")
         }
@@ -563,6 +588,9 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Serve { bind, web } => {
             if store.identity()?.is_none() {
                 eprintln!("{}", text::FIRST_START.now());
+            }
+            if service::legacy_installed() {
+                eprintln!("{}", rename::SERVICE_UNMOVED.with(&[&rename::program()]));
             }
             let agent = Arc::new(build_agent(&config, &config_path, &state, store).await?);
             let bind = bind.unwrap_or_else(|| config.gateway.bind.clone());
@@ -596,10 +624,24 @@ async fn run(cli: Cli) -> Result<()> {
                 gateway.add_notifier(bot.clone());
                 tokio::spawn(zulip::run(bot, gateway.clone()));
             }
+            if config.telegram.enabled {
+                refuse_open_channel(&config, "telegram", "Telegram", &config.telegram.allow)?;
+                let bot = telegram::TelegramBot::new(config.telegram.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(telegram::run(bot, gateway.clone()));
+            }
+            if config.discord.enabled {
+                refuse_open_channel(&config, "discord", "Discord", &config.discord.allow)?;
+                let bot = discord::DiscordBot::new(config.discord.clone())?;
+                gateway.add_notifier(bot.clone());
+                tokio::spawn(discord::run(bot, gateway.clone()));
+            }
             let unowned: Vec<&str> = [
                 ("qq", config.qq.enabled),
                 ("feishu", config.feishu.enabled),
                 ("zulip", config.zulip.enabled),
+                ("telegram", config.telegram.enabled),
+                ("discord", config.discord.enabled),
             ]
             .into_iter()
             .filter(|(app, on)| *on && config.access.unowned(app))
@@ -645,6 +687,12 @@ async fn run(cli: Cli) -> Result<()> {
             }
             for entry in entries.iter().rev() {
                 println!("{} · {}\n{}\n", entry.day, entry.mood, entry.text);
+            }
+            Ok(())
+        }
+        Command::Eval { files, judge } => {
+            if !eval_command(&config, &config_path, &state, &store, &files, judge).await? {
+                std::process::exit(1);
             }
             Ok(())
         }
@@ -698,7 +746,7 @@ async fn run(cli: Cli) -> Result<()> {
             eprintln!(
                 "{}",
                 text::CHAT_BANNER.with(&[
-                    name.as_deref().unwrap_or("OpenClaw"),
+                    name.as_deref().unwrap_or("Runo"),
                     &session,
                     &config.model.model
                 ])
@@ -869,6 +917,13 @@ async fn build_agent(
         config::ContextBudget::Tokens(_) => None,
     };
     let image = imagegen::ImageGen::new(config, &api_key)?;
+    embed::set(embed::Embedder::new(config, &api_key)?);
+    let speaker = tts::Speaker::new(config, &api_key)?;
+    if let Some(embedder) = embed::current() {
+        // Memories saved before (or by another model) are embedded in the background.
+        let store = store.clone();
+        tokio::spawn(async move { embed::catch_up(&store, &embedder).await });
+    }
     let voice = openrouter
         .then(|| voice::Transcriber::new(&side, config.agent.audio_model.as_deref(), &api_key))
         .transpose()?;
@@ -892,6 +947,9 @@ async fn build_agent(
             .with_review(review)
             .with_mail(mail)
             .with_image(image)
+            .with_speaker(speaker, config.speech.enabled)
+            .with_stickers(Some(config.stickers.clone()))
+            .with_tasks(Some(config.tasks.clone()))
             .with_settings(Some(config_path.to_owned())),
         store,
         config: config::AgentConfig {
@@ -902,6 +960,109 @@ async fn build_agent(
             ..config.agent.clone()
         },
     })
+}
+
+/// `runo eval`: plays the scenarios against a scratch copy of the persona
+/// (identity, profiles and memories; nothing outside is touched) and says
+/// how each went. `false` when one failed.
+async fn eval_command(
+    config: &Config,
+    config_path: &Path,
+    state: &Path,
+    store: &Store,
+    files: &[PathBuf],
+    judge: Option<String>,
+) -> Result<bool> {
+    let identity = store
+        .identity()?
+        .context("there is no identity to check yet: set one up first (runo identity set)")?;
+    let workspace = config
+        .tools
+        .workspace
+        .clone()
+        .unwrap_or_else(|| state.join("workspace"));
+    let scenarios = eval::load(files, &workspace)?;
+    let scratch = std::env::temp_dir().join(format!("runo-eval-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let scratch_store = Store::open(&scratch.join("state"))?;
+    scratch_store.identity_set(&identity)?;
+    if let Some(profile) = store.drawing_profile(&identity.name)? {
+        scratch_store.drawing_profile_set(&identity.name, &profile)?;
+    }
+    if let Some((voice, how)) = store.voice_profile(&identity.name)? {
+        scratch_store.voice_profile_set(&identity.name, &voice, &how)?;
+    }
+    for memory in store.memory_list(500)?.into_iter().rev() {
+        scratch_store.memory_save(&memory.content)?;
+    }
+    // The scratch workspace has the same skills; MCP servers are not started.
+    let scratch_workspace = scratch.join("workspace");
+    copy_dir(
+        &workspace.join(skills::DIR),
+        &scratch_workspace.join(skills::DIR),
+    )?;
+    let mut scratch_config = config.clone();
+    scratch_config.tools.workspace = Some(scratch_workspace);
+    scratch_config.mcp.servers.clear();
+    // Memories are copied without their vectors: recall is by keyword here.
+    scratch_config.embedding.model = None;
+    let built = build_agent(
+        &scratch_config,
+        config_path,
+        &scratch.join("state"),
+        scratch_store,
+    )
+    .await?;
+    let agent = agent::Agent {
+        model: built.model,
+        summarizer: built.summarizer,
+        vision: built.vision,
+        voice: built.voice,
+        tools: eval::EvalTools::new(built.tools),
+        store: built.store,
+        config: built.config,
+    };
+    let judge_model = judge
+        .or_else(|| config.agent.summary_model.clone())
+        .filter(|m| !m.trim().is_empty());
+    let judge = match judge_model {
+        Some(model) => llm::Client::new(&config.side_model(&model), config.model_key()?)?,
+        None => llm::Client::new(&config.model, config.model_key()?)?,
+    };
+    let base = config.agent.system_prompt.clone();
+    let fragments = eval::secret_fragments(&base, &identity);
+    let mut outcomes = Vec::new();
+    for scenario in &scenarios {
+        eprintln!("eval: {} …", scenario.name);
+        outcomes.push(eval::run_scenario(&agent, &judge, &identity, &fragments, scenario).await);
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    print!("{}", eval::report(&outcomes));
+    let reports = state.join("evals");
+    std::fs::create_dir_all(&reports)?;
+    let file = reports.join(format!(
+        "{}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    std::fs::write(&file, serde_json::to_string_pretty(&outcomes)?)?;
+    eprintln!("eval: transcripts saved to {}", file.display());
+    Ok(outcomes.iter().all(|o| o.passed || o.skipped))
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(to)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            copy_dir(&path, &to.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 /// A file named on the command line, to send with a message.

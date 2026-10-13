@@ -1,4 +1,4 @@
-//! `openclaw-rs tui`: a full-screen chat in the terminal.
+//! `runo tui`: a full-screen chat in the terminal.
 //!
 //! The agent runs in this process, as with `chat`, so it works with the
 //! Gateway stopped or running without the Web UI (`gateway.web = "off"`).
@@ -77,12 +77,12 @@ const QUIT_AGAIN: Tr = tr(
 );
 const CONTEXT: Tr = tr("context {} / {}", "上下文 {} / {}");
 const SKILLS_OFF: Tr = tr(
-    "Skills are off (skills.enabled in openclaw-rs config).",
-    "Skills 已关闭（在 openclaw-rs config 里打开 skills.enabled）。",
+    "Skills are off (skills.enabled in runo config).",
+    "Skills 已关闭（在 runo config 里打开 skills.enabled）。",
 );
 const NO_SKILLS: Tr = tr(
-    "No skills yet: openclaw-rs skills install <source>, or ask the agent to save one.",
-    "还没有 skill：用 openclaw-rs skills install <来源> 安装，或者让智能体保存一个。",
+    "No skills yet: runo skills install <source>, or ask the agent to save one.",
+    "还没有 skill：用 runo skills install <来源> 安装，或者让智能体保存一个。",
 );
 const NO_MATCH: Tr = tr("nothing matches", "没有匹配项");
 const FIRST_START_NOTE: Tr = tr(
@@ -122,12 +122,12 @@ const CONFIG_BUSY: Tr = tr(
     "等这次回复结束后再打开 /config。",
 );
 const CONFIG_APPLIED: Tr = tr(
-    "Settings saved, and the Gateway was restarted to use them. This window uses them once you open it again (/quit, then openclaw-rs tui).",
-    "设置已保存，Gateway 已重启并用上了新设置。这个窗口重新打开后才会用上（/quit 后再运行 openclaw-rs tui）。",
+    "Settings saved, and the Gateway was restarted to use them. This window uses them once you open it again (/quit, then runo tui).",
+    "设置已保存，Gateway 已重启并用上了新设置。这个窗口重新打开后才会用上（/quit 后再运行 runo tui）。",
 );
 const CONFIG_SAVED: Tr = tr(
-    "Settings saved. Restart the Gateway (openclaw-rs service restart) and open this window again to use them.",
-    "设置已保存。重启 Gateway（openclaw-rs service restart）并重新打开这个窗口后生效。",
+    "Settings saved. Restart the Gateway (runo service restart) and open this window again to use them.",
+    "设置已保存。重启 Gateway（runo service restart）并重新打开这个窗口后生效。",
 );
 const CMD_QUIT: Tr = tr("leave", "退出");
 
@@ -1504,7 +1504,7 @@ pub async fn run<M: Model, T: Tools>(
     let identity = agent.store.identity()?;
     let name = identity
         .as_ref()
-        .map_or_else(|| "OpenClaw".to_owned(), |i| i.name.clone());
+        .map_or_else(|| "Runo".to_owned(), |i| i.name.clone());
     let mut app = App::new(lang, name, model, session);
     if let Some(emoji) = identity.as_ref().and_then(|i| i.emoji.clone()) {
         app.icon = emoji;

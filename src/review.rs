@@ -435,7 +435,7 @@ impl Decider for OpenRouter {
             .http
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
-            .header("X-Title", "OpenClaw")
+            .header("X-Title", "Runo")
             .json(&body)
             .send()
             .await

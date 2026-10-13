@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag such as v0.2.0 (matching Cargo.toml's release) to publish the
-# binaries and SHA256SUMS that `openclaw-rs update` installs; a0.2.0 or
+# binaries and SHA256SUMS that `runo update` installs; a0.2.0 or
 # b0.2.0 publishes an alpha or beta as a pre-release.
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml
         run: |
-          # package.metadata.openclaw.release when set (it may have a fourth
+          # package.metadata.runo.release when set (it may have a fourth
           # part), else the package version.
           version=$(sed -n 's/^release = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ -n "$version" ] || version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -45,11 +45,11 @@ jobs:
           key: ${{ matrix.target }}
       - run: pip install ziglang cargo-zigbuild
       - run: cargo zigbuild --locked --release --target ${{ matrix.target }}
-      - run: cp target/${{ matrix.target }}/release/openclaw-rs openclaw-rs-${{ matrix.target }}
+      - run: cp target/${{ matrix.target }}/release/runo runo-${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: openclaw-rs-${{ matrix.target }}
-          path: openclaw-rs-${{ matrix.target }}
+          name: runo-${{ matrix.target }}
+          path: runo-${{ matrix.target }}
 
   publish:
     needs: build
@@ -61,7 +61,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - run: cd dist && sha256sum openclaw-rs-* > SHA256SUMS && cat SHA256SUMS
+      # Binaries from before the rename (openclaw-rs 0.4 and older) update
+      # by looking for openclaw-rs-<target>: the same files under that name.
+      - run: |
+          cd dist
+          for f in runo-*; do cp "$f" "openclaw-rs-${f#runo-}"; done
+          sha256sum runo-* openclaw-rs-* > SHA256SUMS && cat SHA256SUMS
       # A release made by hand for this tag (e.g. on the website) gets the
       # files; otherwise one is created. Re-runs replace the files.
       - name: Publish

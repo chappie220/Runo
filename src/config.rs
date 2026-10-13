@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// Leaves the name to the identity chosen on first start.
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful personal assistant running on OpenClaw.";
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful personal assistant running on Runo.";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,11 +26,17 @@ pub struct Config {
     pub qq: QqConfig,
     pub feishu: FeishuConfig,
     pub zulip: ZulipConfig,
+    pub telegram: crate::telegram::TelegramConfig,
+    pub discord: crate::discord::DiscordConfig,
     pub mail: MailConfig,
     pub search: SearchConfig,
     pub browser: BrowserConfig,
     pub fetch: FetchConfig,
     pub image: ImageConfig,
+    pub speech: SpeechConfig,
+    pub stickers: StickersConfig,
+    pub embedding: EmbeddingConfig,
+    pub tasks: crate::tasks::TasksConfig,
     pub mcp: McpConfig,
     pub skills: SkillsConfig,
     pub limits: crate::limits::LimitsConfig,
@@ -102,7 +108,7 @@ pub enum SearchProvider {
     Openrouter,
     /// A SearXNG instance with the JSON format enabled (`searxng_url`).
     Searxng,
-    /// The ChatGPT subscription's own web search (`openclaw-rs login`).
+    /// The ChatGPT subscription's own web search (`runo login`).
     Chatgpt,
     /// No `web_search` tool.
     Off,
@@ -234,6 +240,97 @@ impl Default for ImageConfig {
     }
 }
 
+/// `voice_send`: speaks a message with a text-to-speech model and sends it
+/// as a voice message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpeechConfig {
+    /// Off: no `voice_send` tool.
+    pub enabled: bool,
+    /// An OpenRouter speech model such as `openai/gpt-4o-mini-tts`; none: no tool.
+    pub model: Option<String>,
+    /// The voice used until the identity saved a voice profile; default:
+    /// the model's first.
+    pub voice: Option<String>,
+    /// Longest text spoken in one voice message.
+    pub max_chars: usize,
+    pub timeout_secs: u64,
+}
+
+impl Default for SpeechConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: None,
+            voice: None,
+            max_chars: 600,
+            timeout_secs: 120,
+        }
+    }
+}
+
+impl SpeechConfig {
+    /// The speech model, when one is chosen (on or off: `enabled` can be
+    /// switched in chat while the Gateway runs).
+    pub fn model(&self) -> Option<&str> {
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+    }
+}
+
+/// The identity's own sticker library: drawn once, sent again by mood.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StickersConfig {
+    /// Off: no sticker tools.
+    pub enabled: bool,
+    /// Most stickers kept per mood; saving another replaces the least used.
+    pub per_mood: usize,
+}
+
+impl Default for StickersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            per_mood: 3,
+        }
+    }
+}
+
+/// Memories found by meaning: each is embedded once, and searches mix
+/// vector similarity with the keyword index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmbeddingConfig {
+    /// An OpenRouter embedding model such as `qwen/qwen3-embedding-4b`;
+    /// none: keyword search only.
+    pub model: Option<String>,
+    /// Cosine similarity a memory needs to be recalled by meaning alone.
+    pub min_similarity: f32,
+    pub timeout_secs: u64,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            min_similarity: 0.5,
+            timeout_secs: 20,
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    pub fn model(&self) -> Option<&str> {
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+    }
+}
+
 /// Skills in `<workspace>/skills/<name>/SKILL.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -270,7 +367,7 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     /// Extra environment; `${NAME}` reads the Gateway's own.
     pub env: BTreeMap<String, String>,
-    /// Working directory; default: where openclaw-rs was started.
+    /// Working directory; default: where runo was started.
     pub cwd: Option<PathBuf>,
     /// Streamable HTTP endpoint, instead of `command`.
     pub url: Option<String>,
@@ -511,7 +608,7 @@ impl ZulipConfig {
 #[serde(default)]
 pub struct GatewayConfig {
     pub bind: String,
-    /// Required for non-loopback binds; prefer `OPENCLAW_RS_TOKEN`.
+    /// Required for non-loopback binds; prefer `RUNO_TOKEN`.
     pub token: Option<String>,
     /// What `serve` offers over HTTP; QQ, email and cron run in every mode.
     pub web: WebMode,
@@ -542,8 +639,8 @@ pub enum WebMode {
 
 impl GatewayConfig {
     pub fn token(&self) -> Option<String> {
-        std::env::var("OPENCLAW_RS_TOKEN")
-            .ok()
+        env_var("TOKEN")
+            .and_then(|v| v.into_string().ok())
             .or_else(|| self.token.clone())
             .filter(|t| !t.trim().is_empty())
     }
@@ -887,7 +984,12 @@ impl Default for AgentConfig {
 impl Config {
     /// Whether any channel that strangers can write to is on.
     pub fn any_channel(&self) -> bool {
-        self.qq.enabled || self.feishu.enabled || self.zulip.enabled || self.mail.enabled
+        self.qq.enabled
+            || self.feishu.enabled
+            || self.zulip.enabled
+            || self.telegram.enabled
+            || self.discord.enabled
+            || self.mail.enabled
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -1007,20 +1109,38 @@ impl Config {
                     .filter(|key| !key.trim().is_empty())
             })
             .context(
-                "no OpenRouter API key: run `openclaw-rs init`, or set OPENROUTER_API_KEY or model.api_key in config.toml",
+                "no OpenRouter API key: run `runo init`, or set OPENROUTER_API_KEY or model.api_key in config.toml",
             )
     }
 }
 
-/// State root: `OPENCLAW_RS_HOME`, else `~/.openclaw-rs`.
+/// `RUNO_<name>`, else the same setting under the old name
+/// (`OPENCLAW_RS_<name>`), still read for those who set it before 0.5.
+pub fn env_var(name: &str) -> Option<std::ffi::OsString> {
+    [format!("RUNO_{name}"), format!("OPENCLAW_RS_{name}")]
+        .into_iter()
+        .find_map(|key| std::env::var_os(key).filter(|v| !v.is_empty()))
+}
+
+/// The state directory's name in the home directory, and its old name.
+pub const STATE_DIR_NAME: &str = ".runo";
+pub const LEGACY_STATE_DIR_NAME: &str = ".openclaw-rs";
+
+/// State root: `RUNO_HOME` (or the old `OPENCLAW_RS_HOME`), else `~/.runo`;
+/// `~/.openclaw-rs` while that has not been moved yet (see `rename`).
 pub fn state_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("OPENCLAW_RS_HOME").filter(|v| !v.is_empty()) {
+    if let Some(dir) = env_var("HOME") {
         return Ok(PathBuf::from(dir));
     }
-    let home = std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".openclaw-rs"))
+    let home = PathBuf::from(
+        std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .context("HOME is not set")?,
+    );
+    if crate::rename::state_unmoved(&home) {
+        return Ok(home.join(LEGACY_STATE_DIR_NAME));
+    }
+    Ok(home.join(STATE_DIR_NAME))
 }
 
 #[cfg(test)]

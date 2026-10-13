@@ -1,13 +1,12 @@
 #!/bin/sh
-# Updates openclaw-rs to the latest release: the same as install.sh --update
-# (checksum checked, the previous binary kept as openclaw-rs.old, a running
-# Gateway restarted when this account may).
+# Updates runo to the latest release: the same as install.sh --update
+# (checksum checked, a running Gateway restarted when this account may).
 #
 #   curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
-#   sh update.sh --version 0.2.0      # a given release, also to go back
+#   sh update.sh --version 0.4.1      # restore a pre-0.5 backup first (see docs/guide.md)
 #
 # Takes the same options as install.sh (--dir, --version, --force).
-# `openclaw-rs update` does the same from the binary itself; this script
+# `runo update` does the same from the binary itself; this script
 # also works when the installed binary is too old to have it, or broken.
 
 set -eu
@@ -22,9 +21,9 @@ case "$0" in
 	;;
 esac
 
-repo="${OPENCLAW_REPO:-chappie220/Runo}"
-url="${OPENCLAW_INSTALL_URL:-https://raw.githubusercontent.com/$repo/main/scripts/install.sh}"
-tmp=$(mktemp "${TMPDIR:-/tmp}/openclaw-install.XXXXXX")
+repo="${RUNO_REPO:-${OPENCLAW_REPO:-chappie220/Runo}}"
+url="${RUNO_INSTALL_URL:-${OPENCLAW_INSTALL_URL:-https://raw.githubusercontent.com/$repo/main/scripts/install.sh}}"
+tmp=$(mktemp "${TMPDIR:-/tmp}/runo-install.XXXXXX")
 trap 'rm -f "$tmp"' EXIT INT TERM
 if command -v curl >/dev/null 2>&1; then
 	curl -fsSL --retry 3 -o "$tmp" "$url"

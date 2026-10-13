@@ -1,12 +1,14 @@
 #!/bin/sh
-# Installs (or updates) openclaw-rs from GitHub Releases: downloads the
+# Installs (or updates) runo from GitHub Releases: downloads the
 # binary for this machine, checks it against the release's SHA256SUMS and
-# that it runs, then puts it in place. The binary it replaces is kept as
-# openclaw-rs.old.
+# that it runs, then puts it in place of the old one (no copy is kept: to go
+# back, install the older release with --version). An install from before
+# the rename (openclaw-rs) is moved to the new name: binary, service and
+# state (`runo migrate`).
 #
 # What needs root (writing /usr/local/bin, the system service) goes through
 # sudo or doas, which ask for your password. A first install then runs
-# `openclaw-rs init` to set it up.
+# `runo init` to set it up.
 #
 #   curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --service pi
@@ -21,15 +23,18 @@
 #   --update           update the installed binary (what update.sh does)
 #   --force            reinstall even if that version is already installed
 #
-# Environment: OPENCLAW_REPO (owner/name), OPENCLAW_API_URL and
-# OPENCLAW_DOWNLOAD_URL (for mirrors), and LANG (zh_* for Chinese).
+# Environment: RUNO_REPO (owner/name), RUNO_API_URL and
+# RUNO_DOWNLOAD_URL (for mirrors), and LANG (zh_* for Chinese). The old
+# OPENCLAW_* names of these still work.
 
 set -eu
 
-REPO="${OPENCLAW_REPO:-chappie220/Runo}"
-API_URL="${OPENCLAW_API_URL:-https://api.github.com}"
-DOWNLOAD_URL="${OPENCLAW_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}"
-NAME=openclaw-rs
+REPO="${RUNO_REPO:-${OPENCLAW_REPO:-chappie220/Runo}}"
+API_URL="${RUNO_API_URL:-${OPENCLAW_API_URL:-https://api.github.com}}"
+DOWNLOAD_URL="${RUNO_DOWNLOAD_URL:-${OPENCLAW_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}}"
+NAME=runo
+# The name before 0.5.
+LEGACY=openclaw-rs
 
 DIR=""
 VERSION=""
@@ -153,7 +158,8 @@ latest_version() {
 
 # The version an installed binary reports, or nothing.
 installed_version() {
-	[ -x "$1" ] && "$1" --version 2>/dev/null | sed -n 's/^openclaw-rs \([^ ]*\).*/\1/p' | head -n 1
+	[ -x "$1" ] && "$1" --version 2>/dev/null |
+		sed -n -e 's/^runo \([^ ]*\).*/\1/p' -e 's/^openclaw-rs \([^ ]*\).*/\1/p' | head -n 1
 }
 
 # Restarts a running Gateway (system or user service, or background process).
@@ -164,6 +170,28 @@ restart_service() {
 	else
 		say "Restart the Gateway to use it: $NAME gateway restart" \
 			"重启 Gateway 后生效：$NAME gateway restart"
+	fi
+}
+
+# Moves an install from before the rename to the new name: the old binary
+# is replaced by a link to runo, the service and state follow. Runs the
+# program that is there: after an openclaw-rs 0.4 updated itself, the new
+# release is still called openclaw-rs and runo does not exist yet. An older
+# release (installed again with --version) has no migrate and is left as it is.
+migrate() {
+	home_dir="${HOME:-}"
+	if [ -f "$DIR/$LEGACY" ] && [ ! -L "$DIR/$LEGACY" ] ||
+		[ -e "/etc/init.d/$LEGACY" ] ||
+		[ -e "${XDG_CONFIG_HOME:-$home_dir/.config}/rc/init.d/$LEGACY" ] ||
+		{ [ -d "$home_dir/.$LEGACY" ] && [ ! -L "$home_dir/.$LEGACY" ]; }; then
+		prog="$BINARY"
+		[ -x "$prog" ] || prog="$DIR/$LEGACY"
+		"$prog" help migrate >/dev/null 2>&1 || return 0
+		"$prog" migrate ||
+			die "moving to the new name failed; fix the error above and run: $prog migrate" \
+				"迁移到新名字失败；请处理上面的错误后运行：$prog migrate"
+		[ -x "$BINARY" ] ||
+			die "$BINARY is still missing after $prog migrate" "运行 $prog migrate 后仍然没有 $BINARY"
 	fi
 }
 
@@ -178,11 +206,11 @@ if [ -n "$SERVICE_USER" ]; then
 fi
 
 TARGET=$(target)
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/openclaw-install.XXXXXX")
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/runo-install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 if [ -z "$DIR" ]; then
-	current=$(command -v $NAME 2>/dev/null || true)
+	current=$(command -v $NAME 2>/dev/null || command -v $LEGACY 2>/dev/null || true)
 	if [ "$MODE" = update ]; then
 		[ -n "$current" ] ||
 			die "$NAME is not installed (not on PATH); install it first, or pass --dir" \
@@ -202,9 +230,10 @@ case "$VERSION" in
 a[0-9]* | b[0-9]*) TAG="$VERSION" ;;
 *) TAG="v$VERSION" ;;
 esac
-have=$(installed_version "$BINARY" || true)
+have=$(installed_version "$BINARY" || installed_version "$DIR/$LEGACY" || true)
 if [ "$have" = "$VERSION" ] && [ "$FORCE" = 0 ]; then
 	say "$NAME $VERSION is already installed at $BINARY." "$BINARY 已经是 $NAME $VERSION。"
+	migrate
 	[ -z "$SERVICE_USER" ] && exit 0
 else
 	if [ -n "$have" ]; then
@@ -212,10 +241,13 @@ else
 	else
 		say "Installing $NAME $VERSION ($TARGET) to $BINARY ..." "正在安装 $NAME $VERSION（$TARGET）到 $BINARY ..."
 	fi
-	asset="$NAME-$TARGET"
 	fetch "$DOWNLOAD_URL/$TAG/SHA256SUMS" "$TMP/SHA256SUMS" ||
 		die "cannot download SHA256SUMS of release $VERSION" "无法下载版本 $VERSION 的 SHA256SUMS"
-	expected=$(awk -v f="$asset" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' "$TMP/SHA256SUMS")
+	# Releases before 0.5 have the binary under the old name only.
+	for asset in "$NAME-$TARGET" "$LEGACY-$TARGET"; do
+		expected=$(awk -v f="$asset" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' "$TMP/SHA256SUMS")
+		[ -z "$expected" ] || break
+	done
 	[ -n "$expected" ] ||
 		die "release $VERSION has no binary for $TARGET" "版本 $VERSION 没有 $TARGET 的程序"
 	fetch "$DOWNLOAD_URL/$TAG/$asset" "$TMP/$NAME" ||
@@ -242,13 +274,12 @@ else
 	# Copied into the same directory first, so the switch is one rename.
 	$SUDO cp "$TMP/$NAME" "$DIR/.$NAME.new.$$"
 	$SUDO chmod 755 "$DIR/.$NAME.new.$$"
-	if [ -f "$BINARY" ]; then
-		$SUDO cp -p "$BINARY" "$BINARY.old"
-	fi
 	$SUDO mv -f "$DIR/.$NAME.new.$$" "$BINARY"
+	# Copies earlier versions kept.
+	$SUDO rm -f "$BINARY.old" "$DIR/$LEGACY.old"
 	if [ -n "$have" ]; then
-		say "Updated to $VERSION; the previous binary is kept as $BINARY.old." \
-			"已更新到 $VERSION；旧版本保存在 $BINARY.old。"
+		say "Updated to $VERSION." "已更新到 $VERSION。"
+		migrate
 		restart_service
 	else
 		say "Installed $BINARY." "已安装 $BINARY。"
@@ -269,11 +300,11 @@ has_tty() {
 
 if [ -n "$SERVICE_USER" ]; then
 	if [ "$SERVICE_USER" = "$(id -un)" ]; then
-		config="${OPENCLAW_RS_HOME:-$home/.openclaw-rs}/config.toml"
+		config="${RUNO_HOME:-${OPENCLAW_RS_HOME:-$home/.runo}}/config.toml"
 	else
-		config="$home/.openclaw-rs/config.toml"
+		config="$home/.runo/config.toml"
 	fi
-	if [ -f "$config" ]; then
+	if [ -f "$config" ] || [ -f "$home/.$LEGACY/config.toml" ]; then
 		# Asks for root itself when the service needs it.
 		"$BINARY" gateway install --user "$SERVICE_USER"
 	elif [ "$SERVICE_USER" = "$(id -un)" ] && has_tty; then
@@ -294,7 +325,8 @@ if [ -n "$SERVICE_USER" ]; then
 fi
 
 # A first install goes straight on to setup, which can also start the Gateway.
-if [ "$MODE" = install ] && [ ! -f "${OPENCLAW_RS_HOME:-$HOME/.openclaw-rs}/config.toml" ]; then
+if [ "$MODE" = install ] && [ ! -f "${RUNO_HOME:-${OPENCLAW_RS_HOME:-$HOME/.runo}}/config.toml" ] &&
+	[ ! -f "$HOME/.$LEGACY/config.toml" ]; then
 	if has_tty; then
 		echo
 		"$BINARY" init </dev/tty

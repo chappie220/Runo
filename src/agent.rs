@@ -16,6 +16,16 @@ use crate::store::Store;
 use crate::usage::{MAX_RATIO, MIN_RATIO};
 
 tokio::task_local! {
+    /// Model calls a turn may make instead of `agent.max_steps`.
+    static STEP_LIMIT: usize;
+}
+
+/// Runs `fut` with turns allowed `steps` model calls (a background task).
+pub async fn with_step_limit<F: std::future::Future>(steps: usize, fut: F) -> F::Output {
+    STEP_LIMIT.scope(steps.max(1), fut).await
+}
+
+tokio::task_local! {
     static CURRENT_SESSION: String;
 }
 
@@ -271,7 +281,7 @@ impl<M: Model, T: Tools> Agent<M, T> {
         // Images were left unseen; the person is told how to fix it.
         let mut unseen = false;
         // Looked up once, so every call of this turn sends the same prefix.
-        let recall = match (moment, self.recall(input)) {
+        let recall = match (moment, self.recall(input).await) {
             (Some(moment), Some(recall)) => Some(format!("{moment}\n\n{recall}")),
             (moment, recall) => moment.or(recall),
         };
@@ -285,7 +295,8 @@ impl<M: Model, T: Tools> Agent<M, T> {
         let mut answers: Vec<String> = Vec::new();
         // What this turn's model calls cost so far.
         let mut spent = 0.0;
-        for step in 0..self.config.max_steps {
+        let max_steps = STEP_LIMIT.try_with(|s| *s).unwrap_or(self.config.max_steps);
+        for step in 0..max_steps {
             // Read per call so an identity saved mid-turn takes effect on the next call.
             let identity = self.store.identity()?;
             let can_set = access::current().is_some_and(|a| a.can(access::Capability::Identity));
@@ -363,7 +374,7 @@ impl<M: Model, T: Tools> Agent<M, T> {
                 // The last chance to take messages sent meanwhile; with no
                 // step left they stay in the inbox for the caller to run next.
                 let late = match guided {
-                    Some(g) if step + 1 < self.config.max_steps => g.inbox.take_or_close(),
+                    Some(g) if step + 1 < max_steps => g.inbox.take_or_close(),
                     _ => Vec::new(),
                 };
                 if late.is_empty() {
@@ -421,10 +432,7 @@ impl<M: Model, T: Tools> Agent<M, T> {
                 return Ok(answers.join("\n\n"));
             }
         }
-        bail!(
-            "stopped after {} model calls without a final answer (agent.max_steps)",
-            self.config.max_steps
-        )
+        bail!("stopped after {max_steps} model calls without a final answer (agent.max_steps)")
     }
 
     /// Stores messages sent during the turn as one user message, which the
@@ -540,18 +548,27 @@ impl<M: Model, T: Tools> Agent<M, T> {
         Some(moment_note(now, last))
     }
 
-    /// Saved memories that share words with `input`, as a note for this turn
-    /// only, within the actor's memory scope and `agent.recall_tokens`.
-    fn recall(&self, input: &str) -> Option<String> {
+    /// Saved memories that share words with `input` or are close to it in
+    /// meaning (with an embedding model), as a note for this turn only,
+    /// within the actor's memory scope and `agent.recall_tokens`.
+    async fn recall(&self, input: &str) -> Option<String> {
         let actor = access::current()?;
         if self.config.recall_limit == 0 || !actor.can(access::Capability::Memory) {
             return None;
         }
-        let found = self
+        let keyword = self
             .store
             .memory_recall_in(input, self.config.recall_limit, actor.scope())
             .map_err(|err| eprintln!("recall: cannot search memories: {err:#}"))
             .ok()?;
+        let found = crate::embed::search(
+            &self.store,
+            input,
+            keyword,
+            actor.scope(),
+            self.config.recall_limit,
+        )
+        .await;
         let mut used = context::estimate(RECALL_HEADER);
         let mut lines = vec![RECALL_HEADER.to_owned()];
         for memory in found {
@@ -912,6 +929,7 @@ pub const AUTOMATIC_PROMPTS: &[&str] = &[
     crate::heartbeat::PROMPT_PREFIX,
     crate::life::RITUAL_PREFIX,
     "[scheduled job ",
+    crate::tasks::DONE_PREFIX,
 ];
 
 /// Gaps shorter than this are not mentioned: the conversation is going on.

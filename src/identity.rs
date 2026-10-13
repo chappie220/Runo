@@ -466,11 +466,49 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// The saved voice of the identity named `name`: the speech model's
+    /// voice and how to speak; one saved for another identity does not count.
+    pub fn voice_profile(&self, name: &str) -> Result<Option<(String, String)>> {
+        Ok(self
+            .soul()
+            .query_row(
+                "SELECT voice, instructions FROM voice_profile WHERE id = 1 AND identity = ?1",
+                params![name.trim()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Saves how the identity named `name` sounds, replacing any earlier one.
+    pub fn voice_profile_set(&self, name: &str, voice: &str, instructions: &str) -> Result<()> {
+        self.soul().execute(
+            "INSERT INTO voice_profile (id, identity, voice, instructions, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET identity = ?1, voice = ?2, instructions = ?3, updated_at = ?4",
+            params![name.trim(), voice.trim(), instructions.trim(), now()],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_voice_profile_belongs_to_one_identity() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.voice_profile("悟空").unwrap(), None);
+        store
+            .voice_profile_set("悟空", " rex ", " 洪亮，语速快 ")
+            .unwrap();
+        assert_eq!(
+            store.voice_profile("悟空").unwrap(),
+            Some(("rex".to_owned(), "洪亮，语速快".to_owned()))
+        );
+        assert_eq!(store.voice_profile("八戒").unwrap(), None);
+    }
 
     #[test]
     fn the_drawing_profile_belongs_to_one_identity() {

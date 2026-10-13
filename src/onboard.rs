@@ -1,8 +1,8 @@
-//! `openclaw-rs init`: guided first-time setup. It asks only what a first
+//! `runo init`: guided first-time setup. It asks only what a first
 //! run needs (language, OpenRouter key, main model, an image model when the
 //! main one cannot see images), checks the key and offers models from
 //! OpenRouter's catalog, then saves config.toml. Everything else keeps its
-//! default and stays in `openclaw-rs config`.
+//! default and stays in `runo config`.
 //!
 //! `chat`, `ask` and `serve` start it on their own when run in a terminal
 //! with no model or key, so nobody has to edit a file before the first reply.
@@ -181,8 +181,8 @@ fn parse_models(body: &Json) -> Vec<ModelInfo> {
 }
 
 const WELCOME: Tr = tr(
-    "Welcome to OpenClaw. A few questions and you are ready; everything else can be changed later with `openclaw-rs config`.",
-    "欢迎使用 OpenClaw。回答几个问题就能开始用；其他设置以后可以用 `openclaw-rs config` 修改。",
+    "Welcome to Runo. A few questions and you are ready; everything else can be changed later with `runo config`.",
+    "欢迎使用 Runo。回答几个问题就能开始用；其他设置以后可以用 `runo config` 修改。",
 );
 const STEP: Tr = tr("\n[{}/8] {}", "\n[{}/8] {}");
 const STEP_LANGUAGE: Tr = tr("Language", "语言");
@@ -248,13 +248,13 @@ const CHATGPT_MODEL: Tr = tr(
     "你的套餐在 Codex 里能用的模型 [{}]：",
 );
 const OWNERS_HOW: Tr = tr(
-    "On QQ, Feishu and Zulip only owners may use every tool (memory, files, shell); everyone else is a guest. Owners are listed in access.owners (`openclaw-rs config`, Access and spending › Access).",
-    "在 QQ、飞书和 Zulip 上，只有所有者能使用全部工具（记忆、文件、shell），其他人都是访客。所有者记在 access.owners 里（`openclaw-rs config` 的“权限与花费 › 权限”）。",
+    "On QQ, Feishu and Zulip only owners may use every tool (memory, files, shell); everyone else is a guest. Owners are listed in access.owners (`runo config`, Access and spending › Access).",
+    "在 QQ、飞书和 Zulip 上，只有所有者能使用全部工具（记忆、文件、shell），其他人都是访客。所有者记在 access.owners 里（`runo config` 的“权限与花费 › 权限”）。",
 );
 const OWNERS_NOW: Tr = tr("Owners now: {}", "当前所有者：{}");
 const FIRST_CHAT_ASK: Tr = tr(
-    "Let the first person to write to the bot in a private chat on an app without an owner become its owner? Write to it yourself first, then turn this off in `openclaw-rs config`. [y/N]: ",
-    "让每个还没有所有者的平台上，第一个私聊机器人的人自动成为所有者？请自己先去私聊机器人，之后再到 `openclaw-rs config` 里关掉。[y/N]：",
+    "Let the first person to write to the bot in a private chat on an app without an owner become its owner? Write to it yourself first, then turn this off in `runo config`. [y/N]: ",
+    "让每个还没有所有者的平台上，第一个私聊机器人的人自动成为所有者？请自己先去私聊机器人，之后再到 `runo config` 里关掉。[y/N]：",
 );
 const FIRST_CHAT_ON: Tr = tr(
     "✓ The first private chat on QQ, Feishu or Zulip claims that app. Until you have written, anyone who reaches the bot first gets every tool.",
@@ -287,8 +287,8 @@ const COMPANION_BAD: Tr = tr(
     "{} 格式不对；请重新输入，或直接回车。",
 );
 const COMPANION_LATER: Tr = tr(
-    "Change it any time with `openclaw-rs config` or /config in the chat window, section \"Companion\".",
-    "以后随时可以用 `openclaw-rs config` 或聊天窗口里的 /config 修改，在“陪伴”一节。",
+    "Change it any time with `runo config` or /config in the chat window, section \"Companion\".",
+    "以后随时可以用 `runo config` 或聊天窗口里的 /config 修改，在“陪伴”一节。",
 );
 const MY_BIRTHDAY: Tr = tr("my birthday", "我的生日");
 const LANGUAGE_TITLE: Tr = tr("Language / 语言", "语言 / Language");
@@ -304,8 +304,8 @@ const GATEWAY_ASK: Tr = tr(
     "现在启动 Gateway，并尽量设为开机自启（可能要求输入你的密码）？[Y/n]：",
 );
 const GATEWAY_LATER: Tr = tr(
-    "Start it later with `openclaw-rs gateway start`, or `openclaw-rs serve` in the foreground.",
-    "以后可以用 `openclaw-rs gateway start` 启动，或用 `openclaw-rs serve` 在前台运行。",
+    "Start it later with `runo gateway start`, or `runo serve` in the foreground.",
+    "以后可以用 `runo gateway start` 启动，或用 `runo serve` 在前台运行。",
 );
 const GATEWAY_FAILED: Tr = tr(
     "! Could not start the Gateway: {}",
@@ -336,8 +336,8 @@ const KEY_UNCHECKED: Tr = tr(
     "! 无法验证 key（{}），先保留它。",
 );
 const KEY_ENV_BAD: Tr = tr(
-    "✗ OpenRouter refused the key in $OPENROUTER_API_KEY ({}). Fix the variable and run `openclaw-rs init` again.",
-    "✗ OpenRouter 拒绝了 $OPENROUTER_API_KEY 里的 key（{}）。请修正环境变量后重新运行 `openclaw-rs init`。",
+    "✗ OpenRouter refused the key in $OPENROUTER_API_KEY ({}). Fix the variable and run `runo init` again.",
+    "✗ OpenRouter 拒绝了 $OPENROUTER_API_KEY 里的 key（{}）。请修正环境变量后重新运行 `runo init`。",
 );
 const KEY_NEEDED: Tr = tr("A key is required.", "必须填写 key。");
 const LOADING_MODELS: Tr = tr("Loading the model list...", "正在获取模型列表……");
@@ -389,8 +389,8 @@ const BLIND: Tr = tr(
     "{} 不能看图片。要为用户发来的图片和浏览器截图选一个图片模型吗？不选的话图片只按文件名列出。[Y/n]：",
 );
 const IMAGES_UNKNOWN: Tr = tr(
-    "Whether {} can see images is unknown; if not, set agent.vision_model later with `openclaw-rs config`.",
-    "不确定 {} 能否看图片；如果不能，以后可以用 `openclaw-rs config` 设置 agent.vision_model。",
+    "Whether {} can see images is unknown; if not, set agent.vision_model later with `runo config`.",
+    "不确定 {} 能否看图片；如果不能，以后可以用 `runo config` 设置 agent.vision_model。",
 );
 const VISION_CHOSEN: Tr = tr("✓ Image model: {}", "✓ 图片模型：{}");
 const CONTEXT_AUTO: Tr = tr(
@@ -418,8 +418,8 @@ const ABORTED: Tr = tr(
     "设置已结束，没有保存任何内容。",
 );
 const DONE: Tr = tr(
-    "Saved {}.\nNext: `openclaw-rs chat` to talk in the terminal, `openclaw-rs gateway start|stop|status` for the Web UI in the background, `openclaw-rs config` for QQ, email and everything else.",
-    "已保存 {}。\n接下来：`openclaw-rs chat` 在终端里聊天，`openclaw-rs gateway start|stop|status` 在后台运行 Web UI，`openclaw-rs config` 设置 QQ、邮件和其他选项。",
+    "Saved {}.\nNext: `runo chat` to talk in the terminal, `runo gateway start|stop|status` for the Web UI in the background, `runo config` for QQ, email and everything else.",
+    "已保存 {}。\n接下来：`runo chat` 在终端里聊天，`runo gateway start|stop|status` 在后台运行 Web UI，`runo config` 设置 QQ、邮件和其他选项。",
 );
 
 #[cfg(test)]
@@ -1714,7 +1714,7 @@ mod tests {
             out.contains("Could not start the Gateway: port busy"),
             "{out}"
         );
-        assert!(out.contains("openclaw-rs gateway start"), "{out}");
+        assert!(out.contains("runo gateway start"), "{out}");
         assert!(
             out.contains("Could not install Chromium: apk failed"),
             "{out}"
