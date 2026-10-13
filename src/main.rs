@@ -40,8 +40,10 @@ mod search;
 mod service;
 mod setup;
 mod skills;
+mod status;
 mod stickers;
 mod store;
+mod tasks;
 mod tools;
 mod tts;
 mod tui;
@@ -916,6 +918,7 @@ async fn build_agent(
             .with_image(image)
             .with_speaker(speaker, config.speech.enabled)
             .with_stickers(Some(config.stickers.clone()))
+            .with_tasks(Some(config.tasks.clone()))
             .with_settings(Some(config_path.to_owned())),
         store,
         config: config::AgentConfig {

@@ -389,6 +389,7 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         router
             .route("/health", get(|| async { "ok" }))
             .route("/ws", get(ws_upgrade::<M, T>))
+            .route("/api/status", get(status::<M, T>))
             .with_state(self.clone())
     }
 
@@ -598,11 +599,26 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
         }
     }
 
-    /// Runs due cron jobs; jobs added by the CLI or tools are picked up on the next tick.
+    /// Runs due cron jobs and waiting background tasks; those added by the
+    /// CLI or tools are picked up on the next tick.
     pub async fn run_scheduler(self: Shared<M, T>) {
+        // Tasks a previous run was working on did not finish: say so.
+        match self.agent.store.tasks_interrupted() {
+            Ok(tasks) => {
+                for task in tasks {
+                    let gateway = self.clone();
+                    tokio::spawn(async move {
+                        let result = task.result.clone().unwrap_or_default();
+                        gateway.report_task(&task, "failed", &result).await;
+                    });
+                }
+            }
+            Err(err) => eprintln!("tasks: cannot read tasks: {err:#}"),
+        }
         let mut tick = tokio::time::interval(SCHEDULER_TICK);
         loop {
             tick.tick().await;
+            self.tasks_tick();
             let jobs = match self.agent.store.job_claim_due(crate::store::now()) {
                 Ok(jobs) => jobs,
                 Err(err) => {
@@ -631,6 +647,94 @@ impl<M: Model + 'static, T: Tools + 'static> Gateway<M, T> {
                     }
                 });
             }
+        }
+    }
+
+    /// Stops the tasks someone cancelled and starts waiting ones while
+    /// there is room.
+    fn tasks_tick(self: &Shared<M, T>) {
+        let config = crate::live::read(|c| c.tasks.clone()).unwrap_or_default();
+        let store = &self.agent.store;
+        for task in store.tasks_cancelling().unwrap_or_default() {
+            if self.stop(&task.own_session(), &Actor::owner(access::CLI))
+                == StopOutcome::NothingRunning
+            {
+                // Between turns: it ends here.
+                let _ = store.task_finish(task.id, "cancelled", "cancelled");
+            }
+        }
+        let running = match store.tasks_running() {
+            Ok(n) => n,
+            Err(err) => {
+                eprintln!("tasks: cannot read tasks: {err:#}");
+                return;
+            }
+        };
+        let room = config.concurrent.max(1).saturating_sub(running);
+        let tasks = match store.task_claim(room) {
+            Ok(tasks) => tasks,
+            Err(err) => {
+                eprintln!("tasks: cannot start tasks: {err:#}");
+                return;
+            }
+        };
+        for task in tasks {
+            let gateway = self.clone();
+            let steps = config.max_steps;
+            tokio::spawn(async move { gateway.run_task(task, steps).await });
+        }
+    }
+
+    /// Works on `task` in its own session, then reports back where it was
+    /// asked.
+    async fn run_task(&self, task: crate::tasks::Task, steps: usize) {
+        eprintln!(
+            "tasks: #{} {:?} started in {}",
+            task.id,
+            task.title,
+            task.own_session()
+        );
+        let actor = self.actor(&task.created_by, &task.session);
+        let own = task.own_session();
+        let prompt = crate::tasks::work_prompt(&task);
+        let result =
+            crate::agent::with_step_limit(steps, self.run_unattended(actor, &own, &prompt)).await;
+        let store = &self.agent.store;
+        let cancelled = store
+            .task(task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|t| t.state == "cancelling");
+        let (state, text) = match result {
+            Ok(text) if cancelled => ("cancelled", text),
+            Ok(text) => ("done", text),
+            Err(_) if cancelled => ("cancelled", "cancelled".to_owned()),
+            Err(err) => ("failed", format!("{err:#}")),
+        };
+        if let Err(err) = store.task_finish(task.id, state, &text) {
+            eprintln!("tasks: cannot record #{}: {err:#}", task.id);
+        }
+        eprintln!("tasks: #{} {:?} {state}", task.id, task.title);
+        self.report_task(&task, state, &text).await;
+    }
+
+    /// Tells the conversation where `task` was asked how it ended, in the
+    /// agent's words (plainly, if that turn fails).
+    async fn report_task(&self, task: &crate::tasks::Task, state: &str, result: &str) {
+        let actor = self.actor(&task.created_by, &task.session);
+        let note = crate::tasks::done_prompt(task, state, result);
+        let text = match self.run_unattended(actor, &task.session, &note).await {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!(
+                    "tasks: cannot report #{} in {}: {err:#}",
+                    task.id, task.session
+                );
+                format!("[{} #{}: {state}]\n{result}", task.title, task.id)
+            }
+        };
+        if !text.trim().is_empty() {
+            self.notify(&task.session, &text).await;
         }
     }
 
@@ -776,6 +880,21 @@ async fn ws_upgrade<M: Model + 'static, T: Tools + 'static>(
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
     upgrade.on_upgrade(move |socket| connection(gateway, socket))
+}
+
+/// `/api/status`: how the agent is doing, for the status page; the same
+/// token as the WebSocket.
+async fn status<M: Model + 'static, T: Tools + 'static>(
+    State(gateway): State<Shared<M, T>>,
+    Query(query): Query<WsQuery>,
+) -> Response {
+    if !gateway.authorized(query.token.as_deref()) {
+        return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+    }
+    match crate::status::snapshot(gateway.store()) {
+        Ok(status) => axum::Json(status).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}")).into_response(),
+    }
 }
 
 /// Answers approvals for turns started on one WebSocket connection.
@@ -1624,6 +1743,66 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_background_task_runs_on_its_own_and_reports_back() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let agent = Arc::new(Agent {
+            model: Says(Mutex::new(vec![
+                "资料整理好了，保存在 notes/week.md",
+                "整理完啦！一周的资料都在 notes/week.md 里～",
+            ])),
+            summarizer: None,
+            vision: None,
+            voice: None,
+            tools: NoTools,
+            store: store.clone(),
+            config: crate::config::AgentConfig::default(),
+        });
+        let access: AccessConfig = toml::from_str(r#"owners = ["qq:BOSS"]"#).unwrap();
+        let gateway = Gateway::new(agent, None, access);
+        let chat = Arc::new(Recording(Mutex::default()));
+        gateway.add_notifier(chat.clone());
+        let task = store
+            .task_add("周报", "整理这周的资料", "qq:c2c:BOSS", "qq:BOSS", 5)
+            .unwrap();
+        gateway.tasks_tick();
+        for _ in 0..100 {
+            if !chat.0.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            *chat.0.lock().unwrap(),
+            ["整理完啦！一周的资料都在 notes/week.md 里～"]
+        );
+        let done = store.task(task.id).unwrap().unwrap();
+        assert_eq!(done.state, "done");
+        assert_eq!(
+            done.result.as_deref(),
+            Some("资料整理好了，保存在 notes/week.md")
+        );
+        // The work is in its own session; the report in the conversation.
+        let own = store.session_id(&task.own_session()).unwrap();
+        let work = store.history(own, 10).unwrap();
+        assert!(
+            work[0]
+                .content
+                .as_deref()
+                .unwrap()
+                .starts_with(crate::tasks::PROMPT_PREFIX)
+        );
+        let asked = store.session_id("qq:c2c:BOSS").unwrap();
+        let report = store.history(asked, 10).unwrap();
+        assert!(
+            report[0]
+                .content
+                .as_deref()
+                .unwrap()
+                .starts_with(crate::tasks::DONE_PREFIX)
         );
     }
 

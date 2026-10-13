@@ -34,6 +34,7 @@ pub struct Config {
     pub speech: SpeechConfig,
     pub stickers: StickersConfig,
     pub embedding: EmbeddingConfig,
+    pub tasks: crate::tasks::TasksConfig,
     pub mcp: McpConfig,
     pub skills: SkillsConfig,
     pub limits: crate::limits::LimitsConfig,

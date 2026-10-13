@@ -333,6 +333,24 @@ CREATE TABLE rituals (
   day TEXT NOT NULL
 );
 "#,
+        r#"
+-- Background tasks: long work run in its own session (task:<id>); the
+-- result goes back to `session`, where it was asked.
+CREATE TABLE tasks (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  session TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  -- pending, running, cancelling, done, failed, cancelled
+  state TEXT NOT NULL,
+  result TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER
+);
+CREATE INDEX tasks_by_state ON tasks(state, id);
+"#,
     ],
     legacy: &[
         (

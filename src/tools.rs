@@ -152,6 +152,8 @@ pub struct BuiltinTools {
     speech_enabled: bool,
     /// The sticker library as configured at start; the live settings win.
     stickers: Option<crate::config::StickersConfig>,
+    /// Background tasks as configured at start; the live settings win.
+    tasks: Option<crate::tasks::TasksConfig>,
     /// config.toml, for the `settings` tool; `None` offers no such tool.
     settings: Option<PathBuf>,
 }
@@ -204,6 +206,17 @@ struct VoiceArgs {
 struct VoiceProfileArgs {
     voice: String,
     instructions: String,
+}
+
+#[derive(Deserialize)]
+struct TaskStartArgs {
+    title: String,
+    prompt: String,
+}
+
+#[derive(Deserialize)]
+struct TaskCancelArgs {
+    id: i64,
 }
 
 #[derive(Deserialize)]
@@ -323,6 +336,7 @@ impl BuiltinTools {
             speaker: None,
             speech_enabled: true,
             stickers: None,
+            tasks: None,
             settings: None,
         })
     }
@@ -478,6 +492,91 @@ impl BuiltinTools {
     pub fn with_stickers(mut self, stickers: Option<crate::config::StickersConfig>) -> Self {
         self.stickers = stickers;
         self
+    }
+
+    /// Offers background tasks while they are on; `None` offers none.
+    pub fn with_tasks(mut self, tasks: Option<crate::tasks::TasksConfig>) -> Self {
+        self.tasks = tasks;
+        self
+    }
+
+    /// The task settings while tasks are on, live as `speaker`.
+    fn tasks(&self) -> Option<crate::tasks::TasksConfig> {
+        let configured = self.tasks.as_ref()?;
+        let now = crate::live::read(|c| c.tasks.clone()).unwrap_or_else(|| configured.clone());
+        now.enabled.then_some(now)
+    }
+
+    fn task_start(&self, actor: &Actor, args: TaskStartArgs) -> Result<String, String> {
+        let config = self.tasks().ok_or("error: background tasks are off")?;
+        let session = crate::agent::current_session()
+            .ok_or("error: task_start can only start a task from a conversation")?;
+        if session.starts_with("task:") {
+            return Err("error: a background task cannot start another; do the work here".into());
+        }
+        let task = self
+            .store
+            .task_add(
+                &args.title,
+                &args.prompt,
+                &session,
+                &actor.id,
+                config.max_open,
+            )
+            .map_err(|e| format!("error: {e:#}"))?;
+        Ok(format!(
+            "started background task #{} {:?}. It runs on its own (it may take a while) and you \
+             will be told here when it is done; tell them so briefly, and do not do the work now.",
+            task.id, task.title
+        ))
+    }
+
+    fn task_list(&self, actor: &Actor) -> Result<String, String> {
+        let tasks = self
+            .store
+            .tasks(actor.scope(), 20)
+            .map_err(|e| format!("error: {e:#}"))?;
+        if tasks.is_empty() {
+            return Ok("no background tasks".into());
+        }
+        Ok(tasks
+            .iter()
+            .map(|t| {
+                let result = t
+                    .result
+                    .as_deref()
+                    .map(|r| format!(": {}", r.chars().take(200).collect::<String>()))
+                    .unwrap_or_default();
+                format!(
+                    "#{} {:?} [{}] asked {} in {}{result}",
+                    t.id,
+                    t.title,
+                    t.state,
+                    format_time(t.created_at),
+                    t.session
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
+    fn task_cancel(&self, actor: &Actor, args: TaskCancelArgs) -> Result<String, String> {
+        match self
+            .store
+            .task_cancel(args.id, actor.scope())
+            .map_err(|e| format!("error: {e:#}"))?
+            .as_deref()
+        {
+            Some("cancelled") => Ok(format!("task #{} cancelled", args.id)),
+            Some(_) => Ok(format!(
+                "task #{} is being stopped; you will be told when it has",
+                args.id
+            )),
+            None => Err(format!(
+                "error: no waiting or running task #{} of yours",
+                args.id
+            )),
+        }
     }
 
     /// The speech model while voice messages are on: `speech.enabled` can be
@@ -1684,6 +1783,29 @@ impl BuiltinTools {
                 ));
             }
         }
+        if self.tasks().is_some() {
+            specs.push(ToolSpec::function(
+                "task_start",
+                "Start a background task for long work that would hold up the conversation: \
+                 research over many sources, writing a document, going through many files. It runs \
+                 on its own with its own steps and you are told here when it is done, so the \
+                 conversation goes on meanwhile. Not for anything quick: do that now.",
+                json!({"type": "object", "properties": {
+                    "title": {"type": "string", "description": "A few words naming it"},
+                    "prompt": {"type": "string", "description": "Everything the task needs to know: what to do, sources, what the result should look like (e.g. a Markdown file in the workspace), the person's preferences"}
+                }, "required": ["title", "prompt"]}),
+            ));
+            specs.push(ToolSpec::function(
+                "task_list",
+                "List background tasks with their state and results.",
+                json!({"type": "object", "properties": {}}),
+            ));
+            specs.push(ToolSpec::function(
+                "task_cancel",
+                "Cancel a waiting or running background task by its #id.",
+                json!({"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}),
+            ));
+        }
         if self.stickers().is_some() {
             specs.push(ToolSpec::function(
                 "sticker_send",
@@ -1839,6 +1961,9 @@ impl BuiltinTools {
                 Err(e) => Err(e),
             },
             "sticker_save" => parse(call).and_then(|args| self.sticker_save(args)),
+            "task_start" => parse(call).and_then(|args| self.task_start(actor, args)),
+            "task_list" => self.task_list(actor),
+            "task_cancel" => parse(call).and_then(|args| self.task_cancel(actor, args)),
             "drawing_profile_save" => {
                 parse(call).and_then(|args| self.drawing_profile_save(actor, args))
             }

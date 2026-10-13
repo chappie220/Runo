@@ -77,7 +77,8 @@ impl Capability {
             "read_file" | "list_dir" => Capability::FilesRead,
             "write_file" | "edit_file" => Capability::FilesWrite,
             "memory_save" | "memory_search" | "memory_delete" => Capability::Memory,
-            "cron_add" | "cron_list" | "cron_remove" => Capability::Cron,
+            "cron_add" | "cron_list" | "cron_remove" | "task_start" | "task_list"
+            | "task_cancel" => Capability::Cron,
             "identity_set" | "identity_propose" => Capability::Identity,
             "web_search" => Capability::WebSearch,
             "browser" => Capability::Browser,
