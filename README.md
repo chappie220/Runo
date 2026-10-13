@@ -15,7 +15,7 @@ On any x86_64 or aarch64 Linux (Raspberry Pi with a 64-bit OS included),
 from GitHub Releases:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/install.sh | sh
 ```
 
 The script picks the binary for this machine, checks its checksum, installs

@@ -8,7 +8,7 @@
 # sudo or doas, which ask for your password. A first install then runs
 # `openclaw-rs init` to set it up.
 #
-#   curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --service pi
 #
 # Options:
@@ -26,7 +26,7 @@
 
 set -eu
 
-REPO="${OPENCLAW_REPO:-chappie220/openclaw}"
+REPO="${OPENCLAW_REPO:-chappie220/Runo}"
 API_URL="${OPENCLAW_API_URL:-https://api.github.com}"
 DOWNLOAD_URL="${OPENCLAW_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}"
 NAME=openclaw-rs

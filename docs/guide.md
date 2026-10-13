@@ -33,7 +33,7 @@ On a Raspberry Pi (64-bit OS) or any x86_64/aarch64 Linux, from GitHub
 Releases:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/install.sh | sh
 ```
 
 The script picks the binary for this machine, checks it against the
@@ -959,7 +959,7 @@ Or with the script, which also works when the installed binary is too old
 to have `update`, or broken (same options as the install script):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/update.sh | sh
+curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
 curl -fsSL .../update.sh | sh -s -- --version 0.1.0   # a given release, also to go back
 ```
 
@@ -982,7 +982,7 @@ owns (e.g. `/home/pi/bin/openclaw-rs`, then `service install` again);
 check = true                   # look once a day and log a new version
 auto = false                   # also install it and restart
 check_hours = 24
-repo = "chappie220/openclaw"   # where releases come from
+repo = "chappie220/Runo"   # where releases come from
 ```
 
 Releases are published by pushing a tag that matches `Cargo.toml`'s release

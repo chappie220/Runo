@@ -44,7 +44,7 @@ impl Default for UpdateConfig {
             check: true,
             auto: false,
             check_hours: 24,
-            repo: "chappie220/openclaw".into(),
+            repo: "chappie220/Runo".into(),
             api_url: "https://api.github.com".into(),
         }
     }
