@@ -147,8 +147,10 @@ pub struct BuiltinTools {
     review: Option<Reviewer>,
     mail: Option<Arc<MailBot>>,
     image: Option<crate::imagegen::ImageGen>,
+    /// The speech model; used while `speech.enabled` is on.
     speaker: Option<crate::tts::Speaker>,
-    /// The sticker library; `None` offers no sticker tools.
+    speech_enabled: bool,
+    /// The sticker library as configured at start; the live settings win.
     stickers: Option<crate::config::StickersConfig>,
     /// config.toml, for the `settings` tool; `None` offers no such tool.
     settings: Option<PathBuf>,
@@ -319,6 +321,7 @@ impl BuiltinTools {
             mail: None,
             image: None,
             speaker: None,
+            speech_enabled: true,
             stickers: None,
             settings: None,
         })
@@ -463,16 +466,32 @@ impl BuiltinTools {
         ))
     }
 
-    /// Offers `voice_send` with this speech model; `None` offers none.
-    pub fn with_speaker(mut self, speaker: Option<crate::tts::Speaker>) -> Self {
+    /// Offers `voice_send` with this speech model while `enabled` (or
+    /// the live `speech.enabled`) is on; `None` offers none.
+    pub fn with_speaker(mut self, speaker: Option<crate::tts::Speaker>, enabled: bool) -> Self {
         self.speaker = speaker;
+        self.speech_enabled = enabled;
         self
     }
 
-    /// Offers the sticker library; `None` (or turned off) offers none.
+    /// Offers the sticker library while it is on; `None` offers none.
     pub fn with_stickers(mut self, stickers: Option<crate::config::StickersConfig>) -> Self {
-        self.stickers = stickers.filter(|s| s.enabled);
+        self.stickers = stickers;
         self
+    }
+
+    /// The speech model while voice messages are on: `speech.enabled` can be
+    /// switched in chat and applies at once.
+    fn speaker(&self) -> Option<&crate::tts::Speaker> {
+        let on = crate::live::read(|c| c.speech.enabled).unwrap_or(self.speech_enabled);
+        self.speaker.as_ref().filter(|_| on)
+    }
+
+    /// The sticker settings while stickers are on, live as `speaker`.
+    fn stickers(&self) -> Option<crate::config::StickersConfig> {
+        let configured = self.stickers.as_ref()?;
+        let now = crate::live::read(|c| c.stickers.clone()).unwrap_or_else(|| configured.clone());
+        now.enabled.then_some(now)
     }
 
     /// Speaks `text` in the identity's voice and sends it as a voice message.
@@ -571,7 +590,7 @@ impl BuiltinTools {
                  on its own. Skip step 1 entirely; do not research your voice again."
             ));
         }
-        let Some(speaker) = &self.speaker else {
+        let Some(speaker) = self.speaker() else {
             return Ok(String::new());
         };
         let voices = speaker.catalog().await.voices;
@@ -643,7 +662,7 @@ impl BuiltinTools {
 
     /// Sends the identity's sticker for `mood`, or says how to make one.
     async fn sticker_send(&self, actor: &Actor, args: StickerSendArgs) -> Result<String, String> {
-        if self.stickers.is_none() {
+        if self.stickers().is_none() {
             return Err("error: stickers are off".into());
         }
         let name = self.identity_name()?;
@@ -695,7 +714,7 @@ impl BuiltinTools {
 
     /// Files a picture (usually one image_generate just drew) as a sticker.
     fn sticker_save(&self, args: StickerSaveArgs) -> Result<String, String> {
-        let config = self.stickers.as_ref().ok_or("error: stickers are off")?;
+        let config = self.stickers().ok_or("error: stickers are off")?;
         let name = self.identity_name()?;
         let source = self.resolve(&args.path);
         let (id, path) = crate::stickers::save(
@@ -743,11 +762,11 @@ impl BuiltinTools {
     fn skills_for(&self, actor: Option<&Actor>) -> Option<Skills> {
         let skills = self.skills.as_ref()?;
         let draws = self.image.is_some() && actor.is_some_and(|a| a.can(Capability::ImageGenerate));
-        let speaks = self.speaker.is_some() && actor.is_some_and(|a| a.can(Capability::Voice));
+        let speaks = self.speaker().is_some() && actor.is_some_and(|a| a.can(Capability::Voice));
         let mut builtins = Vec::new();
         if draws {
             builtins.push(crate::skills::DRAWING);
-            if self.stickers.is_some() {
+            if self.stickers().is_some() {
                 builtins.push(crate::skills::STICKERS);
             }
         }
@@ -1636,7 +1655,7 @@ impl BuiltinTools {
                 }, "required": ["profile"]}),
             ));
         }
-        if let Some(speaker) = &self.speaker {
+        if let Some(speaker) = self.speaker() {
             specs.push(ToolSpec::function(
                 "voice_send",
                 &format!(
@@ -1665,7 +1684,7 @@ impl BuiltinTools {
                 ));
             }
         }
-        if self.stickers.is_some() {
+        if self.stickers().is_some() {
             specs.push(ToolSpec::function(
                 "sticker_send",
                 "Send one of your own stickers for a mood, like people do in chat apps: after or instead \
@@ -2056,7 +2075,7 @@ mod tests {
         )
         .unwrap()
         .with_skills(Some(skills))
-        .with_speaker(crate::tts::Speaker::new(&config, "k").unwrap());
+        .with_speaker(crate::tts::Speaker::new(&config, "k").unwrap(), true);
         let offered = owner(async { tools.specs() }).await;
         assert!(offered.iter().any(|s| s.function.name == "voice_send"));
         let phone = Arc::new(Phone::default());

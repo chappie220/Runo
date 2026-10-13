@@ -267,12 +267,13 @@ impl Default for SpeechConfig {
 }
 
 impl SpeechConfig {
-    /// The speech model, when the tool is on and one is chosen.
+    /// The speech model, when one is chosen (on or off: `enabled` can be
+    /// switched in chat while the Gateway runs).
     pub fn model(&self) -> Option<&str> {
         self.model
             .as_deref()
             .map(str::trim)
-            .filter(|m| self.enabled && !m.is_empty())
+            .filter(|m| !m.is_empty())
     }
 }
 

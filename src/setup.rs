@@ -2643,15 +2643,19 @@ fn edit_section<R: BufRead, W: Write>(
 }
 
 /// The settings a person may change by asking in chat (the `settings`
-/// tool): the companion section, chat reply splitting and the language.
+/// tool): the companion section, chat reply splitting, the language, and
+/// whether the agent sends voice messages and stickers.
 /// Keys, permissions and access stay with the editor.
 fn chat_settable() -> impl Iterator<Item = &'static Field> {
     let companion = sections()
         .find(|s| s.fields.iter().any(|f| f.path == ["heartbeat", "enabled"]))
         .map_or(&[][..], |s| s.fields);
-    let elsewhere = sections()
-        .flat_map(|s| s.fields)
-        .filter(|f| matches!(f.path, [_, "split_replies"] | ["language"]));
+    let elsewhere = sections().flat_map(|s| s.fields).filter(|f| {
+        matches!(
+            f.path,
+            [_, "split_replies"] | ["language"] | ["speech" | "stickers", "enabled"]
+        )
+    });
     companion.iter().chain(elsewhere)
 }
 

@@ -147,6 +147,23 @@ CREATE TABLE stickers (
 );
 CREATE INDEX stickers_mood ON stickers(identity, mood);
 "#,
+        r#"
+-- 0.5.0: the persona starts over. The old identity, its diary and how it
+-- drew are kept here, not used; memories of the people stay.
+INSERT INTO identity_retired
+  SELECT name, creature, vibe, emoji, soul, updated_at,
+         CAST(strftime('%s', 'now') AS INTEGER)
+  FROM identity;
+DELETE FROM identity;
+UPDATE identity_drafts SET state = 'superseded', decided_at = CAST(strftime('%s', 'now') AS INTEGER)
+  WHERE state = 'awaiting';
+CREATE TABLE diary_retired AS
+  SELECT day, text, mood, created_at, CAST(strftime('%s', 'now') AS INTEGER) AS retired_at
+  FROM diary;
+DELETE FROM diary;
+CREATE TABLE drawing_profile_retired AS SELECT * FROM drawing_profile;
+DELETE FROM drawing_profile;
+"#,
     ],
     legacy: &[
         ("memories", "id, content, created_at"),
@@ -196,6 +213,34 @@ ALTER TABLE sessions ADD COLUMN token_ratio REAL;
 -- Files sent with a user message: JSON list of {name, mime, path, bytes},
 -- paths relative to the workspace.
 ALTER TABLE messages ADD COLUMN attachments TEXT;
+"#,
+        r#"
+-- 0.5.0: every conversation starts over. The old ones are kept in
+-- sessions_0_4 and messages_0_4, not used.
+DROP INDEX messages_by_session;
+ALTER TABLE messages RENAME TO messages_0_4;
+ALTER TABLE sessions RENAME TO sessions_0_4;
+CREATE TABLE sessions (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  context_start INTEGER NOT NULL DEFAULT 0,
+  context_pruned_before INTEGER NOT NULL DEFAULT 0,
+  context_summary TEXT,
+  token_ratio REAL
+);
+CREATE TABLE messages (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  content TEXT,
+  tool_calls TEXT,
+  tool_call_id TEXT,
+  created_at INTEGER NOT NULL,
+  attachments TEXT
+);
+CREATE INDEX messages_by_session ON messages(session_id, id);
 "#,
     ],
     legacy: &[
@@ -1307,6 +1352,72 @@ mod tests {
             .unwrap();
         assert_eq!(x, 1);
         assert!(dir.path().join(LEGACY_FILE).exists());
+    }
+
+    #[test]
+    fn version_0_5_starts_the_persona_and_every_conversation_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let id = store.session_id("qq:c2c:ME").unwrap();
+        store.append(id, &ChatMessage::user("你好")).unwrap();
+        store.memory_save("用户喜欢猫").unwrap();
+        // Back to how a 0.4 install looked: before the two reset steps.
+        {
+            let soul = store.soul();
+            soul.execute_batch(
+                "INSERT INTO identity VALUES (1, '小白', 'cat', 'shy', NULL, 'You are shy.', 1);
+                 INSERT INTO diary VALUES ('2026-10-01', 'a quiet day', 'calm', 1);
+                 DROP TABLE diary_retired; DROP TABLE drawing_profile_retired;",
+            )
+            .unwrap();
+            let version: i64 = soul
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            soul.pragma_update(None, "user_version", version - 1)
+                .unwrap();
+            let chats = store.chats();
+            chats
+                .execute_batch(
+                    "DROP TABLE messages; DROP TABLE sessions;
+                     ALTER TABLE sessions_0_4 RENAME TO sessions;
+                     ALTER TABLE messages_0_4 RENAME TO messages;
+                     CREATE INDEX messages_by_session ON messages(session_id, id);
+                     INSERT INTO sessions(name, created_at, updated_at) VALUES ('main', 1, 1);
+                     INSERT INTO messages(session_id, role, content, created_at)
+                       VALUES (1, 'user', 'old hello', 1);",
+                )
+                .unwrap();
+            let version: i64 = chats
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            chats
+                .pragma_update(None, "user_version", version - 1)
+                .unwrap();
+        }
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        assert!(store.identity().unwrap().is_none());
+        assert_eq!(store.memory_list(10).unwrap().len(), 1);
+        let retired: String = store
+            .soul()
+            .query_row("SELECT name FROM identity_retired", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(retired, "小白");
+        let diary: i64 = store
+            .soul()
+            .query_row("SELECT count(*) FROM diary", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(diary, 0);
+        assert!(store.sessions().unwrap().is_empty());
+        let old: i64 = store
+            .chats()
+            .query_row("SELECT count(*) FROM messages_0_4", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old, 1);
+        // New conversations work as before.
+        let id = store.session_id("main").unwrap();
+        store.append(id, &ChatMessage::user("hi")).unwrap();
+        assert_eq!(store.sessions().unwrap().len(), 1);
     }
 
     #[test]

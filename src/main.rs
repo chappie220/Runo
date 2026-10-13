@@ -914,7 +914,7 @@ async fn build_agent(
             .with_review(review)
             .with_mail(mail)
             .with_image(image)
-            .with_speaker(speaker)
+            .with_speaker(speaker, config.speech.enabled)
             .with_stickers(Some(config.stickers.clone()))
             .with_settings(Some(config_path.to_owned())),
         store,
