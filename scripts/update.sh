@@ -3,7 +3,7 @@
 # (checksum checked, the previous binary kept as openclaw-rs.old, a running
 # Gateway restarted when this account may).
 #
-#   curl -fsSL https://raw.githubusercontent.com/chappie220/openclaw/main/scripts/update.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
 #   sh update.sh --version 0.2.0      # a given release, also to go back
 #
 # Takes the same options as install.sh (--dir, --version, --force).
@@ -22,7 +22,7 @@ case "$0" in
 	;;
 esac
 
-repo="${OPENCLAW_REPO:-chappie220/openclaw}"
+repo="${OPENCLAW_REPO:-chappie220/Runo}"
 url="${OPENCLAW_INSTALL_URL:-https://raw.githubusercontent.com/$repo/main/scripts/install.sh}"
 tmp=$(mktemp "${TMPDIR:-/tmp}/openclaw-install.XXXXXX")
 trap 'rm -f "$tmp"' EXIT INT TERM

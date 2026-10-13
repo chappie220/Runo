@@ -103,6 +103,16 @@ DELETE FROM identity;
 UPDATE identity_drafts SET state = 'superseded', decided_at = CAST(strftime('%s', 'now') AS INTEGER)
   WHERE state = 'awaiting';
 "#,
+        r#"
+-- How the identity draws, researched once and reused by every conversation;
+-- it belongs to the identity of that name.
+CREATE TABLE drawing_profile (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  identity TEXT NOT NULL,
+  profile TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+"#,
     ],
     legacy: &[
         ("memories", "id, content, created_at"),

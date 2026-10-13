@@ -368,8 +368,8 @@ const GROUPS: &[Group] = &[
                         path: &["guide", "enabled"],
                         label: tr("Add messages to a running turn", "对话中插入补充消息"),
                         help: tr(
-                            "Messages sent while a turn runs join it at a good moment instead of waiting; see README \"Guided conversation\".",
-                            "回复进行中发来的消息会在合适的时机加入当前这一轮，而不是排队等待；见 README 的 \"Guided conversation\"。",
+                            "Messages sent while a turn runs join it at a good moment instead of waiting; see docs/guide.md \"Guided conversation\".",
+                            "回复进行中发来的消息会在合适的时机加入当前这一轮，而不是排队等待；见 docs/guide.md 的 \"Guided conversation\"。",
                         ),
                         kind: Kind::Bool,
                     },
@@ -763,8 +763,8 @@ const GROUPS: &[Group] = &[
                         path: &["tools", "review", "provider"],
                         label: tr("Shell command auto-review", "Shell 命令自动审查"),
                         help: tr(
-                            "A model rates each `ask` command; see README \"Command auto-review\".",
-                            "由模型给每条需要批准的命令打分；见 README 的 \"Command auto-review\"。",
+                            "A model rates each `ask` command; see docs/guide.md \"Command auto-review\".",
+                            "由模型给每条需要批准的命令打分；见 docs/guide.md 的 \"Command auto-review\"。",
                         ),
                         kind: Kind::Decider {
                             model: &["tools", "review", "model"],

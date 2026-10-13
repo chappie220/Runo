@@ -443,11 +443,54 @@ impl Store {
     pub fn identity_clear(&self) -> Result<bool> {
         Ok(self.soul().execute("DELETE FROM identity", [])? > 0)
     }
+
+    /// The saved drawing profile of the identity named `name`; one saved
+    /// for another identity does not count.
+    pub fn drawing_profile(&self, name: &str) -> Result<Option<String>> {
+        Ok(self
+            .soul()
+            .query_row(
+                "SELECT profile FROM drawing_profile WHERE id = 1 AND identity = ?1",
+                params![name.trim()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Saves how the identity named `name` draws, replacing any earlier one.
+    pub fn drawing_profile_set(&self, name: &str, profile: &str) -> Result<()> {
+        self.soul().execute(
+            "INSERT INTO drawing_profile (id, identity, profile, updated_at) VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET identity = ?1, profile = ?2, updated_at = ?3",
+            params![name.trim(), profile.trim(), now()],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_drawing_profile_belongs_to_one_identity() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.drawing_profile("悟空").unwrap(), None);
+        store
+            .drawing_profile_set("悟空", " brush and ink ")
+            .unwrap();
+        assert_eq!(
+            store.drawing_profile("悟空").unwrap().as_deref(),
+            Some("brush and ink")
+        );
+        assert_eq!(store.drawing_profile("八戒").unwrap(), None);
+        store.drawing_profile_set("八戒", "crayons").unwrap();
+        assert_eq!(store.drawing_profile("悟空").unwrap(), None);
+        assert_eq!(
+            store.drawing_profile("八戒").unwrap().as_deref(),
+            Some("crayons")
+        );
+    }
 
     fn wukong() -> Identity {
         Identity {

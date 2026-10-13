@@ -81,7 +81,7 @@ impl Capability {
             "skill" => Capability::Skills,
             "send_mail" => Capability::Mail,
             "settings" => Capability::Settings,
-            "image_generate" => Capability::ImageGenerate,
+            "image_generate" | "drawing_profile_save" => Capability::ImageGenerate,
             name if crate::mcp::is_mcp_tool(name) => Capability::Mcp,
             _ => return None,
         })

@@ -25,6 +25,9 @@ use crate::search::Searcher;
 use crate::skills::Skills;
 use crate::store::Store;
 
+/// Longest drawing profile kept; it is shown with every drawing.
+const MAX_DRAWING_PROFILE_CHARS: usize = 1500;
+
 /// Asks a person whether a gated action may run. Front ends supply their own.
 #[async_trait]
 pub trait Approver: Send + Sync {
@@ -150,6 +153,11 @@ struct ImageArgs {
     transparent: bool,
     #[serde(default)]
     references: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct DrawingProfileArgs {
+    profile: String,
 }
 
 #[derive(Deserialize)]
@@ -437,9 +445,87 @@ impl BuiltinTools {
         let skills = self
             .skills_for(Some(actor))
             .ok_or("error: skills are off")?;
-        skills
-            .load(args.name.trim())
-            .map_err(|err| format!("error: {err:#}"))
+        let name = args.name.trim();
+        let mut text = skills.load(name).map_err(|err| format!("error: {err:#}"))?;
+        let builtin_drawing = skills
+            .scan()
+            .iter()
+            .any(|s| s.name == name && s.builtin == Some(crate::skills::DRAWING));
+        if builtin_drawing {
+            text.push_str("\n\n");
+            text.push_str(&self.drawing_profile_note()?);
+        }
+        Ok(text)
+    }
+
+    /// The identity's name, which a drawing profile belongs to.
+    fn identity_name(&self) -> Result<String, String> {
+        Ok(self
+            .store
+            .identity()
+            .map_err(|e| format!("error: {e:#}"))?
+            .map(|i| i.name)
+            .unwrap_or_default())
+    }
+
+    /// What the drawing skill is told about the saved profile.
+    fn drawing_profile_note(&self) -> Result<String, String> {
+        let name = self.identity_name()?;
+        let saved = self
+            .store
+            .drawing_profile(&name)
+            .map_err(|e| format!("error: {e:#}"))?;
+        Ok(match saved {
+            Some(profile) => format!(
+                "## Your saved drawing profile\n\n{profile}\n\nIt was researched before and is \
+                 shared by every conversation: use it as it is and skip step 1 entirely. Do not \
+                 search or research how you draw again."
+            ),
+            None => "## No drawing profile saved yet\n\nDo step 1 now, once: research, then save \
+                     the profile with drawing_profile_save. Every later drawing, in any \
+                     conversation, gets it from there without researching again."
+                .into(),
+        })
+    }
+
+    /// Saves how the identity draws, for every later drawing. Only owners
+    /// replace a saved profile.
+    fn drawing_profile_save(
+        &self,
+        actor: &Actor,
+        args: DrawingProfileArgs,
+    ) -> Result<String, String> {
+        if self.image.is_none() {
+            return Err("error: image generation is off".into());
+        }
+        let profile = args.profile.trim();
+        if profile.is_empty() {
+            return Err("error: the profile is empty".into());
+        }
+        if profile.chars().count() > MAX_DRAWING_PROFILE_CHARS {
+            return Err(format!(
+                "error: keep the profile under {MAX_DRAWING_PROFILE_CHARS} characters"
+            ));
+        }
+        let name = self.identity_name()?;
+        let saved = self
+            .store
+            .drawing_profile(&name)
+            .map_err(|e| format!("error: {e:#}"))?;
+        if saved.is_some() && !actor.owner {
+            return Err(
+                "error: a drawing profile is already saved; use it. Only the owner can change it."
+                    .into(),
+            );
+        }
+        self.store
+            .drawing_profile_set(&name, profile)
+            .map_err(|e| format!("error: {e:#}"))?;
+        Ok(if saved.is_some() {
+            "drawing profile replaced; later drawings use the new one".into()
+        } else {
+            "drawing profile saved; later drawings reuse it without researching".into()
+        })
     }
 
     async fn mcp(&self, name: &str, arguments: &str) -> Result<String, String> {
@@ -1166,6 +1252,15 @@ impl BuiltinTools {
                 }, "required": ["prompt"]}),
             ));
         }
+        if self.image.is_some() && self.skills.is_some() {
+            specs.push(ToolSpec::function(
+                "drawing_profile_save",
+                "Save how you (your identity) draw, as the drawing skill describes: skill level, medium, style, favorite subjects, habits and signature, what you will not draw. It is kept for every later drawing in every conversation, so you research it only once. Saving again replaces it (owners only), e.g. when the user corrects it.",
+                json!({"type": "object", "properties": {
+                    "profile": {"type": "string", "description": "The drawing profile, under 1500 characters"}
+                }, "required": ["profile"]}),
+            ));
+        }
         if let Some(skills) = self.skills_for(access::current().as_ref())
             && !skills.ready().is_empty()
         {
@@ -1278,6 +1373,9 @@ impl BuiltinTools {
                 Err(e) => Err(e),
             },
             "skill" => parse(call).and_then(|args| self.skill(actor, args)),
+            "drawing_profile_save" => {
+                parse(call).and_then(|args| self.drawing_profile_save(actor, args))
+            }
             "image_generate" => match parse(call) {
                 Ok(args) => self.image_generate(actor, args).await,
                 Err(e) => Err(e),
@@ -1448,13 +1546,18 @@ mod tests {
         let mut config = Config::default();
         config.model.provider = crate::config::Provider::Chatgpt;
         let skills = Skills::new(dir.path(), &crate::config::SkillsConfig::default());
-        let plain = BuiltinTools::new(
-            dir.path().to_owned(),
-            ToolsConfig::default(),
-            Store::open_in_memory().unwrap(),
-        )
-        .unwrap()
-        .with_skills(Some(skills.clone()));
+        let store = Store::open_in_memory().unwrap();
+        let persona = |name: &str| crate::identity::Identity {
+            name: name.into(),
+            creature: "猫娘".into(),
+            vibe: "活泼".into(),
+            soul: "You love drawing.".into(),
+            ..Default::default()
+        };
+        store.identity_set(&persona("小花")).unwrap();
+        let plain = BuiltinTools::new(dir.path().to_owned(), ToolsConfig::default(), store.clone())
+            .unwrap()
+            .with_skills(Some(skills.clone()));
         // No image model: no drawing skill, and no skill tool at all.
         let (prompt, offered) = owner(async { (plain.prompt(), plain.specs()) }).await;
         assert!(!prompt.unwrap_or_default().contains("- drawing:"));
@@ -1473,8 +1576,52 @@ mod tests {
             "{prompt}"
         );
         assert!(loaded.starts_with("Skill drawing (built in)."), "{loaded}");
-        assert!(loaded.contains("Drawing profile:"), "{loaded}");
+        assert!(loaded.contains("drawing_profile_save"), "{loaded}");
         assert!(!loaded.contains("description:"), "{loaded}");
+        assert!(loaded.ends_with("without researching again."), "{loaded}");
+
+        // Researched once, then every later load carries it.
+        let saved = owner(t.call(&call(
+            "drawing_profile_save",
+            json!({"profile": "Talented amateur; colored pencils; signs 小花 with a paw."}),
+        )))
+        .await;
+        assert!(saved.contains("saved"), "{saved}");
+        let loaded = owner(t.call(&call("skill", json!({"name": "drawing"})))).await;
+        assert!(
+            loaded.contains("## Your saved drawing profile\n\nTalented amateur; colored pencils"),
+            "{loaded}"
+        );
+        assert!(loaded.contains("Do not search"), "{loaded}");
+
+        // Someone else who may draw uses it, but cannot replace it.
+        let mut grants = crate::access::AccessConfig::default();
+        grants.grants.insert(
+            "qq:Y".into(),
+            vec![Capability::Skills, Capability::ImageGenerate],
+        );
+        let drawer = grants.resolve("qq:Y", "qq:c2c:Y");
+        let refused = access::with_actor(
+            drawer,
+            t.call(&call(
+                "drawing_profile_save",
+                json!({"profile": "stick figures"}),
+            )),
+        )
+        .await;
+        assert!(refused.contains("Only the owner"), "{refused}");
+        assert!(
+            store
+                .drawing_profile("小花")
+                .unwrap()
+                .unwrap()
+                .starts_with("Talented")
+        );
+
+        // A new identity researches its own.
+        store.identity_set(&persona("阿明")).unwrap();
+        let loaded = owner(t.call(&call("skill", json!({"name": "drawing"})))).await;
+        assert!(loaded.contains("No drawing profile saved yet"), "{loaded}");
 
         // Someone who may use skills but not draw is not offered it.
         let mut access = crate::access::AccessConfig::default();
