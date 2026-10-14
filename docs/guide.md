@@ -33,6 +33,7 @@ Runo (formerly openclaw-rs) is a single-binary Rust rewrite of OpenClaw. No plug
 | Skills (`SKILL.md`, compatible with OpenClaw and Agent Skills) | ✅ |
 | Spending limits (daily, monthly, per guest, per turn) | ✅ |
 | Updates from GitHub Releases (`update`, optional auto-update) | ✅ |
+| Remote management: LAN discovery, trusted pairing, remote Agent and shells (`daemon`, `remote`, client app) | ✅ |
 
 ## Install
 
@@ -1100,6 +1101,74 @@ need `XDG_RUNTIME_DIR` set (elogind or pam_env). A background process started
 without OpenRC stops on its own `gateway stop` and does not come back after a
 reboot; `start` reports at once when it exits right away (a bad config, a busy
 port) with the end of its log.
+
+## Remote management
+
+`runo daemon` (runod) lets paired clients reach the device over the
+network: its Agent and shells, status, logs, files and trusted clients.
+It needs no model, so it works when the Agent cannot.
+
+```sh
+runo daemon password     # the device password clients give when they pair (at least 8 characters)
+runo daemon install      # run it as a service (root): systemd, OpenRC or an /etc/init.d script
+runo daemon              # or run it in the foreground (`runo daemon run --listen ADDR:PORT`)
+runo daemon status       # device ID, port, pairing window, clients
+```
+
+It listens on TCP port 7340 and announces itself on the LAN by mDNS
+(`_runo._tcp`, host `runo-<id>.local`). Its state is in
+`<state dir>/runod/`: the device key (`identity.pem`, which makes the
+device ID), the trusted clients and the password hash. The service logs to
+`/var/log/runod.log`.
+
+### Pairing
+
+Clients pair only from the local network (private, link-local, ULA or
+loopback addresses), and only while the pairing window is open: for 5
+minutes after `runo daemon pair` or "Pairing and clients" in the
+management view, or for as long as the device has a password and no
+client yet. Both sides then show the same six digits: check that they
+match, then give the device password on the client. The window closes
+after one client pairs, or after 5 wrong passwords.
+
+```sh
+runo daemon pair         # open the window and show codes as clients ask; Ctrl+C closes it
+runo daemon clients
+runo daemon revoke 7k2m  # an ID or its first characters; its connections drop at once
+```
+
+### From another computer: `runo remote`
+
+```sh
+runo remote discover                 # the devices answering on this network
+runo remote pair 192.168.1.20        # or an ID from discover
+runo remote devices                  # the paired ones
+runo remote connect pi               # the Agent (the running one, or a new one)
+runo remote shell pi                 # a new shell
+runo remote sessions pi              # Agent and shells running there
+runo remote attach pi 3              # show session 3 again
+runo remote status pi
+runo remote logs pi --lines 200
+runo remote get pi /etc/hostname ./hostname
+runo remote put pi ./wpa.conf /etc/wpa_supplicant/wpa_supplicant.conf
+runo remote clients pi
+runo remote revoke pi 7k2m
+runo remote open-pairing pi          # let another client pair
+```
+
+A device is named by its ID, the start of it, or its name. Ctrl+]
+leaves a terminal; what runs there goes on, and showing it again replays
+its recent output. The client keeps its key and paired devices in
+`<state dir>/remote/`.
+
+### The client app
+
+`client/` is the app for Windows, Linux and Android, on the same protocol
+library. It lists the paired devices and the ones on the network, pairs
+(by tapping a device or by address), and then shows the Agent and shells
+in a terminal, the sessions, status, logs, files and clients. Its key is in
+the system's secure store. Builds come from the Client workflow; see
+`client/README.md` to build it yourself.
 
 ## Updates
 

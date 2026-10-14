@@ -222,6 +222,19 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
   库在这些情况下不可靠时，退回 Buildroot 的 `mdnsd`。
 - 公网（已定：必须支持 IPv6）：见 4.9。无论哪种接入方式，都在 TLS 内要求已登记客户端的密钥，加上密码或密钥登录。
 
+阶段 2 的实现（`link/`，`runo-link` 库，设备和客户端共用）：
+
+- 端口 7340。TLS 1.3 only，双方证书自签名、带 Ed25519 公钥；设备端要求客户端证书，客户端按记下的设备公钥核对（配对时先接受任意公钥，配对完成后记下）。
+  设备 ID / 客户端 ID 是公钥 SHA‑256 前 10 字节的 Crockford base32，写成 `xxxx-xxxx-xxxx-xxxx`。
+- 帧：`[u32 长度][u32 通道][内容]`，内容最多 256 KiB。通道 0 是 JSON 控制消息（请求带 `id`，回复带 `re`，另有事件）；
+  其他通道由客户端编号，承载 PTY 字节流和文件内容，空帧表示文件结束。
+- 连上后设备先发 `welcome`（设备 ID、名字、协议版本、是否已信任、配对窗口是否开着）；客户端核对 ID 与 TLS 里的公钥一致。
+- 确认码：客户端先发自己随机数的承诺（SHA‑256），设备再给出它的随机数，客户端最后公开自己的随机数；
+  确认码 = H("runo pairing code", TLS 导出的会话密钥, 设备随机数, 客户端随机数) mod 10⁶。中间人无法让两段 TLS 得出同一个码。
+- 设备密码用 PBKDF2‑HMAC‑SHA256（20 万次）存储；配对窗口里连续输错 5 次即关闭窗口。
+- 未配对的客户端只能来自局域网地址（RFC 1918、链路本地、ULA、回环），否则设备回一个 `closed` 事件后断开。
+- 请求：配对三步、状态、日志、会话列表、打开 / 接回 / 调整大小 / 离开 / 结束 PTY 会话、取文件、送文件、列出和撤销客户端、打开配对窗口。
+
 ### 4.9 公网访问：IPv6
 
 已定：**1.0 的公网访问必须支持 IPv6**。设备有全球 IPv6 地址时，客户端直连设备，不经过中继，也不需要端口映射。
@@ -252,10 +265,11 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 - **Rust 核心**是独立的库：协议、TLS、mDNS 发现、设备列表、动态域名解析与 IPv6 直连、断线重连、文件传输、密钥存储接口。
   设备端的 `runod` 用同一个库，保证两端协议一致。
 - **Flutter 界面**：设备列表、配对（显示确认码）、Agent 对话、状态与日志、文件、终端（`!shell`，用 Flutter 终端组件，如 `xterm.dart`）。
-- **密钥存放**：客户端私钥放进系统钥匙串，由 Rust 核心通过各平台接口调用：
+- **密钥存放**：客户端私钥放进系统钥匙串。实现上由 Flutter 端的 `flutter_secure_storage` 存取（Rust 核心只接收 PEM），各平台对应：
   - Android：Keystore；
-  - Windows：DPAPI；
-  - Linux：Secret Service，没有时退回加密文件。
+  - Windows：Credential Manager（DPAPI 保护）；
+  - Linux：Secret Service。没有钥匙串（如没有登录密钥环的桌面）时，退回应用目录里只有本用户可读（0600）的 `identity.pem`，与 `runo remote` 相同；
+    这不是加密文件，加密文件需要另一个口令，留到以后。
 - **各平台要处理的事**：
   - Android：mDNS 需要组播锁。
   - Windows：首次运行时防火墙会弹窗，要放行局域网发现。
@@ -327,6 +341,28 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
     达到前两者时，回合在下一步之前停下并说明；最后的回答只计数、不截断。`limits.turn_usd`、每日和每月上限照常生效。
   - `system_change` 带 `target`（network、time、gateway……）；配置过程中，同一目标被回退满 3 次后，再改这个目标会被拒绝，Agent 继续下一项并在汇报里说明。
   - 已经验证成功的修改不回退，只停止后面的步骤。
+
+### 阶段 2 当前进度
+
+- [x] 共用库 `runo-link`（`link/`）：身份、TLS、帧、协议、确认码、mDNS 发现与通告、客户端连接和已配对设备列表，见 4.8。
+- [x] `runod`：阶段 2 先作为 `runo daemon` 子命令，与 Agent 同一个二进制。
+  - `runo daemon run`（默认）：监听 7340，通告 `_runo._tcp`（主机名 `runo-<ID 前 8 位>.local`），状态在 `<状态目录>/runod/`（0700）：
+    `identity.pem`、`clients.json`、`password`、本地控制套接字 `control.sock`。
+  - `runo daemon password` 设设备密码（至少 8 个字符）；`pair` 打开配对窗口并显示确认码，Ctrl+C 关闭；`clients`、`revoke <ID>`、`status`。
+  - `runo daemon install` / `uninstall`：systemd、OpenRC 或 `/etc/init.d` 脚本，日志在 `/var/log/runod.log`。
+  - 配对窗口（4.4）：5 分钟；设了密码且还没有客户端时自动开着；配对成功一次或密码错 5 次后关闭。撤销客户端立即断开它的连接。
+- [x] 断线不终止（4.3 的 PTY 部分）：Agent（`runo tui`）和 Shell 运行在 `runod` 持有的 PTY 里，断线后继续；
+  每个会话保留 1 MiB 输出，接回时补发；结束的会话保留 1 小时可查看。多个客户端可同时查看同一会话。
+  会话的环境带 `RUNO_REMOTE=1`。远程打开 Agent 时，首次引导（填写模型连接信息）同样可以完成。
+- [x] 本地管理界面加入“配对与客户端”：显示配对窗口和正在配对的确认码，列出可信客户端，可以打开配对窗口。
+- [x] 命令行客户端 `runo remote`：`discover`、`pair <地址|ID>`、`devices`、`forget`、`connect`（Agent）、`shell`、`sessions`、`attach`、`kill`、
+  `status`、`logs`、`get`、`put`、`clients`、`revoke`、`open-pairing`。终端里 Ctrl+] 离开会话（会话继续运行）。
+  连接顺序：记下的地址 → 域名 → 局域网 mDNS。
+- [x] Flutter 客户端（`client/`，Windows、Linux、Android）：设备列表（已配对 + 本网络中）、按地址配对、确认码与密码、
+  Agent 与 Shell 终端（`xterm.dart`，Android 上带 Esc / Tab / Ctrl / 方向键一行）、会话、状态、日志、文件收发、客户端与撤销、打开配对窗口。
+  CI（`.github/workflows/client.yml`）构建三个平台。
+- [ ] 网络类修改的“确认提交”（4.2 第 4 点）：需要把配置事务从 Runo 进程移到 `runod`，客户端在新地址上重连确认；放在阶段 3 镜像里的 `runod` 一起做。
+- [ ] 公网登录时额外要求密码（4.8 最后一条）：随阶段 4 的公网访问一起做；局域网上只用已登记的客户端密钥。
 
 ## 7. 1.0 验收流程
 
