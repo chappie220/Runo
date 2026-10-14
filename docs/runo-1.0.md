@@ -253,15 +253,14 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
   设备端的 `runod` 用同一个库，保证两端协议一致。
 - **Flutter 界面**：设备列表、配对（显示确认码）、Agent 对话、状态与日志、文件、终端（`!shell`，用 Flutter 终端组件，如 `xterm.dart`）。
 - **密钥存放**：客户端私钥放进系统钥匙串，由 Rust 核心通过各平台接口调用：
-  - macOS / iOS：Keychain；
   - Android：Keystore；
   - Windows：DPAPI；
   - Linux：Secret Service，没有时退回加密文件。
 - **各平台要处理的事**：
   - Android：mDNS 需要组播锁。
-  - iOS：要声明局域网权限和 Bonjour 服务名 `_runo._tcp`；进入后台后连接会被系统断开，回到前台再重连。
   - Windows：首次运行时防火墙会弹窗，要放行局域网发现。
-- **平台（建议，待定）**：Windows、macOS、Linux 桌面和 Android 第一批；iOS 第二批（权限、后台限制和上架审核要另花时间）。
+- **平台（已定）：Windows、Linux 桌面、Android**。1.0 不做 macOS 和 iOS（没有测试设备）；
+  因为界面用 Flutter、核心用 Rust，以后要加这两个平台时不必重写，只需补钥匙串接入和平台权限。
 - 不做网页版主客户端：浏览器做不到 mDNS、自定义 TLS 认证和钥匙串。
 
 ## 5. 开机与界面状态
@@ -324,4 +323,3 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 
 ## 8. 待定问题
 
-- 管理客户端第一批发布哪些平台（4.10 的建议是桌面三平台加 Android，iOS 第二批）。
