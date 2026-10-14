@@ -220,6 +220,11 @@ impl Window {
         self.until.filter(|until| at < *until)
     }
 
+    /// Whether its time ran out at `at` without anyone closing it.
+    pub fn expired(&self, at: i64) -> bool {
+        self.until.is_some_and(|until| at >= until)
+    }
+
     #[cfg(test)]
     pub fn is_open(&self, at: i64) -> bool {
         self.until(at).is_some()
@@ -286,6 +291,11 @@ mod tests {
         assert_eq!(until, 100 + WINDOW_SECS);
         assert!(window.is_open(until - 1));
         assert!(!window.is_open(until));
+        assert!(!window.expired(until - 1));
+        assert!(window.expired(until));
+        window.close();
+        assert!(!window.expired(until));
+        window.open(100);
         for _ in 1..MAX_FAILURES {
             assert!(!window.failed());
         }

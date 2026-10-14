@@ -337,17 +337,12 @@ pub async fn serve(
     tokio::spawn(control::serve(daemon.clone(), local));
     let watcher = daemon.clone();
     tokio::spawn(async move {
-        let mut was_open = watcher.pairing().open;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let open = watcher.pairing().open;
-            if was_open && !open {
-                watcher.window.lock().unwrap().close();
-                watcher.pending.lock().unwrap().clear();
-                log("pairing window closed");
-                watcher.announce();
+            // Closing it otherwise goes through `close_pairing`.
+            if watcher.window.lock().unwrap().expired(now()) {
+                watcher.close_pairing();
             }
-            was_open = open;
         }
     });
     loop {
