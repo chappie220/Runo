@@ -11,7 +11,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 | 项目 | 设计 |
 |---|---|
 | 硬件平台 | 仅支持树莓派，不做 x86。**必须支持树莓派 5**，其他型号见第 2 节 |
-| 系统底座 | 只保留必要的驱动、存储、TTY/PTY、基础网络和运行依赖 |
+| 系统底座 | **Buildroot 构建，BusyBox 提供 init、Shell 和基础命令**；只保留必要的驱动、存储、TTY/PTY、基础网络和运行依赖（见第 3 节） |
 | 开机界面 | 直接进入 Agent；首次使用时在这里填写模型连接信息 |
 | 自动配置 | 模型检查环境、配置功能、启动服务并验证；缺少必要信息时才询问 |
 | 命令行入口 | 用户手动输入 `!shell` 才进入 Shell，退出后回到 Agent |
@@ -27,24 +27,73 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 | 型号 | 1.0 状态 | 说明 |
 |---|---|---|
 | 树莓派 5（2/4/8/16 GB） | **必须支持**，验收主平台 | BCM2712；以太网、USB、GPIO 经 RP1 南桥 |
-| 树莓派 4 B / 400 / CM4 | 建议支持 | BCM2711；和 Pi 5 共用同一镜像的成本很低 |
+| 树莓派 4 B / 400 / CM4 | 建议支持 | BCM2711；单独一个镜像（见下） |
 | 树莓派 3 / Zero 2 W | 待定 | 内存 512 MB–1 GB，需单独评估 |
 | 32 位系统 | 不支持 | 只发 aarch64 |
 
 树莓派 5 的具体要求：
 
-- **内核与固件**：使用树莓派官方内核分支（含 RP1、BCM2712 支持）和对应固件、`bcm2712-rpi-5-b.dtb`。
-  启动分区同时放 `kernel8.img`（4K 页，Pi 4/5 通用）和 `kernel_2712.img`（16K 页，Pi 5 专用），一个镜像可在两代上启动。
-- **16K 页**：Pi 5 默认使用 16K 页内核。Runo 的 aarch64 musl 静态二进制及所有随镜像发布的程序都要在 16K 页内核上测试；
-  依赖固定 4K 页的组件（部分 jemalloc 构建等）不得进入镜像，或改用 `kernel8.img`。
+- **内核与固件**：沿用 Buildroot 的 `raspberrypi5_defconfig`：树莓派官方内核分支、`bcm2712` 内核配置、
+  `rpi-firmware` 包，设备树 `bcm2712-rpi-5-b`、`bcm2712d0-rpi-5-b`（D0 步进）和 `bcm2712-rpi-500`。
+- **页大小**：Buildroot 的 Pi 5 配置用 `linux-4k-page-size.fragment` 把内核编成 4K 页，避开 16K 页带来的兼容问题；Runo 沿用。
+- **Pi 4**：Buildroot 按板子分配置（`raspberrypi4_64_defconfig`，内核配置 `bcm2711`），所以 Pi 4 若支持，是第二个镜像，不和 Pi 5 共用一个。
 - **驱动**：RP1 以太网（macb）、Wi‑Fi/蓝牙（brcmfmac，CYW43455 固件）、USB 3、SD（sdhci）、PCIe（NVMe 启动可选）、
   风扇（pwm-fan + 温控）、板载 RTC（rtc-rpi，可在无网络时提供大致正确的时间，便于 TLS 校验）。
-- **启动**：依赖 Pi 5 的 EEPROM 引导程序；`tryboot` 用于更新回退（见 3.5）。
+- **启动**：依赖 Pi 5 的 EEPROM 引导程序；`tryboot` 用于更新回退（见 4.5）。
 - **电源**：官方 5V 5A 电源；供电不足时 USB 限流，需在状态页提示（读取 `vcgencmd get_throttled` 或等价接口）。
 
-## 3. 可靠性设计（尚未全部定案，附建议方案）
+## 3. 系统构建：Buildroot + BusyBox
 
-### 3.1 远程管理独立于 Agent
+### 3.1 构建方式
+
+- 本仓库新增 Buildroot 外部树 `buildroot/`（`BR2_EXTERNAL`），不分叉 Buildroot 本身，并锁定一个 Buildroot 长期支持版本（LTS）。
+  - `configs/runo_rpi5_defconfig`：以 `raspberrypi5_defconfig` 为起点。
+  - `package/runo`：把 CI 已经在出的 `aarch64-unknown-linux-musl` 静态二进制放进镜像。
+    以后也可以改为 Buildroot 的 `cargo-package` 从源码构建。
+  - `board/runo/`：根文件系统覆盖层、`post-build.sh`，以及 `post-image.sh` 和 `genimage.cfg`（A/B 分区）。
+- **工具链**：Buildroot 的 Pi 5 配置用 Bootlin 的 glibc 外部工具链；Runo 是 musl 静态链接，不受镜像 C 库影响。
+  镜像是否改用 musl 工具链，留到待定问题。
+- **CI**：在发布流程里加一个镜像构建任务，产出 `sdcard.img.xz` 和更新包；Buildroot 的下载缓存和 `ccache` 需要缓存，否则单次构建要一小时以上。
+
+### 3.2 BusyBox init 与服务
+
+- 用 BusyBox init（`BR2_INIT_BUSYBOX`），不用 OpenRC 或 systemd。服务是 `/etc/init.d/S??*` 脚本，由 `rcS` 按序号启动。
+- 开机直达 Agent 靠 `/etc/inittab`：
+  - 阶段 3：`tty1::respawn:/usr/bin/runo console`。`runo console` 是待加的入口，负责在 tty1 上运行界面，崩溃后由 init 重新拉起。
+  - 有了 `runod` 之后：改由 `runod` 管理 tty1，就不再提供 `getty` 登录。
+  - 串口控制台（调试用）保留 `ttyAMA10` 上的 `getty`，只在开发镜像里启用。
+- 网络：有线用 BusyBox `udhcpc`；Wi‑Fi 用 `wpa_supplicant` 加 `udhcpc`。对时用 BusyBox `ntpd`，加上 Pi 5 板载 RTC（`hwclock`）。
+- 日志：BusyBox `syslogd`/`klogd` 写入 `data` 分区上的轮转日志，管理界面的“日志”一并显示。
+
+### 3.3 镜像里有什么
+
+| 类别 | 内容 |
+|---|---|
+| 基础 | BusyBox（`ash`、coreutils 子集、`udhcpc`、`ntpd`、`syslogd`、`hwclock`、`mount`）、`kmod`、`e2fsprogs`（首次开机扩展 `data` 分区） |
+| 固件与驱动 | `rpi-firmware`、`linux-firmware` 中的 Broadcom Wi‑Fi 固件（CYW43455） |
+| 网络 | `wpa_supplicant`、`ca-certificates`（Runo 用系统根证书验证 TLS） |
+| 时间与语言 | `tzdata`；中文字体 `wqy-zenhei`（Buildroot 已有；Noto CJK 没有现成包） |
+| Runo | `runo` 静态二进制；以后加 `runod` |
+| 不放 | 包管理器、`sudo`、Chromium（Buildroot 没有 Chromium 包）、`getty` 登录（发布镜像） |
+
+### 3.4 对 Agent 和现有代码的影响
+
+- **镜像里没有包管理器**：Agent 不能安装软件，能用的功能都要事先编进镜像。
+  - 自配置能做的只有：写配置文件、启停 `/etc/init.d` 服务、验证。
+  - 系统提示要告诉 Agent 这一点，并告诉它系统是 BusyBox：可用的命令和参数比 GNU 少。
+  - `elevate.rs` 的装包路径、首次引导里的“安装浏览器”一步，在 Runo 系统上要关掉。
+- **浏览器工具**：没有 Chromium，`browser` 工具默认关闭，网页靠 `web_fetch`。
+- **服务管理**：`service.rs` 目前只支持 OpenRC（`rc-service`、`/sbin/openrc-run`）。Runo 系统上 Gateway 改为一个 BusyBox init 脚本；
+  `runo service` 要能识别这种情况，否则会报“没有安装 OpenRC”。
+- **更新**：`update.rs` 现在只替换单个二进制。Runo 系统上改为整个镜像的 A/B 更新（见 4.5），`install.sh` 不适用。
+- **Shell**：`!shell` 打开的是 BusyBox `ash`（`/bin/sh`），已经可用。
+- **管理界面的系统状态**：只读 `/proc`、`/sys`，不依赖外部命令，BusyBox 下可用。
+- **只读根文件系统**：根分区只读挂载。需要可写的 `/etc` 内容（网络、Wi‑Fi、主机名、时区）放在 `data` 分区，用符号链接或覆盖挂载接入，
+  使系统更新不影响用户配置。
+
+## 4. 可靠性设计（尚未全部定案，附建议方案）
+
+### 4.1 远程管理独立于 Agent
 
 建议：设备上分两个进程。
 
@@ -54,7 +103,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 
 本地控制台同理：开机由 `runod` 在 tty1 上启动 Agent 界面，Agent 退出或崩溃后由 `runod` 重新拉起管理界面，而不是登录 Shell。
 
-### 3.2 配置修改：记录、验证、回退
+### 4.2 配置修改：记录、验证、回退
 
 建议：所有系统配置修改（网络、服务、用户、API 设置）都经过 `runod` 的事务：
 
@@ -67,13 +116,13 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 
 Agent 修改配置也只能走这条路径，不直接写 `/etc`。
 
-### 3.3 断线不终止后台任务
+### 4.3 断线不终止后台任务
 
 建议：Agent 的回合、后台任务（现有 `tasks.rs`）和 `!shell` 的 PTY 都归 `runod` 持有，而不是归某个连接持有。
 断线后它们继续运行；重连时客户端列出未结束和最近结束的任务、会话和 PTY，可接回或查看输出。
 PTY 输出保留一段环形缓冲（如 1 MB），重连时补发。
 
-### 3.4 配对窗口与撤销
+### 4.4 配对窗口与撤销
 
 建议：
 
@@ -83,7 +132,7 @@ PTY 输出保留一段环形缓冲（如 1 MB），重连时补发。
 - 只接受来自局域网地址（RFC 1918、链路本地、ULA）的配对请求；公网入口上配对接口完全不开放。
 - 可在本地界面或任一可信客户端上列出并撤销可信客户端；撤销立即断开其现有连接。
 
-### 3.5 系统更新与数据分离
+### 4.5 系统更新与数据分离
 
 建议的分区布局：
 
@@ -93,10 +142,11 @@ PTY 输出保留一段环形缓冲（如 1 MB），重连时补发。
 | `rootfs-A` / `rootfs-B` | 只读系统，A/B 轮换 |
 | `data` | 人格、记忆、会话、配置、配对信息、日志 |
 
-更新写入非活动槽，使用 Pi 固件的 `tryboot` 只试启动一次；新系统启动后 `runod` 自检通过才将其标记为默认，
+分区镜像由 Buildroot 的 `genimage` 生成。更新包是一个 `rootfs.ext4` 镜像（压缩并签名），写入非活动槽，使用 Pi 固件的 `tryboot` 只试启动一次；新系统启动后 `runod` 自检通过才将其标记为默认，
 否则下次重启自动回到旧槽。人格、记忆、会话在 `data` 分区，系统更新不触碰；数据格式迁移前先做备份（复用 `backup.rs`）。
+Buildroot 自带 RAUC、SWUpdate、Mender 等成熟方案；是用其中之一，还是由 `runod` 自己写槽加 `tryboot`，见待定问题。
 
-### 3.6 自主配置的次数与费用上限
+### 4.6 自主配置的次数与费用上限
 
 建议：
 
@@ -104,15 +154,19 @@ PTY 输出保留一段环形缓冲（如 1 MB），重连时补发。
 - 自配置单独设费用上限（默认 1 美元，可改），复用 `limits.rs` 的单回合 / 每日上限。
 - 达到上限时不回退已经验证成功的步骤，只停止后续步骤。
 
-### 3.7 本地中文显示与输入
+### 4.7 本地中文显示与输入
 
 Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项必须单独验证。建议：
 
-- 本地界面不用内核 VT 直接显示，改由用户态终端（如 kmscon 或 Runo 自带的 DRM/KMS 绘制）渲染，自带 CJK 字体（如 Noto Sans CJK 的子集）。
+- 本地界面不用内核 VT 直接显示，改由用户态终端渲染，自带 CJK 字体（`wqy-zenhei`）。候选有两个：
+  - Buildroot 已有的 `fbterm`（帧缓冲终端，支持 CJK）；
+  - Runo 自己经 DRM/KMS 绘制界面。
+
+  Buildroot 没有 kmscon。
 - 输入：先支持远程客户端输入中文（客户端本机输入法）；本地键盘中文输入（拼音）作为单独验收项，评估 fcitx5 或内置简单拼音。
 - 验收：Pi 5 接 HDMI，开机界面、Agent 回复、错误提示中的中文全部正常显示；本地可输入中文。
 
-### 3.8 管理协议
+### 4.8 管理协议
 
 建议：自定义帧格式和消息，加密与认证复用成熟实现，不自研密码学。
 
@@ -122,7 +176,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 - 局域网发现：mDNS/DNS-SD `_runo._tcp`，TXT 记录只含设备 ID 和协议版本。
 - 公网：方式待定（端口映射直连 / 自建中继 / 现成的穿透方案）；无论哪种，都在 TLS 内要求已登记客户端密钥加密码或密钥登录。
 
-## 4. 开机与界面状态
+## 5. 开机与界面状态
 
 ```text
 开机 → runod 启动 → tty1 上的 Agent 界面
@@ -136,13 +190,13 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 注意：验收流程里“联网”在“填入模型信息”之前，因此 Wi‑Fi 配置必须在没有模型时也能完成——
 可以在本地管理界面填写，或在烧录时写进 `boot` 分区（如 `runo-wifi.txt`，首次开机读取后删除）。
 
-## 5. 开发顺序
+## 6. 开发顺序
 
 | 阶段 | 内容 | 与现有代码的关系 |
 |---|---|---|
-| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell` | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`。待做：自配置工具集、配置事务、费用和次数上限 |
+| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell`；只用 BusyBox 也有的命令，避免依赖 GNU 工具或包管理器 | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`。待做：自配置工具集、配置事务、费用和次数上限 |
 | 2 | 局域网发现与可信配对 | 新增 `runod`、管理协议、管理客户端 |
-| 3 | 开机直达 Agent 的镜像 | 镜像构建（Alpine + 树莓派内核/固件）、tty1 接管、A/B 分区、中文显示 |
+| 3 | 开机直达 Agent 的镜像 | Buildroot 外部树（`buildroot/`）、BusyBox init 与 `inittab` 接管 tty1、`service.rs` 支持 BusyBox init、A/B 分区、中文显示、CI 出镜像 |
 | 4 | 公网连接、更新与恢复 | 现有 `update.rs` 改为 A/B 槽更新；公网接入 |
 
 ### 阶段 1 当前进度
@@ -156,10 +210,10 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
     系统状态（设备型号、主机名、地址、运行时间、负载、内存、磁盘、温度、Gateway）、日志（`tui.log` 和 Gateway 日志的末尾）、Shell、返回对话。
   - 都不需要模型；打字会进入输入框，所以 `!shell` 在这里同样有效。
 - [ ] 自配置：环境检查 → 计划 → 逐项应用并验证 → 汇报；缺信息时询问。
-- [ ] 配置事务与回退（3.2）。
-- [ ] 自配置的次数与费用上限（3.6）。
+- [ ] 配置事务与回退（4.2）。
+- [ ] 自配置的次数与费用上限（4.6）。
 
-## 6. 1.0 验收流程
+## 7. 1.0 验收流程
 
 在**树莓派 5** 上完成（支持 Pi 4 时同样走一遍）：
 
@@ -179,10 +233,14 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 - 更新失败（新系统自检不通过）后自动回到旧系统，数据完好。
 - 本地中文显示与输入正常。
 
-## 7. 待定问题
+## 8. 待定问题
 
 - 除树莓派 5 外，1.0 还支持哪些型号（Pi 4 / 400 / CM4 / 3 / Zero 2 W）。
-- 系统底座：Alpine（与现有 OpenRC、musl 构建一致）还是精简的 Raspberry Pi OS / Debian。
+- 锁定哪个 Buildroot LTS 版本；镜像用 glibc（Buildroot 的 Pi 5 默认）还是 musl 工具链。
+- Wi‑Fi：`wpa_supplicant`（Buildroot 默认，熟悉）还是 `iwd`（更小、带 DHCP）。
+- 更新机制：RAUC / SWUpdate / Mender，还是 `runod` 自己写 A/B 槽加 `tryboot`。
+- 局域网发现：用 Buildroot 的 `avahi` / `mdnsd`，还是 Runo 自带 mDNS 应答（少一个服务）。
+- 本地中文显示：`fbterm` 还是 Runo 自己经 DRM/KMS 绘制。
 - 公网访问方式：端口映射、自建中继还是现成穿透方案。
 - 管理客户端的平台（桌面 / 手机）和技术栈。
 - 本地中文输入方案。
