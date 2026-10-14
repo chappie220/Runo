@@ -505,7 +505,17 @@ fn a_model_outage_opens_the_management_view_and_its_menu_works() {
         "{rows:?}"
     );
     press(&mut app, KeyCode::Char('6'), KeyModifiers::NONE);
+    assert!(app.open_pairing && app.pairing_shown);
+    app.show_pairing(vec!["window".into()]);
+    let (title, rows) = app.manage.as_ref().unwrap().detail.clone().unwrap();
+    assert_eq!(
+        (title.as_str(), rows),
+        ("Pairing and clients", vec!["window".to_owned()])
+    );
+    press(&mut app, KeyCode::Char('7'), KeyModifiers::NONE);
     assert!(app.open_shell);
+    // Another item stops following the daemon.
+    assert!(!app.pairing_shown);
     press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
     assert!(app.change_model);
 

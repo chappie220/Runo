@@ -10,7 +10,7 @@ use runo_link::proto::{self, PORT};
 
 use super::trust::{MIN_PASSWORD, Trust};
 use super::{DaemonState, Local, control_request, dir, identity};
-use crate::i18n::{Tr, tr};
+use crate::i18n::{Lang, Tr, tr};
 
 const PASSWORD_PROMPT: Tr = tr(
     "New device password (at least {} characters): ",
@@ -207,20 +207,25 @@ pub fn spaced(code: &str) -> String {
     }
 }
 
-pub fn client_lines(clients: &[proto::Client]) -> Vec<String> {
+pub fn client_lines(clients: &[proto::Client], lang: Lang) -> Vec<String> {
     if clients.is_empty() {
-        return vec![NO_CLIENTS.now().to_owned()];
+        return vec![NO_CLIENTS.get(lang).to_owned()];
     }
     clients
         .iter()
         .map(|c| {
-            CLIENT_LINE.with(&[
-                &c.id,
-                &c.name,
-                &date(c.added),
-                &c.last_seen.map(date).unwrap_or_else(|| NEVER.now().into()),
-                if c.connected { CONNECTED.now() } else { "" },
-            ])
+            CLIENT_LINE.fill(
+                lang,
+                &[
+                    &c.id,
+                    &c.name,
+                    &date(c.added),
+                    &c.last_seen
+                        .map(date)
+                        .unwrap_or_else(|| NEVER.get(lang).into()),
+                    if c.connected { CONNECTED.get(lang) } else { "" },
+                ],
+            )
         })
         .collect()
 }
@@ -245,7 +250,7 @@ pub async fn clients(state: &Path) -> Result<()> {
         Ok(running) => running.clients,
         Err(_) => offline_clients(state)?,
     };
-    for line in client_lines(&clients) {
+    for line in client_lines(&clients, crate::i18n::current()) {
         println!("{line}");
     }
     Ok(())

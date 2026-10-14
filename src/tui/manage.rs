@@ -13,8 +13,8 @@ use crate::onboard::{Catalog, KeyCheck};
 
 pub(super) const TITLE: Tr = tr("Management", "管理");
 pub(super) const HINTS: Tr = tr(
-    "↑/↓ choose · Enter run · 1–7 · Tab input · Esc back to the chat",
-    "↑/↓ 选择 · 回车执行 · 1–7 · Tab 输入框 · Esc 返回对话",
+    "↑/↓ choose · Enter run · 1–8 · Tab input · Esc back to the chat",
+    "↑/↓ 选择 · 回车执行 · 1–8 · Tab 输入框 · Esc 返回对话",
 );
 const MODEL: Tr = tr("Model {}: {}", "模型 {}：{}");
 const UNCHECKED: Tr = tr("not checked", "未检查");
@@ -45,6 +45,33 @@ const ITEM_CHANGES: Tr = tr("Configuration changes", "配置修改记录");
 const CHANGES_HINT: Tr = tr(
     "Undo one in the shell with: runo changes revert <number> (runo changes show <number> for the details)",
     "在 Shell 里撤销某一次：runo changes revert <编号>（详情：runo changes show <编号>）",
+);
+const ITEM_PAIRING: Tr = tr("Pairing and clients", "配对与客户端");
+const P_DEVICE: Tr = tr("This device: {} ({}), port {}", "本机：{}（{}），端口 {}");
+const P_OPEN: Tr = tr(
+    "Pairing window: open until {}. On the client, pick this device and check that it shows the same code as here.",
+    "配对窗口：开着，到 {} 关闭。在客户端选择这台设备，核对它显示的确认码和这里的是否一致。",
+);
+const P_CLOSED: Tr = tr(
+    "Pairing window: closed. Choose this item again to open it for 5 minutes.",
+    "配对窗口：已关闭。再选一次这一项可打开 5 分钟。",
+);
+const P_NO_PASSWORD: Tr = tr(
+    "Pairing needs a device password: set one in the shell with `runo daemon password`, then choose this item again.",
+    "配对需要设备密码：在 Shell 里用 `runo daemon password` 设置，然后再选一次这一项。",
+);
+const P_CODE: Tr = tr(
+    "Client {} at {} is pairing. Code: {}",
+    "客户端 {}（{}）正在配对。确认码：{}",
+);
+const P_CLIENTS: Tr = tr("Trusted clients:", "可信客户端：");
+const P_REVOKE: Tr = tr(
+    "Revoke one in the shell: runo daemon revoke <ID> (its connections close at once).",
+    "在 Shell 里撤销：runo daemon revoke <ID>（它的连接立即断开）。",
+);
+const P_NOT_RUNNING: Tr = tr(
+    "The management daemon is not running, so no client can pair or connect. Start it in the shell: `runo daemon install` (as root) or `runo daemon`.",
+    "管理守护进程没有运行，客户端无法配对或连接。在 Shell 里启动：`runo daemon install`（需要 root）或 `runo daemon`。",
 );
 const ITEM_SHELL: Tr = tr("Shell (or type !shell)", "Shell（也可输入 !shell）");
 const ITEM_BACK: Tr = tr("Back to the chat", "返回对话");
@@ -92,6 +119,15 @@ pub(super) const ALL: &[Tr] = &[
     ITEM_LOGS,
     ITEM_CHANGES,
     CHANGES_HINT,
+    ITEM_PAIRING,
+    P_DEVICE,
+    P_OPEN,
+    P_CLOSED,
+    P_NO_PASSWORD,
+    P_CODE,
+    P_CLIENTS,
+    P_REVOKE,
+    P_NOT_RUNNING,
     ITEM_SHELL,
     ITEM_BACK,
     S_DEVICE,
@@ -184,7 +220,7 @@ fn from_key_check(check: KeyCheck, lang: Lang) -> Health {
     }
 }
 
-/// The menu, in order; 1–7 pick them too.
+/// The menu, in order; 1–8 pick them too.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum Item {
     Check,
@@ -192,6 +228,7 @@ pub(super) enum Item {
     Status,
     Logs,
     Changes,
+    Pairing,
     Shell,
     Back,
 }
@@ -202,6 +239,7 @@ pub(super) const ITEMS: &[Item] = &[
     Item::Status,
     Item::Logs,
     Item::Changes,
+    Item::Pairing,
     Item::Shell,
     Item::Back,
 ];
@@ -214,6 +252,7 @@ impl Item {
             Self::Status => ITEM_STATUS,
             Self::Logs => ITEM_LOGS,
             Self::Changes => ITEM_CHANGES,
+            Self::Pairing => ITEM_PAIRING,
             Self::Shell => ITEM_SHELL,
             Self::Back => ITEM_BACK,
         }
@@ -290,6 +329,50 @@ pub(super) fn changes(state: &Path, lang: Lang) -> Vec<String> {
     let mut rows: Vec<String> = history.summary(30).lines().map(str::to_owned).collect();
     rows.push(String::new());
     rows.push(CHANGES_HINT.get(lang).to_owned());
+    rows
+}
+
+/// The pairing window, codes of clients pairing and the trusted clients,
+/// from the management daemon (`None`: it is not running).
+pub(super) fn pairing(daemon: Option<&crate::daemon::DaemonState>, lang: Lang) -> Vec<String> {
+    let Some(daemon) = daemon else {
+        return vec![P_NOT_RUNNING.get(lang).to_owned()];
+    };
+    let mut rows = vec![P_DEVICE.fill(lang, &[&daemon.id, &daemon.name, &daemon.port.to_string()])];
+    rows.push(String::new());
+    match daemon.pairing.until {
+        Some(until) if daemon.pairing.open => {
+            let at = chrono::DateTime::from_timestamp(until, 0)
+                .map(|t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            rows.push(P_OPEN.fill(lang, &[&at]));
+        }
+        _ if !daemon.password => rows.push(P_NO_PASSWORD.get(lang).to_owned()),
+        _ => rows.push(P_CLOSED.get(lang).to_owned()),
+    }
+    for pending in &daemon.pending {
+        rows.push(P_CODE.fill(
+            lang,
+            &[
+                &pending.client,
+                &pending.address,
+                &crate::daemon::cli::spaced(&pending.code),
+            ],
+        ));
+    }
+    rows.push(String::new());
+    rows.push(P_CLIENTS.get(lang).to_owned());
+    rows.extend(
+        crate::daemon::cli::client_lines(&daemon.clients, lang)
+            .into_iter()
+            .map(|line| format!("  {line}")),
+    );
+    rows.push(String::new());
+    rows.push(P_REVOKE.get(lang).to_owned());
     rows
 }
 

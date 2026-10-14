@@ -607,6 +607,10 @@ struct App {
     manage: Option<Manage>,
     /// Ask the model something tiny to see whether it answers.
     check_model: bool,
+    /// "Pairing": open the daemon's pairing window before the next draw.
+    open_pairing: bool,
+    /// The pairing item is shown; it follows the daemon while it is.
+    pairing_shown: bool,
     /// Run the model setup, then open the window again with what it saved.
     change_model: bool,
     /// Where the state and logs are.
@@ -665,6 +669,8 @@ impl App {
             health: Health::Unchecked,
             manage: None,
             check_model: false,
+            open_pairing: false,
+            pairing_shown: false,
             change_model: false,
             state: PathBuf::new(),
             quit_armed: false,
@@ -1189,13 +1195,24 @@ impl App {
             Item::Status => show(&mut self.manage, manage::status(&self.state, lang)),
             Item::Logs => show(&mut self.manage, manage::logs(&self.state, lang)),
             Item::Changes => show(&mut self.manage, manage::changes(&self.state, lang)),
+            Item::Pairing => self.open_pairing = true,
             Item::Shell => self.open_shell = true,
             Item::Back => {
                 self.manage = None;
                 self.focus = Focus::Input;
             }
         }
+        self.pairing_shown = item == Item::Pairing && self.manage.is_some();
         self.scroll = 0;
+    }
+
+    /// The pairing item's lines, while it is the one shown.
+    fn show_pairing(&mut self, rows: Vec<String>) {
+        if let Some(manage) = &mut self.manage
+            && self.pairing_shown
+        {
+            manage.detail = Some((Item::Pairing.label(self.lang).to_owned(), rows));
+        }
     }
 
     /// A note about `item`: under the menu while the view is open (it
@@ -1837,7 +1854,20 @@ enum Step {
     Ui(UiEvent),
     Done(Result<String>),
     Tick,
+    /// The pairing item is shown: what the daemon says now.
+    Pairing(Vec<String>),
     End,
+}
+
+/// The pairing item's lines, from the daemon on this state.
+async fn pairing_rows(state: &Path, lang: Lang) -> Vec<String> {
+    let daemon = crate::daemon::control_request::<crate::daemon::DaemonState>(
+        state,
+        crate::daemon::Local::State,
+    )
+    .await
+    .ok();
+    manage::pairing(daemon.as_ref(), lang)
 }
 
 /// Runs the window until the person quits.
@@ -1885,6 +1915,7 @@ pub async fn run<M: Model, T: Tools>(
     let mut turn: Option<Turn> = None;
     let mut cancel = Cancel::default();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    let mut pairing_tick = tokio::time::interval(Duration::from_secs(1));
     // The free check first; the window is usable while it runs.
     let settings = crate::config::Config::load(config).unwrap_or_default();
     let mut check: Option<Check> = Some(Box::pin(manage::probe(&settings, state, lang)));
@@ -1983,6 +2014,16 @@ pub async fn run<M: Model, T: Tools>(
                 }
             }
         }
+        if std::mem::take(&mut app.open_pairing) {
+            // Errors (no daemon, no password) show in the lines below.
+            let _ = crate::daemon::control_request::<runo_link::proto::PairingState>(
+                state,
+                crate::daemon::Local::Pairing { open: true },
+            )
+            .await;
+            let rows = pairing_rows(state, lang).await;
+            app.show_pairing(rows);
+        }
         if std::mem::take(&mut app.repaint) {
             terminal.clear()?;
         }
@@ -2013,6 +2054,9 @@ pub async fn run<M: Model, T: Tools>(
             result = wait(&mut turn) => Step::Done(result),
             health = checked(&mut check) => Step::Checked(health),
             _ = tick.tick(), if app.running => Step::Tick,
+            _ = pairing_tick.tick(), if app.pairing_shown => {
+                Step::Pairing(pairing_rows(state, lang).await)
+            }
         };
         let mut outgoing = None;
         match step {
@@ -2079,6 +2123,7 @@ pub async fn run<M: Model, T: Tools>(
                 }
             }
             Step::Tick => app.spinner += 1,
+            Step::Pairing(rows) => app.show_pairing(rows),
             Step::End => break,
         }
         if let Some(message) = outgoing {

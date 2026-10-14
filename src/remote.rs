@@ -542,7 +542,7 @@ pub async fn put(state: &Path, device: &str, local: &Path, remote: &str) -> Resu
 pub async fn clients(state: &Path, device: &str) -> Result<()> {
     let link = connect(state, device).await?;
     let clients: Vec<proto::Client> = link.call(Request::Clients).await?;
-    for line in client_lines(&clients) {
+    for line in client_lines(&clients, crate::i18n::current()) {
         println!("{line}");
     }
     Ok(())
