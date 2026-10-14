@@ -301,6 +301,155 @@ const COMMANDS: &[(&str, Tr)] = &[
         ),
     ),
     (
+        "daemon",
+        tr(
+            "The management daemon (runod): LAN pairing and remote management of this device",
+            "管理守护进程（runod）：局域网配对和远程管理这台设备",
+        ),
+    ),
+    (
+        "daemon run",
+        tr(
+            "Run the daemon in the foreground (what the service runs)",
+            "在前台运行守护进程（服务运行的就是它）",
+        ),
+    ),
+    (
+        "daemon password",
+        tr(
+            "Set the device password that clients give when they pair",
+            "设置客户端配对时要输入的设备密码",
+        ),
+    ),
+    (
+        "daemon pair",
+        tr(
+            "Open the pairing window and show the code of each client pairing",
+            "打开配对窗口，并显示每个正在配对的客户端的确认码",
+        ),
+    ),
+    (
+        "daemon clients",
+        tr("List the trusted clients", "列出可信客户端"),
+    ),
+    (
+        "daemon revoke",
+        tr(
+            "Take a client's trust away; its connections close at once",
+            "撤销一个客户端的信任；它的连接立即断开",
+        ),
+    ),
+    (
+        "daemon status",
+        tr(
+            "Show the device ID, port, pairing window and clients",
+            "显示设备 ID、端口、配对窗口和客户端",
+        ),
+    ),
+    (
+        "daemon install",
+        tr(
+            "Install the daemon as a system service started at boot (root)",
+            "把守护进程安装成开机自启的系统服务（需要 root）",
+        ),
+    ),
+    (
+        "daemon uninstall",
+        tr(
+            "Stop and remove the service; identity and clients are kept",
+            "停止并移除服务；设备身份和客户端保留",
+        ),
+    ),
+    (
+        "remote",
+        tr(
+            "Use paired Runo devices from this computer: discover, pair, connect",
+            "在这台电脑上使用已配对的 Runo 设备：发现、配对、连接",
+        ),
+    ),
+    (
+        "remote discover",
+        tr(
+            "List the Runo devices on this network",
+            "列出这个网络里的 Runo 设备",
+        ),
+    ),
+    (
+        "remote pair",
+        tr(
+            "Pair with a device whose pairing window is open",
+            "和开着配对窗口的设备配对",
+        ),
+    ),
+    (
+        "remote devices",
+        tr("List the paired devices", "列出已配对的设备"),
+    ),
+    (
+        "remote forget",
+        tr(
+            "Forget a paired device here (it still trusts this computer until revoked there)",
+            "在这里忘记一台已配对的设备（在设备上撤销之前，它仍信任这台电脑）",
+        ),
+    ),
+    (
+        "remote connect",
+        tr(
+            "Open the device's Agent (the running one, or a new one)",
+            "打开设备上的 Agent（正在运行的那个，或新开一个）",
+        ),
+    ),
+    (
+        "remote shell",
+        tr("Open a shell on the device", "在设备上打开 Shell"),
+    ),
+    (
+        "remote sessions",
+        tr(
+            "List the device's terminal sessions",
+            "列出设备上的终端会话",
+        ),
+    ),
+    (
+        "remote attach",
+        tr("Show a running session again", "重新显示一个正在运行的会话"),
+    ),
+    ("remote kill", tr("End a session", "结束一个会话")),
+    (
+        "remote status",
+        tr("Show the device's status", "显示设备状态"),
+    ),
+    (
+        "remote logs",
+        tr("Show the end of the device's logs", "显示设备日志的末尾"),
+    ),
+    (
+        "remote get",
+        tr("Fetch a file from the device", "从设备取回文件"),
+    ),
+    (
+        "remote put",
+        tr("Send a file to the device", "把文件发送到设备"),
+    ),
+    (
+        "remote clients",
+        tr("List the clients the device trusts", "列出设备信任的客户端"),
+    ),
+    (
+        "remote revoke",
+        tr(
+            "Take a client's trust away on the device",
+            "在设备上撤销一个客户端的信任",
+        ),
+    ),
+    (
+        "remote open-pairing",
+        tr(
+            "Open the device's pairing window, for another client",
+            "打开设备的配对窗口，供另一个客户端配对",
+        ),
+    ),
+    (
         "help",
         tr(
             "Print this message or the help of the given subcommand(s)",
@@ -538,6 +687,171 @@ const ARGS: &[(&str, &str, Tr)] = &[
     ),
     ("sessions delete", "name", tr("Session name", "会话名")),
     ("changes show", "id", tr("Change number", "修改编号")),
+    (
+        "daemon run",
+        "listen",
+        tr(
+            "Address and port to listen on (default: every address, port 7340)",
+            "监听的地址和端口（默认：所有地址，端口 7340）",
+        ),
+    ),
+    (
+        "daemon revoke",
+        "client",
+        tr(
+            "Client ID (or its first characters)",
+            "客户端 ID（或它的开头几个字符）",
+        ),
+    ),
+    (
+        "remote pair",
+        "device",
+        tr(
+            "Device ID, name or address (default: the one device with its window open)",
+            "设备 ID、名称或地址（默认：唯一开着配对窗口的设备）",
+        ),
+    ),
+    (
+        "remote revoke",
+        "client",
+        tr(
+            "Client ID (or its first characters)",
+            "客户端 ID（或它的开头几个字符）",
+        ),
+    ),
+    ("remote attach", "session", tr("Session number", "会话编号")),
+    ("remote kill", "session", tr("Session number", "会话编号")),
+    ("remote logs", "lines", tr("How many lines", "显示多少行")),
+    (
+        "remote get",
+        "remote",
+        tr("Absolute path on the device", "设备上的绝对路径"),
+    ),
+    (
+        "remote get",
+        "local",
+        tr(
+            "Where to save it (default: its name, here)",
+            "保存到哪里（默认：当前目录，原文件名）",
+        ),
+    ),
+    (
+        "remote put",
+        "local",
+        tr("The file to send", "要发送的文件"),
+    ),
+    (
+        "remote put",
+        "remote",
+        tr(
+            "Absolute path on the device (ending in / for a directory)",
+            "设备上的绝对路径（以 / 结尾表示目录）",
+        ),
+    ),
+    (
+        "remote forget",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote connect",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote shell",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote sessions",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote attach",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote kill",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote status",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote logs",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote get",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote put",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote clients",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote revoke",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote open-pairing",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
     ("changes revert", "id", tr("Change number", "修改编号")),
     (
         "changes revert",

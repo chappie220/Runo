@@ -13,6 +13,7 @@ mod completions;
 mod config;
 mod context;
 mod cron;
+mod daemon;
 mod discord;
 mod doctor;
 mod elevate;
@@ -37,6 +38,7 @@ mod net;
 mod onboard;
 mod qq;
 mod reasoning;
+mod remote;
 mod rename;
 mod review;
 mod search;
@@ -233,6 +235,88 @@ enum Command {
         #[command(subcommand)]
         action: Option<ChangesAction>,
     },
+    /// The management daemon (runod): LAN pairing and remote management of this device.
+    Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
+    },
+    /// Use paired Runo devices from this computer: discover, pair, connect.
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Run the daemon in the foreground (what the service runs).
+    Run {
+        /// Address and port to listen on (default: every address, port 7340).
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
+    },
+    /// Set the device password that clients give when they pair.
+    Password,
+    /// Open the pairing window and show the code of each client pairing.
+    Pair,
+    /// List the trusted clients.
+    Clients,
+    /// Take a client's trust away; its connections close at once.
+    Revoke { client: String },
+    /// Show the device ID, port, pairing window and clients.
+    Status,
+    /// Install the daemon as a system service started at boot (root).
+    Install,
+    /// Stop and remove the service; identity and clients are kept.
+    Uninstall,
+}
+
+#[derive(Subcommand)]
+enum RemoteAction {
+    /// List the Runo devices on this network.
+    Discover,
+    /// Pair with a device whose pairing window is open.
+    Pair { device: Option<String> },
+    /// List the paired devices.
+    Devices,
+    /// Forget a paired device here (it still trusts this computer until revoked there).
+    Forget { device: String },
+    /// Open the device's Agent (the running one, or a new one).
+    Connect { device: String },
+    /// Open a shell on the device.
+    Shell { device: String },
+    /// List the device's terminal sessions.
+    Sessions { device: String },
+    /// Show a running session again.
+    Attach { device: String, session: u64 },
+    /// End a session.
+    Kill { device: String, session: u64 },
+    /// Show the device's status.
+    Status { device: String },
+    /// Show the end of the device's logs.
+    Logs {
+        device: String,
+        #[arg(short = 'n', long)]
+        lines: Option<usize>,
+    },
+    /// Fetch a file from the device.
+    Get {
+        device: String,
+        remote: String,
+        local: Option<PathBuf>,
+    },
+    /// Send a file to the device.
+    Put {
+        device: String,
+        local: PathBuf,
+        remote: String,
+    },
+    /// List the clients the device trusts.
+    Clients { device: String },
+    /// Take a client's trust away on the device.
+    Revoke { device: String, client: String },
+    /// Open the device's pairing window, for another client.
+    OpenPairing { device: String },
 }
 
 #[derive(Subcommand)]
@@ -467,7 +551,66 @@ async fn run(cli: Cli) -> Result<()> {
         };
     }
     let state = config::state_dir()?;
-    let config_path = cli.config.unwrap_or_else(|| state.join("config.toml"));
+    let config_path = cli
+        .config
+        .clone()
+        .unwrap_or_else(|| state.join("config.toml"));
+    // Neither needs a config or a model: the daemon is how a device with a
+    // broken one is reached and repaired.
+    if let Command::Daemon { action } = &cli.command {
+        let config = cli.config.clone();
+        return match action
+            .as_ref()
+            .unwrap_or(&DaemonAction::Run { listen: None })
+        {
+            DaemonAction::Run { listen } => {
+                daemon::run(daemon::Options {
+                    state: state.clone(),
+                    config,
+                    listen: *listen,
+                    announce: true,
+                })
+                .await
+            }
+            DaemonAction::Password => daemon::cli::set_password(&state),
+            DaemonAction::Pair => daemon::cli::pair(&state).await,
+            DaemonAction::Clients => daemon::cli::clients(&state).await,
+            DaemonAction::Revoke { client } => daemon::cli::revoke(&state, client).await,
+            DaemonAction::Status => daemon::cli::status(&state).await,
+            DaemonAction::Install => daemon::service::install(&state, config.as_deref()),
+            DaemonAction::Uninstall => daemon::service::uninstall(&state),
+        };
+    }
+    if let Command::Remote { action } = &cli.command {
+        return match action {
+            RemoteAction::Discover => remote::discover(&state).await,
+            RemoteAction::Pair { device } => remote::pair(&state, device.as_deref()).await,
+            RemoteAction::Devices => remote::devices(&state),
+            RemoteAction::Forget { device } => remote::forget(&state, device),
+            RemoteAction::Connect { device } => remote::agent(&state, device).await,
+            RemoteAction::Shell { device } => remote::shell(&state, device).await,
+            RemoteAction::Sessions { device } => remote::sessions(&state, device).await,
+            RemoteAction::Attach { device, session } => {
+                remote::attach(&state, device, *session).await
+            }
+            RemoteAction::Kill { device, session } => remote::kill(&state, device, *session).await,
+            RemoteAction::Status { device } => remote::status(&state, device).await,
+            RemoteAction::Logs { device, lines } => remote::logs(&state, device, *lines).await,
+            RemoteAction::Get {
+                device,
+                remote: path,
+                local,
+            } => remote::get(&state, device, path, local.clone()).await,
+            RemoteAction::Put {
+                device,
+                local,
+                remote: path,
+            } => remote::put(&state, device, local, path).await,
+            RemoteAction::Clients { device } => remote::clients(&state, device).await,
+            RemoteAction::Revoke { device, client } => remote::revoke(&state, device, client).await,
+            RemoteAction::OpenPairing { device } => remote::pairing(&state, device, true).await,
+        };
+    }
     // Needs no config or model: the way back when a change broke them.
     if let Command::Changes { action } = &cli.command {
         let history = changes::History::in_state(&state);
@@ -622,6 +765,8 @@ async fn run(cli: Cli) -> Result<()> {
         | Command::Init
         | Command::Doctor { .. }
         | Command::Changes { .. }
+        | Command::Daemon { .. }
+        | Command::Remote { .. }
         | Command::Backup { .. }
         | Command::Restore { .. }
         | Command::Login { .. }

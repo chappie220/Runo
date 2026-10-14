@@ -12,7 +12,7 @@
 
 mod backend;
 mod highlight;
-mod manage;
+pub(crate) mod manage;
 mod markdown;
 mod view;
 

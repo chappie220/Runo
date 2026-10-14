@@ -230,7 +230,7 @@ pub(super) struct Manage {
 }
 
 /// The system's status, a line each, read from /proc and /sys.
-pub(super) fn status(state: &Path, lang: Lang) -> Vec<String> {
+pub(crate) fn status(state: &Path, lang: Lang) -> Vec<String> {
     let read = |path: &str| std::fs::read_to_string(path).ok();
     let unknown = || UNKNOWN.get(lang).to_owned();
     let row = |label: Tr, value: String| format!("{}: {value}", label.get(lang));
@@ -293,13 +293,18 @@ pub(super) fn changes(state: &Path, lang: Lang) -> Vec<String> {
     rows
 }
 
-/// The window's own log and the Gateway's, the last lines of each.
-pub(super) fn logs(state: &Path, lang: Lang) -> Vec<String> {
+/// The window's own log, the Gateway's and the management daemon's (when
+/// it writes one), the last lines of each.
+pub(crate) fn logs(state: &Path, lang: Lang) -> Vec<String> {
     let mut files = vec![state.join("tui.log")];
     if let Some(gateway) = crate::service::log_file()
         && !files.contains(&gateway)
     {
         files.push(gateway);
+    }
+    let daemon = PathBuf::from(crate::daemon::service::LOG);
+    if daemon.exists() {
+        files.push(daemon);
     }
     let mut rows = Vec::new();
     for file in files {

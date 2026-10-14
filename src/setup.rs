@@ -1796,10 +1796,10 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// Disables terminal echo on stdin until dropped.
-struct EchoOff(Option<libc::termios>);
+pub(crate) struct EchoOff(Option<libc::termios>);
 
 impl EchoOff {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         // SAFETY: termios is plain data; tcgetattr fills it or fails.
         unsafe {
             let mut term: libc::termios = std::mem::zeroed();

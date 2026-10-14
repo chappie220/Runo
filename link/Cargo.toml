@@ -1,0 +1,22 @@
+[package]
+name = "runo-link"
+version = "0.1.0"
+edition = "2024"
+description = "Runo's management link: device identity, pinned TLS, frames, pairing and LAN discovery, shared by runod and the management clients"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+mdns-sd = "0.21.5"
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "std", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["rt", "macros", "io-util", "net", "sync", "time"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.2", features = ["rt-multi-thread"] }
