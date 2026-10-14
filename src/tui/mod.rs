@@ -7,17 +7,19 @@
 //! are a prompt in the window, and messages typed while a turn runs are sent
 //! after it. `/` and Ctrl+K open the commands; the mouse scrolls and clicks.
 //! `!shell` leaves the window for a shell and comes back when it exits; it
-//! needs no model, so it works when the model is down.
+//! needs no model, so it works when the model is down. When the model
+//! cannot be used, the management view opens in the panel (also `/manage`).
 
 mod backend;
 mod highlight;
+mod manage;
 mod markdown;
 mod view;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,6 +44,7 @@ use crate::llm::Role;
 use crate::skills::Skills;
 use crate::store::SessionSummary;
 use crate::tools::{Approver, with_approver};
+use manage::{Health, ITEMS, Item, Manage};
 
 const HINTS: Tr = tr(
     "Enter send · Alt+Enter new line · ^K commands · ^N new · ^B sessions · ^O tool output",
@@ -57,8 +60,8 @@ const QUEUED: Tr = tr("{} waiting", "{} 条待发送");
 const FILES: Tr = tr("files: {}", "附件：{}");
 const YOU: Tr = tr("You", "你");
 const HELP: Tr = tr(
-    "Commands (type / or press Ctrl+K for the list):\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /sidebar         show or hide the session list\n  /expand          open or close every tool output\n  /config          edit the settings: heartbeat, inner life, QQ, models…\n  /quit            leave\n  !shell           open a shell; exit returns here (works without a model)\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn, Shift+↑/↓ or the mouse wheel scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.\nCtrl+K commands and sessions · Ctrl+N new session · Ctrl+B session list · Tab moves between the list and the input · Ctrl+O opens tool output, or click a tool line · Ctrl+L repaints the screen. Hold Shift to select text with the mouse.",
-    "命令（输入 / 或按 Ctrl+K 弹出列表）：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /sidebar         显示或隐藏会话栏\n  /expand          展开或收起所有工具输出\n  /config          修改设置：心跳、内心生活、QQ、模型……\n  /quit            退出\n  !shell           打开 Shell，exit 后回到这里（不需要模型也能用）\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn、Shift+↑/↓ 或鼠标滚轮滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。\nCtrl+K 命令和会话 · Ctrl+N 新会话 · Ctrl+B 会话栏 · Tab 在会话栏和输入框之间切换 · Ctrl+O 展开工具输出，也可以点击工具那一行 · Ctrl+L 重绘屏幕。按住 Shift 用鼠标选中文字。",
+    "Commands (type / or press Ctrl+K for the list):\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /sidebar         show or hide the session list\n  /expand          open or close every tool output\n  /config          edit the settings: heartbeat, inner life, QQ, models…\n  /quit            leave\n  /manage          model status, settings, system status, logs, shell (opens by itself when the model is down)\n  !shell           open a shell; exit returns here (works without a model)\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn, Shift+↑/↓ or the mouse wheel scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.\nCtrl+K commands and sessions · Ctrl+N new session · Ctrl+B session list · Tab moves between the list and the input · Ctrl+O opens tool output, or click a tool line · Ctrl+L repaints the screen. Hold Shift to select text with the mouse.",
+    "命令（输入 / 或按 Ctrl+K 弹出列表）：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /sidebar         显示或隐藏会话栏\n  /expand          展开或收起所有工具输出\n  /config          修改设置：心跳、内心生活、QQ、模型……\n  /quit            退出\n  /manage          模型状态、设置、系统状态、日志、Shell（模型不可用时自动打开）\n  !shell           打开 Shell，exit 后回到这里（不需要模型也能用）\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn、Shift+↑/↓ 或鼠标滚轮滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。\nCtrl+K 命令和会话 · Ctrl+N 新会话 · Ctrl+B 会话栏 · Tab 在会话栏和输入框之间切换 · Ctrl+O 展开工具输出，也可以点击工具那一行 · Ctrl+L 重绘屏幕。按住 Shift 用鼠标选中文字。",
 );
 const SWITCHED: Tr = tr("Session: {}", "会话：{}");
 const ATTACHED: Tr = tr(
@@ -138,6 +141,15 @@ const SHELL_BANNER: Tr = tr(
 );
 const SHELL_BACK: Tr = tr("Back from the shell ({}).", "已从 Shell 返回（{}）。");
 const SHELL_FAILED: Tr = tr("Could not start {}: {}", "无法启动 {}：{}");
+const CMD_MANAGE: Tr = tr(
+    "model status, settings, system status, logs, shell",
+    "模型状态、设置、系统状态、日志、Shell",
+);
+const MODEL_BUSY: Tr = tr(
+    "Wait for the reply to finish (Esc stops it), then change the model.",
+    "等这次回复结束（Esc 可停止）后再修改模型。",
+);
+const MODEL_NOT_SAVED: Tr = tr("Nothing was changed.", "没有修改任何设置。");
 
 #[cfg(test)]
 const ALL: &[Tr] = &[
@@ -187,6 +199,9 @@ const ALL: &[Tr] = &[
     SHELL_BANNER,
     SHELL_BACK,
     SHELL_FAILED,
+    CMD_MANAGE,
+    MODEL_BUSY,
+    MODEL_NOT_SAVED,
 ];
 
 /// What opens a shell from the input line.
@@ -259,6 +274,11 @@ const COMMANDS: &[Command] = &[
         name: "config",
         arg: false,
         help: CMD_CONFIG,
+    },
+    Command {
+        name: "manage",
+        arg: false,
+        help: CMD_MANAGE,
     },
     Command {
         name: "help",
@@ -394,6 +414,8 @@ enum Action {
 enum Focus {
     Input,
     Sidebar,
+    /// The management view's menu.
+    Manage,
 }
 
 /// The line editor at the bottom; `cursor` is a char index.
@@ -556,6 +578,16 @@ struct App {
     open_config: bool,
     /// `!shell`: leave the window for a shell before the next draw.
     open_shell: bool,
+    /// What is known about the model.
+    health: Health,
+    /// The management view, while it is open.
+    manage: Option<Manage>,
+    /// Ask the model something tiny to see whether it answers.
+    check_model: bool,
+    /// Run the model setup, then open the window again with what it saved.
+    change_model: bool,
+    /// Where the state and logs are.
+    state: PathBuf,
     /// Ctrl+D was pressed once while a reply ran.
     quit_armed: bool,
     /// `/quit`: leave once the running reply, if any, has stopped.
@@ -602,6 +634,11 @@ impl App {
             repaint: false,
             open_config: false,
             open_shell: false,
+            health: Health::Unchecked,
+            manage: None,
+            check_model: false,
+            change_model: false,
+            state: PathBuf::new(),
             quit_armed: false,
             quit: false,
             skills: None,
@@ -974,6 +1011,9 @@ impl App {
         if self.focus == Focus::Sidebar {
             return self.sidebar_key(key);
         }
+        if self.focus == Focus::Manage {
+            return self.manage_key(key);
+        }
         if let Some(c) = &mut self.completion {
             let plain = !key
                 .modifiers
@@ -1047,6 +1087,103 @@ impl App {
         Action::None
     }
 
+    /// Keys while the management menu has focus.
+    fn manage_key(&mut self, key: KeyEvent) -> Action {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(manage) = &mut self.manage else {
+            self.focus = Focus::Input;
+            return self.key(key);
+        };
+        let last = ITEMS.len() - 1;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') if !ctrl => {
+                manage.selected = manage.selected.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') if !ctrl => {
+                manage.selected = (manage.selected + 1).min(last)
+            }
+            KeyCode::Home => manage.selected = 0,
+            KeyCode::End => manage.selected = last,
+            KeyCode::PageUp => self.scroll += 10,
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
+            KeyCode::Enter => {
+                let item = ITEMS[manage.selected];
+                self.manage_run(item);
+            }
+            KeyCode::Char(c @ '1'..='9') if !ctrl => {
+                let index = usize::from(c as u8 - b'1');
+                if let Some(item) = ITEMS.get(index) {
+                    manage.selected = index;
+                    self.manage_run(*item);
+                }
+            }
+            KeyCode::Esc => self.manage_run(Item::Back),
+            KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Input,
+            // Global keys, and typing, go to the input.
+            _ if ctrl => {
+                self.focus = Focus::Input;
+                return self.key(key);
+            }
+            KeyCode::Char(_) => {
+                self.focus = Focus::Input;
+                return self.key(key);
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Opens the management view with its menu focused.
+    fn open_manage(&mut self) {
+        if self.manage.is_none() {
+            self.manage = Some(Manage::default());
+            self.scroll = 0;
+        }
+        self.focus = Focus::Manage;
+    }
+
+    fn manage_run(&mut self, item: Item) {
+        let lang = self.lang;
+        let show = |manage: &mut Option<Manage>, rows: Vec<String>| {
+            if let Some(manage) = manage {
+                manage.detail = Some((item.label(lang).to_owned(), rows));
+            }
+        };
+        match item {
+            Item::Check => {
+                self.health = Health::Checking;
+                self.check_model = true;
+            }
+            Item::Model if self.running => self.manage_note(item, MODEL_BUSY.get(lang)),
+            Item::Model => self.change_model = true,
+            Item::Status => show(&mut self.manage, manage::status(&self.state, lang)),
+            Item::Logs => show(&mut self.manage, manage::logs(&self.state, lang)),
+            Item::Shell => self.open_shell = true,
+            Item::Back => {
+                self.manage = None;
+                self.focus = Focus::Input;
+            }
+        }
+        self.scroll = 0;
+    }
+
+    /// A note about `item`: under the menu while the view is open (it
+    /// covers the conversation), else in the conversation.
+    fn manage_note(&mut self, item: Item, text: &str) {
+        match &mut self.manage {
+            Some(manage) => {
+                manage.detail = Some((item.label(self.lang).to_owned(), vec![text.to_owned()]))
+            }
+            None => self.note(text),
+        }
+    }
+
+    /// The model cannot be used: say why and open the management view.
+    fn model_down(&mut self, why: String) {
+        self.health = Health::Down(why);
+        self.open_manage();
+    }
+
     /// Keys while no popup list is open.
     fn edit(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1108,6 +1245,7 @@ impl App {
                 self.scroll = 0;
                 self.repaint = true;
             }
+            KeyCode::Tab if self.manage.is_some() => self.focus = Focus::Manage,
             // Only when the list is on screen (it hides on narrow terminals).
             KeyCode::Tab if self.sidebar && self.hits.borrow().sidebar.width > 0 => {
                 self.focus = Focus::Sidebar;
@@ -1151,6 +1289,9 @@ impl App {
                     {
                         return Action::Run(format!("/session {name}"));
                     }
+                } else if hits.body.contains(at) && self.manage.is_some() {
+                    drop(hits);
+                    self.focus = Focus::Manage;
                 } else if hits.body.contains(at) {
                     let row = usize::from(event.row - hits.body.y);
                     let entry = hits.body_rows.get(row).copied().flatten();
@@ -1258,6 +1399,7 @@ impl App {
             "/sidebar" => self.sidebar = !self.sidebar,
             "/config" if self.running => self.note(CONFIG_BUSY.get(self.lang)),
             "/config" => self.open_config = true,
+            "/manage" => self.open_manage(),
             "/expand" => self.toggle_tools(),
             "/attach" if !arg.is_empty() => match crate::read_upload(Path::new(arg)) {
                 Ok(upload) => {
@@ -1566,8 +1708,41 @@ impl Drop for Restore {
     }
 }
 
+/// How the window ended.
+#[derive(Debug, PartialEq)]
+pub enum Exit {
+    Quit,
+    /// The model's settings changed: build the agent again and reopen.
+    Reload,
+}
+
+/// A model check running beside the window.
+type Check<'a> = Pin<Box<dyn Future<Output = Health> + 'a>>;
+
+/// Asks the model for one word: the check that costs a few tokens and
+/// proves it answers.
+fn ask_model<'a, M: Model, T: Tools>(agent: &'a Agent<M, T>, lang: Lang) -> Check<'a> {
+    Box::pin(async move {
+        let started = Instant::now();
+        let message = crate::llm::ChatMessage::user("Reply with the single word: ok");
+        match agent.model.complete(&[message], &[], &mut |_| {}).await {
+            Ok(_) => Health::answered(lang, started.elapsed()),
+            Err(err) => Health::Down(format!("{err:#}")),
+        }
+    })
+}
+
+/// Waits for the check, or forever when none runs.
+async fn checked(check: &mut Option<Check<'_>>) -> Health {
+    match check {
+        Some(check) => check.await,
+        None => std::future::pending().await,
+    }
+}
+
 enum Step {
     Act(Action),
+    Checked(Health),
     Redraw,
     Ui(UiEvent),
     Done(Result<String>),
@@ -1583,7 +1758,7 @@ pub async fn run<M: Model, T: Tools>(
     state: &Path,
     config: &Path,
     skills: Option<Skills>,
-) -> Result<()> {
+) -> Result<Exit> {
     let lang = crate::i18n::current();
     let identity = agent.store.identity()?;
     let name = identity
@@ -1594,6 +1769,7 @@ pub async fn run<M: Model, T: Tools>(
         app.icon = emoji;
     }
     app.skills = skills;
+    app.state = state.to_owned();
     app.entries = load_history(agent, &app.session);
     app.update_context(agent);
     app.refresh_sessions(agent);
@@ -1613,8 +1789,45 @@ pub async fn run<M: Model, T: Tools>(
     let mut turn: Option<Turn> = None;
     let mut cancel = Cancel::default();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    // The free check first; the window is usable while it runs.
+    let settings = crate::config::Config::load(config).unwrap_or_default();
+    let mut check: Option<Check> = Some(Box::pin(manage::probe(&settings, state, lang)));
+    app.health = Health::Checking;
+    let mut exit = Exit::Quit;
+    let mut turn_started = Instant::now();
 
     loop {
+        if std::mem::take(&mut app.check_model) {
+            check = Some(ask_model(agent, lang));
+        }
+        if std::mem::take(&mut app.change_model) {
+            // The setup reads the terminal itself, as /config does.
+            drop(keys);
+            crossterm::terminal::disable_raw_mode()?;
+            crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                crossterm::cursor::MoveTo(0, 0),
+                crossterm::cursor::Show
+            )?;
+            let saved = crate::onboard::run(config, lang, false).await;
+            crossterm::terminal::enable_raw_mode()?;
+            crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+            keys = EventStream::new();
+            app.repaint = true;
+            match saved {
+                Ok(Some(picked)) => {
+                    crate::i18n::set(picked);
+                    // The Gateway answers chats with the same model.
+                    crate::service::restart_if_running();
+                    exit = Exit::Reload;
+                    break;
+                }
+                Ok(None) => app.manage_note(Item::Model, MODEL_NOT_SAVED.get(lang)),
+                Err(err) => app.manage_note(Item::Model, &format!("{err:#}")),
+            }
+        }
         if std::mem::take(&mut app.open_config) {
             // The editor reads the terminal itself: stop reading keys here,
             // and give it a cleared screen.
@@ -1662,10 +1875,16 @@ pub async fn run<M: Model, T: Tools>(
             keys = EventStream::new();
             app.repaint = true;
             match status {
-                Ok(status) => app.note(SHELL_BACK.fill(lang, &[&status.to_string()])),
-                Err(err) => app.entries.push(Entry::Error(
-                    SHELL_FAILED.fill(lang, &[&shell, &err.to_string()]),
-                )),
+                Ok(status) => {
+                    app.manage_note(Item::Shell, &SHELL_BACK.fill(lang, &[&status.to_string()]))
+                }
+                Err(err) => {
+                    let text = SHELL_FAILED.fill(lang, &[&shell, &err.to_string()]);
+                    match app.manage {
+                        Some(_) => app.manage_note(Item::Shell, &text),
+                        None => app.entries.push(Entry::Error(text)),
+                    }
+                }
             }
         }
         if std::mem::take(&mut app.repaint) {
@@ -1696,6 +1915,7 @@ pub async fn run<M: Model, T: Tools>(
                 None => Step::End,
             },
             result = wait(&mut turn) => Step::Done(result),
+            health = checked(&mut check) => Step::Checked(health),
             _ = tick.tick(), if app.running => Step::Tick,
         };
         match step {
@@ -1726,10 +1946,18 @@ pub async fn run<M: Model, T: Tools>(
                             cancel.clone(),
                         ));
                         app.running = true;
+                        turn_started = Instant::now();
                     }
                 }
             }
             Step::Redraw => {}
+            Step::Checked(health) => {
+                check = None;
+                match health {
+                    Health::Down(why) => app.model_down(why),
+                    health => app.health = health,
+                }
+            }
             Step::Ui(UiEvent::Agent(event)) => app.on_agent(event),
             Step::Ui(UiEvent::Approval {
                 tool,
@@ -1738,6 +1966,13 @@ pub async fn run<M: Model, T: Tools>(
             }) => app.approval = Some((tool, summary, reply)),
             Step::Done(result) => {
                 turn = None;
+                match &result {
+                    Ok(_) => app.health = Health::answered(lang, turn_started.elapsed()),
+                    Err(err) if crate::llm::is_unavailable(err) => {
+                        app.model_down(format!("{err:#}"))
+                    }
+                    Err(_) => {}
+                }
                 // The last deltas may still be on their way.
                 while let Ok(event) = inbox.try_recv() {
                     if let UiEvent::Agent(event) = event {
@@ -1757,6 +1992,7 @@ pub async fn run<M: Model, T: Tools>(
                         cancel.clone(),
                     ));
                     app.running = true;
+                    turn_started = Instant::now();
                 }
             }
             Step::Tick => app.spinner += 1,
@@ -1772,7 +2008,7 @@ pub async fn run<M: Model, T: Tools>(
         drop(terminal);
         let _ = running.await;
     }
-    Ok(())
+    Ok(exit)
 }
 
 #[cfg(test)]

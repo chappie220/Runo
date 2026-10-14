@@ -239,9 +239,30 @@ one running with `gateway.web = "off"`.
   with its state.
 - Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
   `/skills`, `/compact`, `/clear`, `/identity …`, `/sidebar`, `/expand`,
-  `/config`, `/help`.
+  `/config`, `/manage`, `/help`.
 - `/config` opens the settings editor (below) in the window and comes back
   to the chat when you leave it.
+- `!shell` opens your shell (`$SHELL`, else `/bin/sh`) in the terminal;
+  `exit` comes back to the window. It needs no model. Ctrl+C in the shell
+  reaches only the shell, and the shell sees `RUNO_SHELL=1`.
+- When the model cannot be used, the management view takes the
+  conversation's place by itself. That covers no network, a refused key or
+  sign-in, no credit, the provider down, and missing settings. A free
+  check at start (the key at `/key`, or the ChatGPT sign-in) finds most of
+  these; a message that fails the same way opens it too. `/manage` opens it
+  any time. Nothing in it needs the model:
+  1. check the model again (asks it for one word, a few tokens),
+  2. change the model connection (the `init` steps; on saving, the window
+     opens again with the new settings and a running Gateway restarts),
+  3. system status: device, host name, addresses, uptime, load, memory,
+     disk, temperature, the Gateway,
+  4. logs: the end of `tui.log` and of the Gateway's log,
+  5. the shell,
+  6. back to the chat (Esc).
+
+  ↑/↓ and Enter or the digits pick; typing goes to the input, so `!shell`
+  works from here, and Tab moves between the menu and the input. Messages
+  are still sent, and bring the view back if the model is still down.
 
 It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over

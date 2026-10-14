@@ -101,10 +101,7 @@ impl App {
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(border))
             .title(title)
-            .title(
-                Line::from(Span::styled(format!(" {} ", self.model), muted()))
-                    .alignment(Alignment::Right),
-            );
+            .title(self.model_title().alignment(Alignment::Right));
         let inner = block.inner(main);
         frame.render_widget(block, main);
         // One column of air on each side of the text.
@@ -125,15 +122,19 @@ impl App {
         ])
         .areas(inner);
 
-        let width = usize::from(body.width.max(10));
-        let (lines, owners) = self.lines(width);
-        let height = usize::from(body.height);
-        let bottom = lines.len().saturating_sub(height);
-        let top = bottom.saturating_sub(self.scroll.min(bottom));
-        let visible: Vec<Line> = lines.into_iter().skip(top).take(height).collect();
         hits.body = body;
-        hits.body_rows = owners.into_iter().skip(top).take(height).collect();
-        frame.render_widget(Paragraph::new(visible), body);
+        if let Some(manage) = &self.manage {
+            self.draw_manage(frame, body, manage);
+        } else {
+            let width = usize::from(body.width.max(10));
+            let (lines, owners) = self.lines(width);
+            let height = usize::from(body.height);
+            let bottom = lines.len().saturating_sub(height);
+            let top = bottom.saturating_sub(self.scroll.min(bottom));
+            let visible: Vec<Line> = lines.into_iter().skip(top).take(height).collect();
+            hits.body_rows = owners.into_iter().skip(top).take(height).collect();
+            frame.render_widget(Paragraph::new(visible), body);
+        }
 
         // The separator joins the panel's border: ├────┤.
         let rule = format!(
@@ -185,6 +186,84 @@ impl App {
             Self::draw_completion(frame, body, input, c);
         }
         *self.hits.borrow_mut() = hits;
+    }
+
+    /// The model's name for the panel's title, marked when it is down or
+    /// being checked.
+    fn model_title(&self) -> Line<'static> {
+        let (mark, style) = match &self.health {
+            Health::Down(_) => ("✗ ", Style::new().fg(ERROR)),
+            Health::Checking => ("… ", muted()),
+            _ => ("", muted()),
+        };
+        Line::from(vec![
+            Span::styled(format!(" {mark}"), style),
+            Span::styled(format!("{} ", self.model), style),
+        ])
+    }
+
+    /// The management view in the conversation's place: the model's state,
+    /// the menu, and below it what the last item showed, its end in view.
+    fn draw_manage(&self, frame: &mut Frame, area: Rect, manage: &Manage) {
+        let width = usize::from(area.width.max(10));
+        let focused = self.focus == Focus::Manage && self.palette.is_none();
+        let mut head = vec![Line::styled(
+            fit(
+                &format!(
+                    "{} · {}",
+                    manage::TITLE.get(self.lang),
+                    self.health.line(self.lang, &self.model)
+                ),
+                width,
+            ),
+            match self.health {
+                Health::Down(_) => Style::new().fg(ERROR).add_modifier(Modifier::BOLD),
+                _ => Style::new().add_modifier(Modifier::BOLD),
+            },
+        )];
+        if self.health.is_down() {
+            for row in wrap(Health::note(self.lang), width) {
+                head.push(Line::styled(row, muted()));
+            }
+        }
+        head.push(Line::raw(""));
+        for (i, item) in ITEMS.iter().enumerate() {
+            let selected = i == manage.selected;
+            let mark = if selected { "▸ " } else { "  " };
+            let style = if selected && focused {
+                Style::new()
+                    .fg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(SELECTED_BG)
+            } else if selected {
+                Style::new().fg(ACCENT)
+            } else {
+                Style::new()
+            };
+            head.push(Line::styled(
+                fit(&format!("{mark}{} {}", i + 1, item.label(self.lang)), width),
+                style,
+            ));
+        }
+        let rows = (head.len() as u16).min(area.height);
+        let [top, rest] =
+            Layout::vertical([Constraint::Length(rows), Constraint::Min(0)]).areas(area);
+        frame.render_widget(Paragraph::new(head), top);
+        let Some((title, detail)) = &manage.detail else {
+            return;
+        };
+        let mut lines = vec![
+            Line::raw(""),
+            Line::styled(fit(&format!("── {title} ──"), width), muted()),
+        ];
+        for row in detail {
+            lines.extend(wrap(row, width).into_iter().map(Line::raw));
+        }
+        let height = usize::from(rest.height);
+        let bottom = lines.len().saturating_sub(height);
+        let first = bottom.saturating_sub(self.scroll.min(bottom));
+        let visible: Vec<Line> = lines.into_iter().skip(first).take(height).collect();
+        frame.render_widget(Paragraph::new(visible), rest);
     }
 
     fn draw_sidebar(&self, frame: &mut Frame, area: Rect, hits: &mut Hits) {
@@ -281,10 +360,10 @@ impl App {
             left.push(Span::styled(format!("  ↑{}", self.scroll), muted()));
         }
         if left.is_empty() {
-            let hints = if self.focus == Focus::Sidebar {
-                SIDEBAR_HINTS
-            } else {
-                HINTS
+            let hints = match self.focus {
+                Focus::Sidebar => SIDEBAR_HINTS,
+                Focus::Manage => manage::HINTS,
+                Focus::Input => HINTS,
             };
             left.push(Span::styled(format!(" {}", hints.get(self.lang)), muted()));
         }

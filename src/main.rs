@@ -725,20 +725,28 @@ async fn run(cli: Cli) -> Result<()> {
             if !onboard::interactive() {
                 bail!(text::TUI_NEEDS_TERMINAL.now());
             }
-            let agent = build_agent(&config, &config_path, &state, store).await?;
-            let skills = config
-                .skills
-                .enabled
-                .then(|| skills::Skills::new(&agent.config.workspace, &config.skills));
-            tui::run(
-                &agent,
-                session,
-                config.model.model.clone(),
-                &state,
-                &config_path,
-                skills,
-            )
-            .await
+            let mut config = config;
+            loop {
+                let agent = build_agent(&config, &config_path, &state, store.clone()).await?;
+                let skills = config
+                    .skills
+                    .enabled
+                    .then(|| skills::Skills::new(&agent.config.workspace, &config.skills));
+                let exit = tui::run(
+                    &agent,
+                    session.clone(),
+                    config.model.model.clone(),
+                    &state,
+                    &config_path,
+                    skills,
+                )
+                .await?;
+                if exit == tui::Exit::Quit {
+                    return Ok(());
+                }
+                // The model's settings changed: start again with them.
+                config = Config::load(&config_path)?;
+            }
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);

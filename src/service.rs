@@ -722,6 +722,13 @@ pub fn describe() -> Option<String> {
     ))
 }
 
+/// Where the Gateway writes its log, however it runs.
+pub fn log_file() -> Option<PathBuf> {
+    Backend::detect()
+        .ok()
+        .map(|backend| PathBuf::from(backend.log()))
+}
+
 /// The pid in the pid file, when that process is still a Gateway.
 fn detached_pid() -> Option<u32> {
     let text = std::fs::read_to_string(state_file(PID_FILE)).ok()?;

@@ -468,6 +468,60 @@ fn the_at_list_says_why_it_is_empty() {
 #[test]
 fn every_text_has_both_languages() {
     crate::i18n::assert_complete(ALL);
+    crate::i18n::assert_complete(manage::ALL);
+}
+
+#[test]
+fn a_model_outage_opens_the_management_view_and_its_menu_works() {
+    let mut app = app();
+    app.model_down("model request failed: connection refused".into());
+    assert!(app.manage.is_some());
+    assert_eq!(app.focus, Focus::Manage);
+    let (rows, _) = screen(&app, 100, 30);
+    let text = rows.join("\n");
+    assert!(text.contains("✗ x/y"), "{text}");
+    assert!(
+        text.contains("Model x/y: unavailable: model request failed"),
+        "{text}"
+    );
+    assert!(text.contains("1 Check the model again"), "{text}");
+    assert!(text.contains("Esc back to the chat"), "{text}");
+
+    // ↓ and Enter pick an item; digits too.
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let (title, rows) = app.manage.as_ref().unwrap().detail.clone().unwrap();
+    assert_eq!(title, "System status");
+    assert!(rows.iter().any(|r| r.starts_with("Memory: ")), "{rows:?}");
+    press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+    assert!(app.check_model);
+    assert_eq!(app.health, Health::Checking);
+    press(&mut app, KeyCode::Char('5'), KeyModifiers::NONE);
+    assert!(app.open_shell);
+    press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+    assert!(app.change_model);
+
+    // Typing goes to the input, so !shell works from here; Tab comes back.
+    typed(&mut app, "!shell");
+    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(app.input.string(), "!shell");
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.focus, Focus::Manage);
+
+    // Esc goes back to the chat.
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.manage.is_none());
+    assert_eq!(app.focus, Focus::Input);
+}
+
+#[test]
+fn the_model_is_not_changed_during_a_reply() {
+    let mut app = app();
+    app.open_manage();
+    app.running = true;
+    press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+    assert!(!app.change_model);
 }
 
 #[test]
