@@ -74,7 +74,7 @@ impl Capability {
     pub fn for_tool(tool: &str) -> Option<Capability> {
         Some(match tool {
             "shell" | "system_inspect" | "system_service" | "system_check" | "system_change"
-            | "system_history" | "system_revert" => Capability::Shell,
+            | "system_history" | "system_revert" | "system_setup_done" => Capability::Shell,
             "read_file" | "list_dir" => Capability::FilesRead,
             "write_file" | "edit_file" => Capability::FilesWrite,
             "memory_save" | "memory_search" | "memory_delete" => Capability::Memory,

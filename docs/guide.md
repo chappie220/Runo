@@ -271,7 +271,12 @@ one running with `gateway.web = "off"`.
   a time, verifies each, and reports. It covers the network and Wi‑Fi, the
   time and timezone, and the Gateway. Each change is a recorded
   transaction (see [System changes](#system-changes)) that is put back
-  by itself when its checks fail; it tries each target at most three times. On a Raspberry Pi it starts
+  by itself when its checks fail. A set-up is one run over all its turns,
+  held to `limits.setup_tool_calls` (50), `limits.setup_usd` ($1) and
+  `limits.setup_attempts` (3 failed changes per target, then that target
+  is left); a limit stops what is left and keeps what was verified. The
+  run ends when the agent says it is done (`system_setup_done`), at a
+  limit, at the next `/setup`, or after six hours without a turn. On a Raspberry Pi it starts
   by itself the first time the window opens with a working model
   (`<state dir>/system-setup-started` marks that it did). Changing the
   device needs Runo to run as root, skills on, and `tools.shell` not
@@ -1879,6 +1884,9 @@ daily_usd = 2             # the whole agent per day (local time), owners include
 monthly_usd = 20          # the whole agent per calendar month
 guest_daily_usd = 0.5     # each sender who is not an owner, per day (default 0.5)
 turn_usd = 0.3            # one reply that keeps calling tools
+setup_usd = 1             # one /setup over all its turns (default 1)
+setup_tool_calls = 50     # tool calls one /setup may make (default 50)
+setup_attempts = 3        # failed changes per /setup target before it is given up (default 3)
 [limits.senders]          # per day for named senders, instead of guest_daily_usd
 "qq:<friend openid>" = 2
 ```

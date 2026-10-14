@@ -42,6 +42,7 @@ mod review;
 mod search;
 mod service;
 mod setup;
+mod setup_run;
 mod skills;
 mod status;
 mod stickers;
@@ -1010,7 +1011,11 @@ async fn build_agent(
             .with_stickers(Some(config.stickers.clone()))
             .with_tasks(Some(config.tasks.clone()))
             .with_settings(Some(config_path.to_owned()))
-            .with_changes(Some(history)),
+            .with_changes(Some(history))
+            .with_setup(Some(Arc::new(setup_run::Runs::new(
+                state,
+                config.limits.clone(),
+            )))),
         store,
         config: config::AgentConfig {
             workspace,

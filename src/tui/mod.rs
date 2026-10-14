@@ -620,6 +620,8 @@ struct App {
     /// The device set-up starts by itself on the first start: on a
     /// Raspberry Pi, and when it has not started before.
     setup_due: bool,
+    /// Device set-up runs: `/setup` starts one, and turns are charged to it.
+    runs: Option<Arc<crate::setup_run::Runs>>,
     /// Ready skills (name, description), read when an @ list opens.
     known_skills: Vec<(String, String)>,
     completion: Option<Completion>,
@@ -669,6 +671,7 @@ impl App {
             quit: false,
             skills: None,
             setup_due: false,
+            runs: None,
             known_skills: Vec::new(),
             completion: None,
             dismissed: None,
@@ -1433,6 +1436,9 @@ impl App {
         }
         let text = SETUP_MESSAGE.get(self.lang);
         self.entries.push(Entry::User(text.to_owned()));
+        if let Some(runs) = &self.runs {
+            runs.start(&self.session);
+        }
         Some(Outgoing {
             text: format!(
                 "{text}\n\n{}",
@@ -1656,6 +1662,7 @@ fn start_turn<'a, M: Model, T: Tools>(
     message: Outgoing,
     events: mpsc::UnboundedSender<UiEvent>,
     cancel: Cancel,
+    runs: Option<Arc<crate::setup_run::Runs>>,
 ) -> Turn<'a> {
     Box::pin(async move {
         let actor = Actor::owner(access::CLI);
@@ -1667,11 +1674,15 @@ fn start_turn<'a, M: Model, T: Tools>(
             let _ = agent_events.send(UiEvent::Agent(event));
         };
         let approver: Arc<dyn Approver> = Arc::new(TuiApprover(events));
-        with_approver(
-            approver,
-            agent.run_turn_until(actor, &session, &text, &files, &cancel, &mut on_event),
-        )
-        .await
+        let turn = agent.run_turn_until(actor, &session, &text, &files, &cancel, &mut on_event);
+        // A device set-up's limits count over all its turns.
+        match runs {
+            Some(runs) => {
+                let budget = crate::setup_run::budget(runs, session.clone());
+                with_approver(approver, crate::agent::with_budget(budget, turn)).await
+            }
+            None => with_approver(approver, turn).await,
+        }
     })
 }
 
@@ -1851,6 +1862,10 @@ pub async fn run<M: Model, T: Tools>(
     app.state = state.to_owned();
     app.setup_due =
         crate::system::Host::live().is_raspberry_pi() && !state.join(SETUP_MARK).exists();
+    let limits = crate::config::Config::load(config)
+        .map(|c| c.limits)
+        .unwrap_or_default();
+    app.runs = Some(Arc::new(crate::setup_run::Runs::new(state, limits)));
     app.entries = load_history(agent, &app.session);
     app.update_context(agent);
     app.refresh_sessions(agent);
@@ -2057,6 +2072,7 @@ pub async fn run<M: Model, T: Tools>(
                         message,
                         events.clone(),
                         cancel.clone(),
+                        app.runs.clone(),
                     ));
                     app.running = true;
                     turn_started = Instant::now();
@@ -2076,6 +2092,7 @@ pub async fn run<M: Model, T: Tools>(
                     message,
                     events.clone(),
                     cancel.clone(),
+                    app.runs.clone(),
                 ));
                 app.running = true;
                 turn_started = Instant::now();

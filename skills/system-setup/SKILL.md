@@ -60,7 +60,7 @@ unless the person asks.
 
 Every change to the system goes through `system_change`: never write files
 under /etc with `write_file`, `edit_file` or `shell`. One call is one
-target:
+target, named in `target` (`network`, `time`, `gateway`):
 
 1. Read the files first (`read_file`). Keep the system's own format and
    comments; change only what the target needs, and give each file whole.
@@ -76,7 +76,8 @@ target:
 When a change was put back, find out why before trying again: the
 service's own status, then the log (`logread` on BusyBox,
 `journalctl -u <name> -n 50` with systemd, otherwise /var/log/messages).
-At most **3 attempts per target**; then go on with the next one.
+A target that was put back 3 times is refused for the rest of the
+set-up: leave it, go on with the next one, and say why in the report.
 
 `system_history` lists what was changed; `system_revert` undoes a change
 when the person asks for it.
@@ -90,9 +91,17 @@ when the person asks for it.
   network you are reached through, without the person asking for it.
 - Never print a password back, and never put one in memory.
 
-## 5. Report
+## 5. Limits
 
-End with a short list, one line per target: already fine, changed (what,
-with its change number), failed (why, and what the person can do), or
-skipped. Say how each was verified. Save one memory of what was set up (no passwords), so later
-conversations know the device's state.
+The whole set-up, over all its turns, may make 50 tool calls and spend
+$1 by default (`limits.setup_tool_calls`, `limits.setup_usd`). When one is reached it
+stops by itself; what was already verified stays. So inspect once, do not
+check the same thing twice, and ask all your questions together.
+
+## 6. Report
+
+Call `system_setup_done` first. Then end with a short list, one line per
+target: already fine, changed (what, with its change number), failed (why,
+and what the person can do), or skipped. Say how each was verified. Save
+one memory of what was set up (no passwords), so later conversations know
+the device's state.

@@ -169,7 +169,7 @@ PTY 输出保留一段环形缓冲（如 1 MB），重连时补发。
 
 还必须打开 BCM2712 硬件看门狗，由 `runod` 喂狗：新系统卡死时自动重启，从而回到旧分区。没有看门狗，卡死的系统不会自己回退。
 
-### 4.6 自主配置的次数与费用上限
+### 4.6 自主配置的次数与费用上限（阶段 1 已实现，见第 6 节）
 
 建议：
 
@@ -281,7 +281,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 
 | 阶段 | 内容 | 与现有代码的关系 |
 |---|---|---|
-| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell`；只用 BusyBox 也有的命令，避免依赖 GNU 工具或包管理器 | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`、管理界面、自配置（`system_*` 工具、`system-setup` skill、`/setup`）和配置事务（`changes.rs`、`runo changes`）。待做：费用和次数上限 |
+| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell`；只用 BusyBox 也有的命令，避免依赖 GNU 工具或包管理器 | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`、管理界面、自配置（`system_*` 工具、`system-setup` skill、`/setup`）、配置事务（`changes.rs`、`runo changes`）和自配置上限（`setup_run.rs`）|
 | 2 | 局域网发现与可信配对 | 新增 `runod`、管理协议、共用的 Rust 核心库、Flutter 管理客户端 |
 | 3 | 开机直达 Agent 的镜像（Pi 5、Pi 4） | Buildroot 2025.02.x 外部树（`buildroot/`）、BusyBox init 与 `inittab` 接管 tty1、`service.rs` 支持 BusyBox init、A/B 分区、中文显示、CI 出镜像 |
 | 4 | 公网连接、更新与恢复 | `runod` 自己实现 A/B 更新（签名、`tryboot`、看门狗），取代 `update.rs` 的单文件替换；IPv6 公网接入与防火墙；Runo 自绘终端（含拼音词库联想）取代 `fbterm` |
@@ -308,7 +308,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
   - 目标：网络与 Wi‑Fi（不改当前默认路由所在的网卡，除非用户要求）、时间与时区、Runo Gateway。主机名、用户、SSH 等不动。
   - 触发：`runo tui` 里输入 `/setup`；在树莓派上第一次打开窗口、模型可用时自动开始一次（状态目录里的 `system-setup-started` 记录已开始过）。
     模型不可用时等到恢复后再开始。
-  - 每次修改都走下面的配置事务（`system_change`）；每个目标 3 次重试目前靠 skill 的指示，由程序强制的次数和费用上限见 4.6。
+  - 每次修改都走下面的配置事务（`system_change`）；次数和费用上限由程序强制，见下面的 4.6 一项。
 - [x] 配置事务与回退（4.2）。阶段 1 还没有 `runod`，事务先在 Runo 进程里做（`src/changes.rs`）：
   - Agent 改系统配置只能用 `system_change`；工具开放时，`write_file`、`edit_file` 拒绝写 `/etc`。
   - 一次修改：快照每个文件（内容、属主、权限）到 `<状态目录>/config-history/<编号>/`，记为 pending →
@@ -320,7 +320,13 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
     之后又被改过的文件，回退时默认拒绝。
   - 还没做的"确认提交"（客户端在新地址上重连确认，否则倒计时回退）要等阶段 2 有了 `runod` 和客户端；
     阶段 1 里，网络类修改靠验证（如能连上模型服务）在失联时自动回退。
-- [ ] 自配置的次数与费用上限（4.6）。
+- [x] 自配置的次数与费用上限（4.6）（`src/setup_run.rs`）：
+  - 一次 `/setup` 是一个跨多个回合的"配置过程"，记在 `<状态目录>/system-setup-run.json`；同一会话里的回合都计入。
+    Agent 调用 `system_setup_done`、达到上限、下一次 `/setup` 或 6 小时没有回合时结束。
+  - 上限在 `[limits]`：`setup_tool_calls`（默认 50 次工具调用）、`setup_usd`（默认 1 美元）、`setup_attempts`（每个目标默认 3 次失败）。
+    达到前两者时，回合在下一步之前停下并说明；最后的回答只计数、不截断。`limits.turn_usd`、每日和每月上限照常生效。
+  - `system_change` 带 `target`（network、time、gateway……）；配置过程中，同一目标被回退满 3 次后，再改这个目标会被拒绝，Agent 继续下一项并在汇报里说明。
+  - 已经验证成功的修改不回退，只停止后面的步骤。
 
 ## 7. 1.0 验收流程
 

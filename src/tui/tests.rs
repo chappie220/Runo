@@ -581,7 +581,14 @@ fn setup_sends_the_skill_and_starts_by_itself_only_once() {
         &crate::config::SkillsConfig::default(),
     ));
     app.state = dir.path().to_owned();
+    let runs = Arc::new(crate::setup_run::Runs::new(
+        dir.path(),
+        crate::limits::LimitsConfig::default(),
+    ));
+    app.runs = Some(runs.clone());
     let sent = app.setup().unwrap();
+    // It runs as one set-up, held to its limits over its turns.
+    assert!(runs.active("main").is_some());
     assert!(sent.text.starts_with("Check and set up this device."));
     assert!(sent.text.contains("Skills to use: system-setup"));
     assert!(

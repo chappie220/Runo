@@ -158,6 +158,8 @@ pub struct BuiltinTools {
     settings: Option<PathBuf>,
     /// The configuration history, for `system_change`; `None` offers none.
     changes: Option<crate::changes::History>,
+    /// Device set-up runs, held to their limits per target.
+    setup: Option<Arc<crate::setup_run::Runs>>,
 }
 
 #[derive(Deserialize)]
@@ -197,6 +199,8 @@ struct ChangeFile {
 #[derive(Deserialize)]
 struct ChangeArgs {
     summary: String,
+    #[serde(default)]
+    target: Option<String>,
     #[serde(default)]
     files: Vec<ChangeFile>,
     #[serde(default)]
@@ -389,7 +393,23 @@ impl BuiltinTools {
             tasks: None,
             settings: None,
             changes: None,
+            setup: None,
         })
+    }
+
+    /// Holds `system_change` to the device set-up's attempts per target,
+    /// and offers `system_setup_done` while a set-up runs.
+    pub fn with_setup(mut self, setup: Option<Arc<crate::setup_run::Runs>>) -> Self {
+        self.setup = setup;
+        self
+    }
+
+    /// The set-up runs, when one is going on in this turn's session.
+    fn setup_running(&self) -> Option<(&crate::setup_run::Runs, String)> {
+        let runs = self.setup.as_deref()?;
+        let session = crate::agent::current_session()?;
+        runs.active(&session)?;
+        Some((runs, session))
     }
 
     /// Offers `system_change`, `system_history` and `system_revert` on this
@@ -1547,6 +1567,17 @@ impl BuiltinTools {
                 Check::NAMES[*kind as usize]
             ));
         }
+        let target = args
+            .target
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("other")
+            .to_lowercase();
+        let running = self.setup_running();
+        if let Some((runs, session)) = &running {
+            runs.may_try(session, &target)?;
+        }
         self.permit_change(!args.services.is_empty(), &shown)
             .await?;
         let request = Request {
@@ -1565,11 +1596,26 @@ impl BuiltinTools {
                 .min(MAX_SETTLE),
             reverts: None,
         };
-        history
+        let record = history
             .apply(request)
             .await
-            .map(|record| record.report())
-            .map_err(|err| format!("error: {err:#}"))
+            .map_err(|err| format!("error: {err:#}"))?;
+        if let Some((runs, session)) = &running
+            && record.state != crate::changes::State::Applied
+        {
+            runs.failed(session, &target);
+        }
+        Ok(record.report())
+    }
+
+    fn system_setup_done(&self) -> Result<String, String> {
+        match self.setup_running() {
+            Some((runs, session)) => {
+                runs.finish(&session);
+                Ok("The device set-up is marked done; now give the report.".into())
+            }
+            None => Err("error: no device set-up is running in this conversation".into()),
+        }
     }
 
     fn system_history(&self, args: HistoryArgs) -> Result<String, String> {
@@ -2189,6 +2235,7 @@ impl BuiltinTools {
                      system_revert.",
                     json!({"type": "object", "properties": {
                         "summary": {"type": "string", "description": "what the change is for, one line"},
+                        "target": {"type": "string", "description": "during a device set-up: the target it is for, e.g. network, time, gateway"},
                         "files": {"type": "array", "items": {"type": "object", "properties": {
                             "path": {"type": "string", "description": "absolute path"},
                             "content": {"type": ["string", "null"], "description": "the whole new file; null deletes it"}
@@ -2209,6 +2256,14 @@ impl BuiltinTools {
                     json!({"type": "object", "properties": {
                         "id": {"type": "integer"}, "force": {"type": "boolean"}
                     }, "required": ["id"]}),
+                ));
+            }
+            if self.setup_running().is_some() {
+                specs.push(ToolSpec::function(
+                    "system_setup_done",
+                    "Mark the device set-up running in this conversation as done, right before \
+                     the final report. Until then its turns count against its limits.",
+                    json!({"type": "object", "properties": {}}),
                 ));
             }
             if self.changes.is_some() {
@@ -2253,6 +2308,7 @@ impl BuiltinTools {
                 Err(e) => Err(e),
             },
             "system_history" => parse(call).and_then(|args| self.system_history(args)),
+            "system_setup_done" => self.system_setup_done(),
             "system_revert" => match parse(call) {
                 Ok(args) => self.system_revert(actor, args).await,
                 Err(e) => Err(e),
@@ -3187,6 +3243,81 @@ mod tests {
             .call(&change(json!([{"kind": "tcp", "target": up}])))
             .await;
         assert!(out.contains("disabled"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_device_set_up_gives_a_target_up_after_its_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = dir.path().join("wpa.conf");
+        std::fs::write(&conf, "old\n").unwrap();
+        let runs = Arc::new(crate::setup_run::Runs::new(
+            dir.path(),
+            crate::config::Config::default().limits,
+        ));
+        let tools = Scoped(
+            BuiltinTools::new(
+                dir.path().to_owned(),
+                ToolsConfig::default(),
+                Store::open_in_memory().unwrap(),
+            )
+            .unwrap()
+            .with_changes(Some(crate::changes::History::without_restarts(
+                dir.path().join("history"),
+            )))
+            .with_setup(Some(runs.clone())),
+            Arc::new(Answer(true)),
+        );
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().to_string()
+        };
+        let wifi = call(
+            "system_change",
+            json!({
+                "summary": "join Home",
+                "target": "Network",
+                "files": [{"path": conf.display().to_string(), "content": "new\n"}],
+                "checks": [{"kind": "tcp", "target": closed}],
+                "settle_secs": 0
+            }),
+        );
+        let in_main = |call: ToolCall| {
+            let tools = &tools;
+            crate::agent::with_session("main".into(), async move { tools.call(&call).await })
+        };
+        let offered = || {
+            let tools = &tools;
+            async move {
+                crate::agent::with_session("main".into(), owner(async { tools.specs() }))
+                    .await
+                    .iter()
+                    .any(|s| s.function.name == "system_setup_done")
+            }
+        };
+        // Outside a set-up nothing is counted, and there is nothing to finish.
+        assert!(!offered().await);
+        for _ in 0..4 {
+            assert!(in_main(wifi.clone()).await.contains("rolled back"));
+        }
+
+        runs.start("main");
+        assert!(offered().await);
+        for _ in 0..3 {
+            let out = in_main(wifi.clone()).await;
+            assert!(out.contains("rolled back"), "{out}");
+        }
+        let out = in_main(wifi.clone()).await;
+        assert!(out.contains("failed 3 times"), "{out}");
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "old\n");
+        // Another session's turns are not part of it.
+        let elsewhere = crate::agent::with_session("other".into(), tools.call(&wifi)).await;
+        assert!(elsewhere.contains("rolled back"), "{elsewhere}");
+
+        let done = in_main(call("system_setup_done", json!({}))).await;
+        assert!(done.contains("marked done"), "{done}");
+        assert!(!offered().await);
+        let again = in_main(call("system_setup_done", json!({}))).await;
+        assert!(again.contains("no device set-up"), "{again}");
     }
 
     #[tokio::test]

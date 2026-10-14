@@ -1353,6 +1353,7 @@ fn limits_findings(config: &Config) -> Vec<Finding> {
         ("limits.monthly_usd", limits.monthly_usd),
         ("limits.guest_daily_usd", limits.guest_daily_usd),
         ("limits.turn_usd", limits.turn_usd),
+        ("limits.setup_usd", limits.setup_usd),
     ] {
         if let Some(value) = set(value) {
             findings.push(ok(LIMIT_IS.with(&[key, &crate::limits::money(value)])));
