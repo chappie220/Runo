@@ -37,6 +37,7 @@ use tokio::net::TcpListener;
 
 use trust::{Trust, Window, now};
 
+pub use cli::{first_password, set_password};
 pub use control::{Local, request as control_request};
 
 pub const DIR: &str = "runod";

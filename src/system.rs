@@ -36,7 +36,22 @@ const NETWORK_MANAGERS: &[(&str, &str)] = &[
     ("ifupdown", "etc/network/interfaces"),
     ("systemd-networkd", "etc/systemd/network"),
     ("wpa_supplicant", "etc/wpa_supplicant/wpa_supplicant.conf"),
+    ("wpa_supplicant", "etc/wpa_supplicant.conf"),
 ];
+
+/// Where Wi-Fi networks are kept: the usual place, and the Runo system's.
+const WPA_CONFS: &[&str] = &[
+    "etc/wpa_supplicant/wpa_supplicant.conf",
+    "etc/wpa_supplicant.conf",
+];
+
+/// What the agent needs to know about the Runo system image.
+const RUNO_SYSTEM: &str = "runo system: this is Runo's own image. The root file system is read-only; \
+what may change lives on /data and is linked from /etc: /etc/wpa_supplicant.conf (Wi-Fi, applied \
+by restarting S40network), /etc/timezone (a zone name such as Asia/Shanghai, applied by restarting \
+S48time) and /etc/hostname. Wired network is DHCP (S40network); runod (S50runod) serves paired \
+clients; the Gateway is S60gateway, turned on with `runo gateway install`. Nothing else under /etc \
+can be changed, and nothing can be installed.";
 
 /// Services listed at most; the rest are counted.
 const MAX_SERVICES: usize = 80;
@@ -198,14 +213,17 @@ impl Host {
     }
 
     /// Networks in the Wi‑Fi configuration, by SSID; never the keys.
-    fn wifi_networks(&self) -> Option<Vec<String>> {
-        let text = self.read("etc/wpa_supplicant/wpa_supplicant.conf")?;
-        Some(
-            text.lines()
-                .filter_map(|l| l.trim().strip_prefix("ssid="))
-                .map(|s| s.trim().to_owned())
-                .collect(),
-        )
+    fn wifi_networks(&self) -> Option<(&'static str, Vec<String>)> {
+        WPA_CONFS.iter().find_map(|path| {
+            let text = self.read(path)?;
+            Some((
+                *path,
+                text.lines()
+                    .filter_map(|l| l.trim().strip_prefix("ssid="))
+                    .map(|s| s.trim().to_owned())
+                    .collect(),
+            ))
+        })
     }
 
     fn services(&self) -> Vec<String> {
@@ -234,6 +252,9 @@ impl Host {
             out.push_str("  (not a Raspberry Pi: Runo sets up Raspberry Pi devices only; change nothing here unless the user asks)\n");
         }
         let _ = writeln!(out, "os: {}", self.os().unwrap_or_else(unknown));
+        if self.exists("etc/runo-system") {
+            let _ = writeln!(out, "{RUNO_SYSTEM}");
+        }
         let _ = writeln!(
             out,
             "kernel: {} ({})",
@@ -319,10 +340,10 @@ impl Host {
                 managers.join(", ")
             }
         );
-        if let Some(networks) = self.wifi_networks() {
+        if let Some((path, networks)) = self.wifi_networks() {
             let _ = writeln!(
                 out,
-                "wifi networks in /etc/wpa_supplicant/wpa_supplicant.conf: {}",
+                "wifi networks in /{path}: {}",
                 if networks.is_empty() {
                     "none".to_owned()
                 } else {
@@ -710,6 +731,33 @@ mod tests {
         assert!(!text.contains("secret-pass"), "{text}");
         assert!(!text.contains("lo ("), "{text}");
         assert!(!text.contains("not a Raspberry Pi"), "{text}");
+    }
+
+    #[test]
+    fn inspect_explains_the_runo_system_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "etc/runo-system", "board=rpi5\nversion=1.0\n");
+        write(
+            root,
+            "etc/wpa_supplicant.conf",
+            "ctrl_interface=/run/wpa_supplicant\nnetwork={\n\tssid=\"Home\"\n\tpsk=0123abcd\n}\n",
+        );
+        let text = Host::at(root).inspect();
+        for expected in [
+            "runo system: this is Runo's own image",
+            "network configured by: wpa_supplicant",
+            "wifi networks in /etc/wpa_supplicant.conf: \"Home\"",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{expected:?} missing from:\n{text}"
+            );
+        }
+        assert!(!text.contains("0123abcd"), "{text}");
+
+        let plain = tempfile::tempdir().unwrap();
+        assert!(!Host::at(plain.path()).inspect().contains("runo system"));
     }
 
     #[test]

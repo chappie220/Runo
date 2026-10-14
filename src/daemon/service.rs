@@ -29,8 +29,13 @@ const UNINSTALLED: Tr = tr(
 );
 const NOT_INSTALLED: Tr = tr("The daemon is not installed.", "守护进程没有安装。");
 
+const BUILT_IN: Tr = tr(
+    "On the Runo system the daemon is part of the system and starts at boot (/etc/init.d/S50runod).",
+    "Runo 系统自带守护进程，开机即启动（/etc/init.d/S50runod）。",
+);
+
 #[cfg(test)]
-pub const ALL: &[Tr] = &[NEEDS_ROOT, INSTALLED, UNINSTALLED, NOT_INSTALLED];
+pub const ALL: &[Tr] = &[NEEDS_ROOT, INSTALLED, UNINSTALLED, NOT_INSTALLED, BUILT_IN];
 
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
@@ -139,6 +144,10 @@ fn is_root() -> bool {
 }
 
 pub fn install(state: &Path, config: Option<&Path>) -> Result<()> {
+    if crate::config::runo_system() {
+        println!("{}", BUILT_IN.now());
+        return Ok(());
+    }
     if !is_root() {
         bail!("{}", NEEDS_ROOT.now());
     }
@@ -172,6 +181,10 @@ pub fn install(state: &Path, config: Option<&Path>) -> Result<()> {
 }
 
 pub fn uninstall(state: &Path) -> Result<()> {
+    if crate::config::runo_system() {
+        println!("{}", BUILT_IN.now());
+        return Ok(());
+    }
     if !is_root() {
         bail!("{}", NEEDS_ROOT.now());
     }

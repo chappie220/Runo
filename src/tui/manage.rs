@@ -13,8 +13,8 @@ use crate::onboard::{Catalog, KeyCheck};
 
 pub(super) const TITLE: Tr = tr("Management", "管理");
 pub(super) const HINTS: Tr = tr(
-    "↑/↓ choose · Enter run · 1–8 · Tab input · Esc back to the chat",
-    "↑/↓ 选择 · 回车执行 · 1–8 · Tab 输入框 · Esc 返回对话",
+    "↑/↓ choose · Enter run · 1–9 · Tab input · Esc back to the chat",
+    "↑/↓ 选择 · 回车执行 · 1–9 · Tab 输入框 · Esc 返回对话",
 );
 const MODEL: Tr = tr("Model {}: {}", "模型 {}：{}");
 const UNCHECKED: Tr = tr("not checked", "未检查");
@@ -47,6 +47,7 @@ const CHANGES_HINT: Tr = tr(
     "在 Shell 里撤销某一次：runo changes revert <编号>（详情：runo changes show <编号>）",
 );
 const ITEM_PAIRING: Tr = tr("Pairing and clients", "配对与客户端");
+const ITEM_PASSWORD: Tr = tr("Device password", "设备密码");
 const P_DEVICE: Tr = tr("This device: {} ({}), port {}", "本机：{}（{}），端口 {}");
 const P_OPEN: Tr = tr(
     "Pairing window: open until {}. On the client, pick this device and check that it shows the same code as here.",
@@ -120,6 +121,7 @@ pub(super) const ALL: &[Tr] = &[
     ITEM_CHANGES,
     CHANGES_HINT,
     ITEM_PAIRING,
+    ITEM_PASSWORD,
     P_DEVICE,
     P_OPEN,
     P_CLOSED,
@@ -220,7 +222,7 @@ fn from_key_check(check: KeyCheck, lang: Lang) -> Health {
     }
 }
 
-/// The menu, in order; 1–8 pick them too.
+/// The menu, in order; 1–9 pick them too.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum Item {
     Check,
@@ -229,6 +231,7 @@ pub(super) enum Item {
     Logs,
     Changes,
     Pairing,
+    Password,
     Shell,
     Back,
 }
@@ -240,6 +243,7 @@ pub(super) const ITEMS: &[Item] = &[
     Item::Logs,
     Item::Changes,
     Item::Pairing,
+    Item::Password,
     Item::Shell,
     Item::Back,
 ];
@@ -253,6 +257,7 @@ impl Item {
             Self::Logs => ITEM_LOGS,
             Self::Changes => ITEM_CHANGES,
             Self::Pairing => ITEM_PAIRING,
+            Self::Password => ITEM_PASSWORD,
             Self::Shell => ITEM_SHELL,
             Self::Back => ITEM_BACK,
         }

@@ -512,7 +512,7 @@ fn a_model_outage_opens_the_management_view_and_its_menu_works() {
         (title.as_str(), rows),
         ("Pairing and clients", vec!["window".to_owned()])
     );
-    press(&mut app, KeyCode::Char('7'), KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('8'), KeyModifiers::NONE);
     assert!(app.open_shell);
     // Another item stops following the daemon.
     assert!(!app.pairing_shown);

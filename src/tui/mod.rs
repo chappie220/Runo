@@ -140,6 +140,11 @@ const SHELL_BANNER: Tr = tr(
     "Runo Shell（{}）。输入 exit 回到智能体。",
 );
 const SHELL_BACK: Tr = tr("Back from the shell ({}).", "已从 Shell 返回（{}）。");
+const PASSWORD_ABOUT: Tr = tr(
+    "Clients give this password once, when they pair on this network.",
+    "客户端在本网络中配对时需要输入一次这个密码。",
+);
+const PASSWORD_SAVED: Tr = tr("Device password saved.", "设备密码已保存。");
 const SHELL_FAILED: Tr = tr("Could not start {}: {}", "无法启动 {}：{}");
 const CMD_MANAGE: Tr = tr(
     "model status, settings, system status, logs, shell",
@@ -208,6 +213,8 @@ const ALL: &[Tr] = &[
     CMD_QUIT,
     SHELL_BANNER,
     SHELL_BACK,
+    PASSWORD_ABOUT,
+    PASSWORD_SAVED,
     SHELL_FAILED,
     CMD_MANAGE,
     MODEL_BUSY,
@@ -609,6 +616,8 @@ struct App {
     check_model: bool,
     /// "Pairing": open the daemon's pairing window before the next draw.
     open_pairing: bool,
+    /// Asks for a new device password, outside the window.
+    set_password: bool,
     /// The pairing item is shown; it follows the daemon while it is.
     pairing_shown: bool,
     /// Run the model setup, then open the window again with what it saved.
@@ -670,6 +679,7 @@ impl App {
             manage: None,
             check_model: false,
             open_pairing: false,
+            set_password: false,
             pairing_shown: false,
             change_model: false,
             state: PathBuf::new(),
@@ -1196,6 +1206,7 @@ impl App {
             Item::Logs => show(&mut self.manage, manage::logs(&self.state, lang)),
             Item::Changes => show(&mut self.manage, manage::changes(&self.state, lang)),
             Item::Pairing => self.open_pairing = true,
+            Item::Password => self.set_password = true,
             Item::Shell => self.open_shell = true,
             Item::Back => {
                 self.manage = None;
@@ -2012,6 +2023,28 @@ pub async fn run<M: Model, T: Tools>(
                         None => app.entries.push(Entry::Error(text)),
                     }
                 }
+            }
+        }
+        if std::mem::take(&mut app.set_password) {
+            // Read on the terminal itself, with echo off, like the shell.
+            drop(keys);
+            crossterm::terminal::disable_raw_mode()?;
+            crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                crossterm::cursor::MoveTo(0, 0),
+                crossterm::cursor::Show
+            )?;
+            println!("{}\n", PASSWORD_ABOUT.get(lang));
+            let result = crate::daemon::set_password(state);
+            crossterm::terminal::enable_raw_mode()?;
+            crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+            keys = EventStream::new();
+            app.repaint = true;
+            match result {
+                Ok(()) => app.manage_note(Item::Password, PASSWORD_SAVED.get(lang)),
+                Err(err) => app.manage_note(Item::Password, &format!("{err:#}")),
             }
         }
         if std::mem::take(&mut app.open_pairing) {

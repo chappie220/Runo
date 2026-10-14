@@ -917,6 +917,7 @@ async fn run(cli: Cli) -> Result<()> {
             if !onboard::interactive() {
                 bail!(text::TUI_NEEDS_TERMINAL.now());
             }
+            daemon::first_password(&state)?;
             let mut config = config;
             loop {
                 let agent = build_agent(&config, &config_path, &state, store.clone()).await?;

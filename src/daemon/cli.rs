@@ -26,6 +26,10 @@ const PASSWORD_FIRST: Tr = tr(
     "Pairing needs a device password; set one now.",
     "配对需要设备密码；现在设置一个。",
 );
+const FIRST_START: Tr = tr(
+    "This device has no device password yet. Clients on this network give it once, when they pair; press Enter to skip (set it later under Manage).",
+    "本设备还没有设备密码。本网络中的客户端配对时需要输入一次；直接回车跳过（以后可在管理中设置）。",
+);
 const NOT_RUNNING: Tr = tr(
     "The daemon is not running: start it with `runo daemon` (or install it with `runo daemon install`).",
     "管理守护进程没有运行：用 `runo daemon` 启动（或用 `runo daemon install` 安装成服务）。",
@@ -76,6 +80,7 @@ pub const ALL: &[Tr] = &[
     PASSWORD_DIFFERENT,
     PASSWORD_SET,
     PASSWORD_FIRST,
+    FIRST_START,
     NOT_RUNNING,
     WINDOW_OPEN,
     CODE,
@@ -122,6 +127,33 @@ pub fn set_password(state: &Path) -> Result<()> {
     Trust::new(&dir(state)).set_password(&password)?;
     println!("{}", PASSWORD_SET.now());
     Ok(())
+}
+
+/// On the Runo system's console: asks for the device password the first
+/// time, until one is set; Enter skips.
+pub fn first_password(state: &Path) -> Result<()> {
+    let trust = Trust::new(&dir(state));
+    if !crate::config::runo_system() || trust.has_password() || !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    println!("{}\n", FIRST_START.now());
+    loop {
+        let password = read_secret(&PASSWORD_PROMPT.with(&[&MIN_PASSWORD.to_string()]))?;
+        if password.is_empty() {
+            return Ok(());
+        }
+        if read_secret(PASSWORD_AGAIN.now())? != password {
+            eprintln!("{}", PASSWORD_DIFFERENT.now());
+            continue;
+        }
+        match trust.set_password(&password) {
+            Ok(()) => {
+                println!("{}", PASSWORD_SET.now());
+                return Ok(());
+            }
+            Err(err) => eprintln!("{err:#}"),
+        }
+    }
 }
 
 pub fn date(unix: i64) -> String {

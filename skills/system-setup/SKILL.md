@@ -40,14 +40,16 @@ configuration asks for it.
    - Wi-Fi: needs the network name (SSID), the password and the country
      code (e.g. CN), which the radio needs before it may transmit. Ask for
      what is missing. Configure it in the way this system already uses:
-     the program named under `network configured by` (on Runo's own image,
-     /etc/wpa_supplicant/wpa_supplicant.conf and its service).
+     the program named under `network configured by`. On Runo's own image
+     (`runo system:` in the inspection) that is /etc/wpa_supplicant.conf,
+     applied by restarting `S40network`.
    - Never change the interface that carries the current default route
      unless the person asked: you may cut off your own connection.
 2. **Time.** Done when the clock is right (not `looks unset`), a timezone is
    set and a time service runs (`system_check process` on ntpd, chronyd or
    systemd-timesyncd). The timezone is the person's to say; you may propose
-   one from their language, and ask.
+   one from their language, and ask. On Runo's own image it is the zone name
+   in /etc/timezone, applied by restarting `S48time`.
 3. **Runo Gateway.** Under `runo gateway`. Not installed or not running:
    offer it (it keeps chats and scheduled jobs going without this window)
    and, if they want it, run `runo service install` with `shell`, then check
