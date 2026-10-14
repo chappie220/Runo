@@ -47,6 +47,10 @@ class _DevicePageState extends State<DevicePage> {
           id: widget.device.id,
         ),
       );
+      if (opened.needsLogin() && !await logIn(opened)) {
+        if (mounted) setState(() => error = t.loginNeeded);
+        return;
+      }
       if (mounted) {
         setState(() {
           connection = opened;
@@ -56,6 +60,62 @@ class _DevicePageState extends State<DevicePage> {
     } catch (e) {
       if (mounted) setState(() => error = message(e));
     }
+  }
+
+  /// Asks for the device password until it is right or the user gives up;
+  /// the device asks for it when reached from outside its network.
+  Future<bool> logIn(rust.Connection opened) async {
+    String? wrong;
+    while (mounted) {
+      final password = await askPassword(wrong);
+      if (password == null) return false;
+      try {
+        await opened.login(password: password);
+        return true;
+      } catch (e) {
+        wrong = message(e);
+      }
+    }
+    return false;
+  }
+
+  Future<String?> askPassword(String? wrong) {
+    final field = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(t.logIn),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(t.loginAbout(widget.device.name)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: field,
+              obscureText: true,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: t.password,
+                errorText: wrong,
+              ),
+              onSubmitted: (value) => Navigator.pop(context, value),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(t.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, field.text),
+            child: Text(t.logIn),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Runs `call`, and offers to reconnect when the connection is gone.

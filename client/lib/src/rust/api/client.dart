@@ -52,10 +52,17 @@ abstract class Connection implements RustOpaqueInterface {
 
   Future<void> kill({required BigInt session});
 
+  /// Logs in with the device password; it is not kept.
+  Future<void> login({required String password});
+
   Future<String> logs({required String lang});
 
-  /// Connects to the paired device `id`: its last addresses first, then
-  /// wherever it answers on the LAN.
+  /// Whether the device waits for its password first: it is reached
+  /// from outside its local network.
+  bool needsLogin();
+
+  /// Connects to the paired device `id`: its last addresses and its
+  /// domain first, then wherever it answers on the LAN.
   static Future<Connection> open({
     required String dir,
     required String identity,

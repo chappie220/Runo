@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -51,6 +51,8 @@ struct Inner {
     next_id: AtomicU64,
     next_channel: AtomicU32,
     device: Welcome,
+    /// Whether the device still waits for the password (`Welcome::login`).
+    login: AtomicBool,
     device_key: [u8; 32],
     session_secret: [u8; 32],
     address: SocketAddr,
@@ -64,6 +66,9 @@ pub struct Welcome {
     pub version: u32,
     pub trusted: bool,
     pub pairing: bool,
+    /// Whether it must log in with the device password first: a trusted
+    /// client reaching the device from outside the local network.
+    pub login: bool,
 }
 
 #[derive(Clone)]
@@ -157,12 +162,14 @@ impl Link {
                 version,
                 trusted,
                 pairing,
+                login,
             }) => Welcome {
                 device,
                 name,
                 version,
                 trusted,
                 pairing,
+                login,
             },
             Down::Event(Event::Closed { reason }) => bail!("the device refused: {reason}"),
             other => bail!("unexpected first message: {other:?}"),
@@ -194,6 +201,7 @@ impl Link {
                 closed: Mutex::new(None),
                 next_id: AtomicU64::new(1),
                 next_channel: AtomicU32::new(1),
+                login: AtomicBool::new(device.login),
                 device,
                 device_key,
                 session_secret,
@@ -303,6 +311,22 @@ impl Link {
             })
             .await?;
         Ok(pair::code(&self.inner.session_secret, &theirs, &mine))
+    }
+
+    /// Whether the device waits for [`Link::login`] before anything else.
+    pub fn needs_login(&self) -> bool {
+        self.inner.login.load(Ordering::Relaxed)
+    }
+
+    /// Logs in with the device password, from outside the local network.
+    pub async fn login(&self, password: &str) -> Result<()> {
+        let () = self
+            .call(Request::Login {
+                password: password.to_owned(),
+            })
+            .await?;
+        self.inner.login.store(false, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Sends the device password once the codes match; the device then

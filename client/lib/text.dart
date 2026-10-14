@@ -104,4 +104,13 @@ class T {
   String get putBack => t('Put back', '撤回');
   String get kept => t('Change kept.', '已保留修改。');
   String get putBackDone => t('Change put back.', '已撤回修改。');
+  String get logIn => t('Log in', '登录');
+  String loginAbout(String name) => t(
+    '$name is reached from outside its local network: give the device password.',
+    '正在从 $name 所在局域网之外连接：请输入设备密码。',
+  );
+  String get loginNeeded => t(
+    'From outside its network the device needs its password.',
+    '从设备所在网络之外连接需要设备密码。',
+  );
 }

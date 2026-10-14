@@ -261,15 +261,21 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Connects to the paired device `id`: its last addresses first, then
-    /// wherever it answers on the LAN.
+    /// Connects to the paired device `id`: its last addresses and its
+    /// domain first, then wherever it answers on the LAN.
     pub async fn open(dir: String, identity: String, id: String) -> Result<Connection> {
         on_runtime(async move {
             let home = Home::new(Path::new(&dir));
             let device = home.find(&id)?;
             let identity = Identity::from_pem(&identity)?;
             let key = device.key().context("the kept device key is malformed")?;
-            let first = Link::connect(&device.socket_addresses(), &identity, Some(key)).await;
+            let mut tried = device.socket_addresses();
+            if let Some(domain) = &device.domain {
+                if let Ok(found) = tokio::net::lookup_host((domain.as_str(), PORT)).await {
+                    tried.extend(found);
+                }
+            }
+            let first = Link::connect(&tried, &identity, Some(key)).await;
             let link = match first {
                 Ok(link) => link,
                 Err(err) => {
@@ -291,6 +297,19 @@ impl Connection {
             Ok(Connection { link })
         })
         .await
+    }
+
+    /// Whether the device waits for its password first: it is reached
+    /// from outside its local network.
+    #[frb(sync)]
+    pub fn needs_login(&self) -> bool {
+        self.link.needs_login()
+    }
+
+    /// Logs in with the device password; it is not kept.
+    pub async fn login(&self, password: String) -> Result<()> {
+        let link = self.link.clone();
+        on_runtime(async move { link.login(&password).await }).await
     }
 
     #[frb(sync, getter)]

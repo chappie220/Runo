@@ -260,3 +260,56 @@ async fn a_change_that_may_cut_a_client_off_is_kept_by_a_client_or_put_back() {
     assert_eq!(history.load(second.id).unwrap().state, State::RolledBack);
     assert_eq!(std::fs::read_to_string(&conf).unwrap(), "new\n");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn from_outside_the_lan_only_trusted_clients_that_log_in_get_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path();
+    let client = Identity::generate().unwrap();
+    let trust = Trust::new(&super::dir(state));
+    trust.add(&client.public_key(), "phone").unwrap();
+    trust.set_password("device password").unwrap();
+    let (daemon, address) = daemon(state).await;
+    daemon
+        .all_public
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let key = daemon_key(state);
+
+    // A stranger cannot even pair from outside.
+    let stranger = Identity::generate().unwrap();
+    let Err(refused) = Link::connect(&[address], &stranger, None).await else {
+        panic!("a stranger got in from outside");
+    };
+    assert!(format!("{refused:#}").contains("only on the local network"));
+
+    let link = Link::connect(&[address], &client, Some(key)).await.unwrap();
+    assert!(link.welcome().trusted && link.welcome().login);
+    assert!(link.needs_login());
+    let before = link
+        .call::<proto::Text>(Request::Status { lang: None })
+        .await;
+    assert!(before.unwrap_err().to_string().contains("log in first"));
+    assert!(link.open(Kind::Shell, 80, 24).await.is_err());
+    let wrong = link.login("guess").await.unwrap_err();
+    assert!(wrong.to_string().contains("wrong device password"));
+    link.login("device password").await.unwrap();
+    assert!(!link.needs_login());
+    let status: proto::Text = link.call(Request::Status { lang: None }).await.unwrap();
+    assert!(!status.text.is_empty());
+
+    // Too many wrong passwords lock the client out for a while.
+    for _ in 0..trust::MAX_FAILURES {
+        daemon.logins.failed(&client.id(), now());
+    }
+    let again = Link::connect(&[address], &client, Some(key)).await.unwrap();
+    let locked = again.login("device password").await.unwrap_err();
+    assert!(locked.to_string().contains("too many"), "{locked}");
+
+    // On the LAN nothing is asked.
+    daemon
+        .all_public
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let home = Link::connect(&[address], &client, Some(key)).await.unwrap();
+    assert!(!home.welcome().login);
+    let _: proto::Text = home.call(Request::Status { lang: None }).await.unwrap();
+}

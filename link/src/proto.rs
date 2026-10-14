@@ -114,6 +114,11 @@ pub enum Request {
     Pairing {
         open: bool,
     },
+    /// The device password, from a trusted client outside the local
+    /// network; nothing else is answered there before it.
+    Login {
+        password: String,
+    },
     /// The configuration changes waiting for confirmation.
     Unconfirmed,
     /// Keeps a change waiting for confirmation, or puts it back now.
@@ -148,6 +153,10 @@ pub enum Event {
         trusted: bool,
         /// Whether the pairing window is open.
         pairing: bool,
+        /// Whether this trusted client, reaching the device from outside
+        /// the local network, must log in with the device password first.
+        #[serde(default)]
+        login: bool,
     },
     /// A session shown on `channel` ended.
     Exit {

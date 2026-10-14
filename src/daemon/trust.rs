@@ -1,8 +1,10 @@
 //! Who may use the device (4.4): the trusted clients, the device password
 //! that pairing asks for, and the pairing window.
 
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 use aws_lc_rs::{pbkdf2, rand};
@@ -15,8 +17,11 @@ const ITERATIONS: u32 = 200_000;
 pub const MIN_PASSWORD: usize = 8;
 /// How long the pairing window stays open.
 pub const WINDOW_SECS: i64 = 5 * 60;
-/// Wrong passwords before the window closes.
+/// Wrong passwords before the window closes, or before a client logging
+/// in from outside the LAN is locked out.
 pub const MAX_FAILURES: u32 = 5;
+/// How long such a client is locked out.
+pub const LOCKOUT_SECS: i64 = 15 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Client {
@@ -241,6 +246,39 @@ impl Window {
     }
 }
 
+/// Wrong device passwords per client logging in from outside the LAN.
+#[derive(Debug, Default)]
+pub struct Logins(Mutex<HashMap<String, (u32, i64)>>);
+
+impl Logins {
+    /// Until when `client` is locked out at `at`.
+    pub fn locked(&self, client: &str, at: i64) -> Option<i64> {
+        let failures = self.0.lock().unwrap();
+        let (count, until) = failures.get(client)?;
+        (*count >= MAX_FAILURES && at < *until).then_some(*until)
+    }
+
+    /// A wrong password; whether it locked the client out.
+    pub fn failed(&self, client: &str, at: i64) -> bool {
+        let mut failures = self.0.lock().unwrap();
+        let entry = failures.entry(client.to_owned()).or_insert((0, 0));
+        if entry.0 >= MAX_FAILURES {
+            // The last lock-out is over: count afresh.
+            *entry = (0, 0);
+        }
+        entry.0 += 1;
+        if entry.0 >= MAX_FAILURES {
+            entry.1 = at + LOCKOUT_SECS;
+            return true;
+        }
+        false
+    }
+
+    pub fn passed(&self, client: &str) {
+        self.0.lock().unwrap().remove(client);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +319,23 @@ mod tests {
         assert!(!kept.contains("correct"));
         assert!(trust.check_password("correct horse"));
         assert!(!trust.check_password("correct horsE"));
+    }
+
+    #[test]
+    fn logins_lock_a_client_out_after_wrong_passwords() {
+        let logins = Logins::default();
+        for _ in 1..MAX_FAILURES {
+            assert!(!logins.failed("a", 100));
+        }
+        assert!(logins.locked("a", 100).is_none());
+        assert!(logins.failed("a", 100));
+        assert_eq!(logins.locked("a", 101), Some(100 + LOCKOUT_SECS));
+        assert!(logins.locked("b", 101).is_none());
+        assert!(logins.locked("a", 100 + LOCKOUT_SECS).is_none());
+        // Afterwards it starts counting again.
+        assert!(!logins.failed("a", 100 + LOCKOUT_SECS));
+        logins.passed("a");
+        assert!(logins.locked("a", 101).is_none());
     }
 
     #[test]

@@ -35,7 +35,7 @@ use runo_link::proto::{self, PORT};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
-use trust::{Trust, Window, now};
+use trust::{Logins, Trust, Window, now};
 
 pub use cli::{first_password, set_password};
 pub use control::{Local, request as control_request};
@@ -117,6 +117,10 @@ pub struct Daemon {
     state: PathBuf,
     trust: Trust,
     window: Mutex<Window>,
+    logins: Logins,
+    /// Tests: every peer counts as outside the LAN.
+    #[cfg(test)]
+    all_public: std::sync::atomic::AtomicBool,
     pending: Mutex<HashMap<u64, PendingPairing>>,
     connections: Mutex<HashMap<u64, Arc<Connection>>>,
     next_connection: AtomicU64,
@@ -311,6 +315,9 @@ pub async fn start(
         state: options.state.clone(),
         trust: Trust::new(&dir),
         window: Mutex::new(Window::default()),
+        logins: Logins::default(),
+        #[cfg(test)]
+        all_public: std::sync::atomic::AtomicBool::new(false),
         pending: Mutex::new(HashMap::new()),
         connections: Mutex::new(HashMap::new()),
         next_connection: AtomicU64::new(1),

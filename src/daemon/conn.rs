@@ -53,6 +53,8 @@ struct Conn {
     outbox: Outbox,
     pairing: Pairing,
     puts: HashMap<u32, Put>,
+    /// A trusted client outside the LAN that has not logged in yet.
+    login: bool,
 }
 
 pub async fn handle(
@@ -84,7 +86,7 @@ pub async fn handle(
         }
         let _ = tokio::io::AsyncWriteExt::shutdown(&mut write).await;
     });
-    if client.is_none() && !is_lan(peer.ip()) {
+    if client.is_none() && !from_lan(&daemon, peer.ip()) {
         log(&format!(
             "{peer}: refused an unpaired client from outside the LAN"
         ));
@@ -101,6 +103,7 @@ pub async fn handle(
         version: proto::VERSION,
         trusted: client.is_some(),
         pairing: daemon.pairing().open,
+        login: client.is_some() && !from_lan(&daemon, peer.ip()),
     });
     let (kill, mut killed) = tokio::sync::watch::channel(None::<String>);
     let connection = Arc::new(Connection {
@@ -135,6 +138,7 @@ pub async fn handle(
         outbox,
         pairing: Pairing::default(),
         puts: HashMap::new(),
+        login: client.is_some() && !from_lan(&daemon, peer.ip()),
     };
     let mut read = read;
     loop {
@@ -168,6 +172,17 @@ pub async fn handle(
     Ok(())
 }
 
+/// Whether `ip` is on the local network, where pairing works and no
+/// login is asked.
+fn from_lan(daemon: &Daemon, ip: std::net::IpAddr) -> bool {
+    #[cfg(test)]
+    if daemon.all_public.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let _ = daemon;
+    is_lan(ip)
+}
+
 fn lang(lang: Option<&str>) -> Lang {
     match lang {
         Some(code) if code.starts_with("zh") => Lang::Zh,
@@ -183,7 +198,7 @@ impl Conn {
 
     async fn frame(&mut self, frame: Frame) {
         if frame.channel != CONTROL {
-            if self.trusted().is_some() {
+            if self.trusted().is_some() && !self.login {
                 self.data(frame).await;
             }
             return;
@@ -222,6 +237,12 @@ impl Conn {
         let Some(client) = self.trusted() else {
             bail!("this client is not paired with the device");
         };
+        if let Request::Login { password } = &request {
+            return self.log_in(&client, password).await;
+        }
+        if self.login {
+            bail!("log in first: this connection comes from outside the local network");
+        }
         let daemon = self.daemon.clone();
         let value = match request {
             Request::Status { lang: code } => {
@@ -314,6 +335,7 @@ impl Conn {
                     json(daemon.close_pairing())
                 }
             }
+            Request::Login { .. } => unreachable!(),
             Request::Unconfirmed => json(daemon.unconfirmed()),
             Request::Confirm { change, keep } => {
                 let record = crate::changes::History::in_state(&daemon.state)
@@ -351,11 +373,49 @@ impl Conn {
             .ok_or_else(|| anyhow!("no session on channel {channel}"))
     }
 
+    /// Checks the device password of a trusted client outside the LAN.
+    async fn log_in(&mut self, client: &str, password: &str) -> Result<Value> {
+        if !self.login {
+            return Ok(Value::Null);
+        }
+        let daemon = self.daemon.clone();
+        if let Some(until) = daemon.logins.locked(client, super::now()) {
+            bail!(
+                "too many wrong passwords: try again after {}",
+                super::time(until)
+            );
+        }
+        if !daemon.trust.has_password() {
+            bail!(
+                "the device has no device password, so it cannot be reached from outside the local network"
+            );
+        }
+        if daemon.trust.check_password(password) {
+            daemon.logins.passed(client);
+            self.login = false;
+            log(&format!("{}: client {client} logged in", self.peer));
+            return Ok(Value::Null);
+        }
+        // Slows guessing down; the lock-out stops it.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let locked = daemon.logins.failed(client, super::now());
+        log(&format!(
+            "{}: client {client} gave a wrong device password{}",
+            self.peer,
+            if locked {
+                "; locked out for a while"
+            } else {
+                ""
+            }
+        ));
+        bail!("wrong device password");
+    }
+
     async fn pair(&mut self, request: Request) -> Result<Value> {
         if self.trusted().is_some() {
             bail!("this client is already paired");
         }
-        if !is_lan(self.peer.ip()) {
+        if !from_lan(&self.daemon, self.peer.ip()) {
             bail!("pairing works only on the local network");
         }
         if !self.daemon.pairing().open {

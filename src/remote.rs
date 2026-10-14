@@ -50,6 +50,10 @@ const MISMATCH: Tr = tr(
     "没有配对：确认码必须一致。不一致时，可能有人在这台电脑和设备之间窃听。",
 );
 const PASSWORD: Tr = tr("Device password: ", "设备密码：");
+const LOGIN: Tr = tr(
+    "{} is reached from outside its local network: log in with the device password.",
+    "正在从 {} 所在局域网之外连接：请输入设备密码登录。",
+);
 const PAIRED: Tr = tr(
     "Paired with {} ({}). Connect with: runo remote connect {}",
     "已和 {}（{}）配对。连接：runo remote connect {}",
@@ -104,6 +108,7 @@ pub const ALL: &[Tr] = &[
     CODE,
     MISMATCH,
     PASSWORD,
+    LOGIN,
     PAIRED,
     WAS_PAIRED,
     NO_DEVICES,
@@ -319,6 +324,14 @@ pub async fn connect(state: &Path, query: &str) -> Result<Link> {
     })?;
     if !link.welcome().trusted {
         bail!("{}", NOT_TRUSTED.with(&[&device.name, &device.id]));
+    }
+    if link.needs_login() {
+        if !std::io::stdin().is_terminal() {
+            bail!("{}", LOGIN.with(&[&device.name]));
+        }
+        eprintln!("{}", LOGIN.with(&[&device.name]));
+        let password = read_secret(PASSWORD.now())?;
+        link.login(&password).await?;
     }
     home.reached(&device.id, link.address())?;
     Ok(link)
