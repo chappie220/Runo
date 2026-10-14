@@ -60,8 +60,8 @@ const QUEUED: Tr = tr("{} waiting", "{} 条待发送");
 const FILES: Tr = tr("files: {}", "附件：{}");
 const YOU: Tr = tr("You", "你");
 const HELP: Tr = tr(
-    "Commands (type / or press Ctrl+K for the list):\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /sidebar         show or hide the session list\n  /expand          open or close every tool output\n  /config          edit the settings: heartbeat, inner life, QQ, models…\n  /quit            leave\n  /manage          model status, settings, system status, logs, shell (opens by itself when the model is down)\n  !shell           open a shell; exit returns here (works without a model)\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn, Shift+↑/↓ or the mouse wheel scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.\nCtrl+K commands and sessions · Ctrl+N new session · Ctrl+B session list · Tab moves between the list and the input · Ctrl+O opens tool output, or click a tool line · Ctrl+L repaints the screen. Hold Shift to select text with the mouse.",
-    "命令（输入 / 或按 Ctrl+K 弹出列表）：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /sidebar         显示或隐藏会话栏\n  /expand          展开或收起所有工具输出\n  /config          修改设置：心跳、内心生活、QQ、模型……\n  /quit            退出\n  /manage          模型状态、设置、系统状态、日志、Shell（模型不可用时自动打开）\n  !shell           打开 Shell，exit 后回到这里（不需要模型也能用）\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn、Shift+↑/↓ 或鼠标滚轮滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。\nCtrl+K 命令和会话 · Ctrl+N 新会话 · Ctrl+B 会话栏 · Tab 在会话栏和输入框之间切换 · Ctrl+O 展开工具输出，也可以点击工具那一行 · Ctrl+L 重绘屏幕。按住 Shift 用鼠标选中文字。",
+    "Commands (type / or press Ctrl+K for the list):\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /sidebar         show or hide the session list\n  /expand          open or close every tool output\n  /config          edit the settings: heartbeat, inner life, QQ, models…\n  /quit            leave\n  /manage          model status, settings, system status, logs, shell (opens by itself when the model is down)\n  /setup           check and set up this device (starts by itself the first time on a Raspberry Pi)\n  !shell           open a shell; exit returns here (works without a model)\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn, Shift+↑/↓ or the mouse wheel scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.\nCtrl+K commands and sessions · Ctrl+N new session · Ctrl+B session list · Tab moves between the list and the input · Ctrl+O opens tool output, or click a tool line · Ctrl+L repaints the screen. Hold Shift to select text with the mouse.",
+    "命令（输入 / 或按 Ctrl+K 弹出列表）：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /sidebar         显示或隐藏会话栏\n  /expand          展开或收起所有工具输出\n  /config          修改设置：心跳、内心生活、QQ、模型……\n  /quit            退出\n  /manage          模型状态、设置、系统状态、日志、Shell（模型不可用时自动打开）\n  /setup           检查并配置这台设备（在树莓派上第一次打开时自动开始）\n  !shell           打开 Shell，exit 后回到这里（不需要模型也能用）\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn、Shift+↑/↓ 或鼠标滚轮滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。\nCtrl+K 命令和会话 · Ctrl+N 新会话 · Ctrl+B 会话栏 · Tab 在会话栏和输入框之间切换 · Ctrl+O 展开工具输出，也可以点击工具那一行 · Ctrl+L 重绘屏幕。按住 Shift 用鼠标选中文字。",
 );
 const SWITCHED: Tr = tr("Session: {}", "会话：{}");
 const ATTACHED: Tr = tr(
@@ -150,6 +150,16 @@ const MODEL_BUSY: Tr = tr(
     "等这次回复结束（Esc 可停止）后再修改模型。",
 );
 const MODEL_NOT_SAVED: Tr = tr("Nothing was changed.", "没有修改任何设置。");
+const CMD_SETUP: Tr = tr("check and set up this device", "检查并配置这台设备");
+const SETUP_MESSAGE: Tr = tr("Check and set up this device.", "检查并配置这台设备。");
+const SETUP_FIRST: Tr = tr(
+    "First start on this Raspberry Pi: Runo checks the device and sets up what it needs, asking only for what it cannot find out. Esc stops it; /setup runs it again.",
+    "第一次在这台树莓派上打开：Runo 会检查设备并配置需要的部分，只在查不到的信息上问你。Esc 可以停止；/setup 可以再运行一次。",
+);
+const SETUP_NO_SKILLS: Tr = tr(
+    "Setting up the device needs skills (skills.enabled) and the shell tool (tools.shell not deny).",
+    "配置设备需要打开 skills（skills.enabled），并且 shell 工具没有被关闭（tools.shell 不是 deny）。",
+);
 
 #[cfg(test)]
 const ALL: &[Tr] = &[
@@ -202,6 +212,10 @@ const ALL: &[Tr] = &[
     CMD_MANAGE,
     MODEL_BUSY,
     MODEL_NOT_SAVED,
+    CMD_SETUP,
+    SETUP_MESSAGE,
+    SETUP_FIRST,
+    SETUP_NO_SKILLS,
 ];
 
 /// What opens a shell from the input line.
@@ -281,6 +295,11 @@ const COMMANDS: &[Command] = &[
         help: CMD_MANAGE,
     },
     Command {
+        name: "setup",
+        arg: false,
+        help: CMD_SETUP,
+    },
+    Command {
         name: "help",
         arg: false,
         help: CMD_HELP,
@@ -291,6 +310,10 @@ const COMMANDS: &[Command] = &[
         help: CMD_QUIT,
     },
 ];
+
+/// Written to the state directory once the device set-up has started on
+/// its own, so it starts by itself only once; `/setup` runs it again.
+const SETUP_MARK: &str = "system-setup-started";
 
 /// Added to a message that names skills with @, for the model.
 const SKILL_HINT: &str = "(Skills to use: {}. Load each with the skill tool before you start.)";
@@ -594,6 +617,9 @@ struct App {
     quit: bool,
     /// `None` when skills are off.
     skills: Option<Skills>,
+    /// The device set-up starts by itself on the first start: on a
+    /// Raspberry Pi, and when it has not started before.
+    setup_due: bool,
     /// Ready skills (name, description), read when an @ list opens.
     known_skills: Vec<(String, String)>,
     completion: Option<Completion>,
@@ -642,6 +668,7 @@ impl App {
             quit_armed: false,
             quit: false,
             skills: None,
+            setup_due: false,
             known_skills: Vec::new(),
             completion: None,
             dismissed: None,
@@ -1357,6 +1384,9 @@ impl App {
             self.open_shell = true;
             return None;
         }
+        if trimmed == "/setup" {
+            return self.setup();
+        }
         if trimmed.starts_with('/') && !trimmed.starts_with("/identity") && trimmed != "/compact" {
             self.command(agent, trimmed);
             return None;
@@ -1383,6 +1413,54 @@ impl App {
             text,
             files: std::mem::take(&mut self.files),
         })
+    }
+
+    /// The message that has the agent set up the device with its skill.
+    fn setup(&mut self) -> Option<Outgoing> {
+        // The tools add the built-in skill; this copy of the skills has none.
+        let ready = self.skills.as_ref().is_some_and(|skills| {
+            skills
+                .clone()
+                .with_builtins(&[crate::skills::SYSTEM_SETUP])
+                .ready()
+                .iter()
+                .any(|s| s.name == crate::skills::SYSTEM_SETUP_NAME)
+        });
+        if !ready {
+            self.note(SETUP_NO_SKILLS.get(self.lang));
+            return None;
+        }
+        let text = SETUP_MESSAGE.get(self.lang);
+        self.entries.push(Entry::User(text.to_owned()));
+        Some(Outgoing {
+            text: format!(
+                "{text}\n\n{}",
+                SKILL_HINT.replace("{}", crate::skills::SYSTEM_SETUP_NAME)
+            ),
+            files: Vec::new(),
+        })
+    }
+
+    /// The first-start set-up, once the model is known to answer: due only
+    /// once, and marked so the next start does not run it again.
+    fn first_setup(&mut self) -> Option<Outgoing> {
+        // Still due after an outage: it starts once the model answers.
+        if !self.setup_due || self.health.is_down() {
+            return None;
+        }
+        self.setup_due = false;
+        let message = self.setup()?;
+        if let Err(err) = std::fs::write(
+            self.state.join(SETUP_MARK),
+            format!("{}\n", chrono::Utc::now().to_rfc3339()),
+        ) {
+            eprintln!("cannot mark the device set-up as started: {err}");
+        }
+        // A recheck in the management view got here: show the conversation.
+        self.manage = None;
+        self.focus = Focus::Input;
+        self.note(SETUP_FIRST.get(self.lang));
+        Some(message)
     }
 
     fn command<M: Model, T: Tools>(&mut self, agent: &Agent<M, T>, line: &str) {
@@ -1770,6 +1848,8 @@ pub async fn run<M: Model, T: Tools>(
     }
     app.skills = skills;
     app.state = state.to_owned();
+    app.setup_due =
+        crate::system::Host::live().is_raspberry_pi() && !state.join(SETUP_MARK).exists();
     app.entries = load_history(agent, &app.session);
     app.update_context(agent);
     app.refresh_sessions(agent);
@@ -1918,9 +1998,10 @@ pub async fn run<M: Model, T: Tools>(
             health = checked(&mut check) => Step::Checked(health),
             _ = tick.tick(), if app.running => Step::Tick,
         };
+        let mut outgoing = None;
         match step {
             Step::Act(action) => {
-                let message = match action {
+                outgoing = match action {
                     Action::None => None,
                     Action::Send => app.submit(agent),
                     Action::Run(line) => app.run(agent, line),
@@ -1933,22 +2014,6 @@ pub async fn run<M: Model, T: Tools>(
                     }
                     Action::Quit => break,
                 };
-                if let Some(message) = message {
-                    if app.running {
-                        app.queue.push_back(message);
-                    } else {
-                        cancel = Cancel::default();
-                        turn = Some(start_turn(
-                            agent,
-                            app.session.clone(),
-                            message,
-                            events.clone(),
-                            cancel.clone(),
-                        ));
-                        app.running = true;
-                        turn_started = Instant::now();
-                    }
-                }
             }
             Step::Redraw => {}
             Step::Checked(health) => {
@@ -1957,6 +2022,7 @@ pub async fn run<M: Model, T: Tools>(
                     Health::Down(why) => app.model_down(why),
                     health => app.health = health,
                 }
+                outgoing = app.first_setup();
             }
             Step::Ui(UiEvent::Agent(event)) => app.on_agent(event),
             Step::Ui(UiEvent::Approval {
@@ -1997,6 +2063,22 @@ pub async fn run<M: Model, T: Tools>(
             }
             Step::Tick => app.spinner += 1,
             Step::End => break,
+        }
+        if let Some(message) = outgoing {
+            if app.running {
+                app.queue.push_back(message);
+            } else {
+                cancel = Cancel::default();
+                turn = Some(start_turn(
+                    agent,
+                    app.session.clone(),
+                    message,
+                    events.clone(),
+                    cancel.clone(),
+                ));
+                app.running = true;
+                turn_started = Instant::now();
+            }
         }
         if app.quit {
             break;

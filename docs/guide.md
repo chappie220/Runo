@@ -239,7 +239,7 @@ one running with `gateway.web = "off"`.
   with its state.
 - Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
   `/skills`, `/compact`, `/clear`, `/identity …`, `/sidebar`, `/expand`,
-  `/config`, `/manage`, `/help`.
+  `/config`, `/manage`, `/setup`, `/help`.
 - `/config` opens the settings editor (below) in the window and comes back
   to the chat when you leave it.
 - `!shell` opens your shell (`$SHELL`, else `/bin/sh`) in the terminal;
@@ -263,6 +263,17 @@ one running with `gateway.web = "off"`.
   ↑/↓ and Enter or the digits pick; typing goes to the input, so `!shell`
   works from here, and Tab moves between the menu and the input. Messages
   are still sent, and bring the view back if the model is still down.
+- `/setup` has the agent check and set up the device it runs on, with the
+  built-in `system-setup` skill: it inspects the device, shows a short plan
+  with any questions (a Wi‑Fi password, the timezone), changes one thing at
+  a time, verifies each, and reports. It covers the network and Wi‑Fi, the
+  time and timezone, and the Gateway; it keeps a `<file>.runo.bak` of every
+  file it changes, tries each target at most three times, and puts the
+  backup back when it cannot get it working. On a Raspberry Pi it starts
+  by itself the first time the window opens with a working model
+  (`<state dir>/system-setup-started` marks that it did). Changing the
+  device needs Runo to run as root, skills on, and `tools.shell` not
+  `deny`; each change is approved as `tools.shell` and `tools.write` say.
 
 It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over
@@ -1512,7 +1523,7 @@ reaches the bot first gets every tool. "Revoke a chat owner" in the same
 section (also offered by `init`) removes the owner you pick; with
 `first_chat_owner` on, the next private chat on that app claims it again.
 
-Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
+Capabilities: `shell` (also `system_inspect`, `system_service`, `system_check`), `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron` (also background tasks), `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
 `mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)),
 `image_generate` (see [Image generation](#image-generation); also `sticker_save`),
@@ -1763,7 +1774,15 @@ replacement) and `shell` (`sh -c` in the workspace; the whole process group is
 killed on timeout or when the turn is cancelled). Shell stdout and stderr are
 drained while the command runs and only their first and last
 `max_output_bytes / 2` bytes are kept, so endless output cannot exhaust memory;
-the result says how many bytes were omitted. `ask` prompts on the controlling terminal; with no terminal
+the result says how many bytes were omitted. For setting up the device
+(see `/setup` under [Terminal UI](#terminal-ui)) there are also
+`system_inspect` (the board, OS, init system, network, Wi‑Fi networks
+without their keys, commands present, services), `system_service`
+(status, start, stop, restart, enable, disable through systemd, OpenRC or
+`/etc/init.d` scripts) and `system_check` (a name resolves, a port
+accepts, a URL answers, a process runs). Looking and checking need no
+approval; any other service action is approved like `shell`, and none of
+them is offered when `shell = "deny"`. `ask` prompts on the controlling terminal; with no terminal
 the action is declined and the model is told so. Tools set to `deny` are not
 offered to the model at all. `browser` is offered when the host has a
 browser installed; see [Browser](#browser).

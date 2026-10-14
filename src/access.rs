@@ -73,7 +73,7 @@ impl Capability {
     /// The capability a built-in tool needs; `None` for tools anyone may call.
     pub fn for_tool(tool: &str) -> Option<Capability> {
         Some(match tool {
-            "shell" => Capability::Shell,
+            "shell" | "system_inspect" | "system_service" | "system_check" => Capability::Shell,
             "read_file" | "list_dir" => Capability::FilesRead,
             "write_file" | "edit_file" => Capability::FilesWrite,
             "memory_save" | "memory_search" | "memory_delete" => Capability::Memory,

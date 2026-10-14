@@ -281,7 +281,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 
 | 阶段 | 内容 | 与现有代码的关系 |
 |---|---|---|
-| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell`；只用 BusyBox 也有的命令，避免依赖 GNU 工具或包管理器 | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`。待做：自配置工具集、配置事务、费用和次数上限 |
+| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell`；只用 BusyBox 也有的命令，避免依赖 GNU 工具或包管理器 | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`、管理界面和自配置（`system_*` 工具、`system-setup` skill、`/setup`）。待做：配置事务、费用和次数上限 |
 | 2 | 局域网发现与可信配对 | 新增 `runod`、管理协议、共用的 Rust 核心库、Flutter 管理客户端 |
 | 3 | 开机直达 Agent 的镜像（Pi 5、Pi 4） | Buildroot 2025.02.x 外部树（`buildroot/`）、BusyBox init 与 `inittab` 接管 tty1、`service.rs` 支持 BusyBox init、A/B 分区、中文显示、CI 出镜像 |
 | 4 | 公网连接、更新与恢复 | `runod` 自己实现 A/B 更新（签名、`tryboot`、看门狗），取代 `update.rs` 的单文件替换；IPv6 公网接入与防火墙；Runo 自绘终端（含拼音词库联想）取代 `fbterm` |
@@ -296,7 +296,19 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
   - 菜单：重新检查模型（让模型回答一个词）、修改模型连接（走首次引导的步骤，保存后窗口带着新设置重新打开，Gateway 在运行则重启）、
     系统状态（设备型号、主机名、地址、运行时间、负载、内存、磁盘、温度、Gateway）、日志（`tui.log` 和 Gateway 日志的末尾）、Shell、返回对话。
   - 都不需要模型；打字会进入输入框，所以 `!shell` 在这里同样有效。
-- [ ] 自配置：环境检查 → 计划 → 逐项应用并验证 → 汇报；缺信息时询问。
+- [x] 自配置：环境检查 → 计划 → 逐项应用并验证 → 汇报；缺信息时询问。
+  - 工具：`system_inspect`（板子、系统、init、是否 root、主机名、时区、时钟、网卡、路由、DNS、已配置的 Wi‑Fi 名称（不含密码）、
+    现有命令、服务）、`system_service`（通过 systemd、OpenRC 或 `/etc/init.d` 脚本做 status/start/stop/restart/enable/disable）、
+    `system_check`（域名解析、TCP 端口、HTTP、进程）。查看和验证不需要批准；改动服务和 `shell` 一样需要批准，`tools.shell = "deny"` 时都不提供。
+    写配置文件用现有的 `read_file`、`write_file`、`edit_file`。
+  - 步骤写在内置 skill `system-setup` 里：先检查，不是 root 就停下并说明；列出简短计划和要问的问题（一次问完），不再单独确认计划；
+    逐个目标修改：先读文件、首次修改前备份为 `<文件>.runo.bak`、写入、重启并启用服务、验证；
+    失败先查原因（`logread`、`journalctl` 或 `/var/log/messages`），每个目标最多 3 次，仍失败就恢复备份并继续下一个；最后逐项汇报，
+    并存一条不含密码的记忆。
+  - 目标：网络与 Wi‑Fi（不改当前默认路由所在的网卡，除非用户要求）、时间与时区、Runo Gateway。主机名、用户、SSH 等不动。
+  - 触发：`runo tui` 里输入 `/setup`；在树莓派上第一次打开窗口、模型可用时自动开始一次（状态目录里的 `system-setup-started` 记录已开始过）。
+    模型不可用时等到恢复后再开始。
+  - 3 次重试和备份恢复目前靠 skill 的指示；由程序强制的配置事务与回退（4.2）、次数和费用上限（4.6）是下面两项。
 - [ ] 配置事务与回退（4.2）。
 - [ ] 自配置的次数与费用上限（4.6）。
 

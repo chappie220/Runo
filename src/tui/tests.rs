@@ -310,7 +310,7 @@ fn slash_lists_commands_and_enter_runs_one() {
     assert_eq!(c.kind, Kind::Command);
     let names: Vec<&str> = c.items.iter().map(|(n, _)| n.as_str()).collect();
     // Exact starts first, then letters in order.
-    assert_eq!(names, ["session", "sessions", "sidebar"]);
+    assert_eq!(names, ["session", "sessions", "setup", "sidebar"]);
     // A command that takes an argument waits for it.
     assert_eq!(
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE),
@@ -559,4 +559,46 @@ fn bang_shell_runs_a_shell_with_the_signals_given_back() {
     let mask =
         u64::from_str_radix(lines.next().unwrap().split_whitespace().nth(1).unwrap(), 16).unwrap();
     assert_eq!(mask & 0b110, 0);
+}
+
+#[test]
+fn setup_sends_the_skill_and_starts_by_itself_only_once() {
+    let mut app = app();
+    // Without skills it says what is missing and sends nothing.
+    assert!(app.setup().is_none());
+    assert!(matches!(app.entries.last(), Some(Entry::Note(n)) if n.contains("skills.enabled")));
+
+    let dir = tempfile::tempdir().unwrap();
+    app.skills = Some(Skills::new(
+        dir.path(),
+        &crate::config::SkillsConfig::default(),
+    ));
+    app.state = dir.path().to_owned();
+    let sent = app.setup().unwrap();
+    assert!(sent.text.starts_with("Check and set up this device."));
+    assert!(sent.text.contains("Skills to use: system-setup"));
+    assert!(
+        matches!(app.entries.last(), Some(Entry::User(t)) if t == "Check and set up this device.")
+    );
+
+    // The first start waits while the model is down, then goes once.
+    app.setup_due = true;
+    app.model_down("no network".into());
+    assert!(app.first_setup().is_none());
+    assert!(app.setup_due);
+    app.health = Health::Up("ok".into());
+    let sent = app.first_setup().unwrap();
+    assert!(sent.text.contains("system-setup"));
+    assert!(app.manage.is_none());
+    assert_eq!(app.focus, Focus::Input);
+    assert!(dir.path().join(SETUP_MARK).exists());
+    assert!(app.first_setup().is_none());
+
+    // A disabled skill is not started.
+    let config = crate::config::SkillsConfig {
+        disabled: vec!["system-setup".into()],
+        ..Default::default()
+    };
+    app.skills = Some(Skills::new(dir.path(), &config));
+    assert!(app.setup().is_none());
 }

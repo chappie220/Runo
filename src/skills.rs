@@ -38,6 +38,10 @@ pub const DRAWING: &str = include_str!("../skills/drawing/SKILL.md");
 pub const VOICE: &str = include_str!("../skills/voice/SKILL.md");
 /// The built-in stickers skill, offered while stickers can be drawn.
 pub const STICKERS: &str = include_str!("../skills/stickers/SKILL.md");
+/// Setting up the device Runo runs on, offered while the system tools are.
+pub const SYSTEM_SETUP: &str = include_str!("../skills/system-setup/SKILL.md");
+/// Its name, as messages ask for it.
+pub const SYSTEM_SETUP_NAME: &str = "system-setup";
 
 const NONE: Tr = tr(
     "No skills installed. Install one with `runo skills install <directory or git URL>`, or put it in {}",

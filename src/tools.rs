@@ -173,6 +173,18 @@ struct ShellArgs {
 }
 
 #[derive(Deserialize)]
+struct ServiceArgs {
+    name: String,
+    action: String,
+}
+
+#[derive(Deserialize)]
+struct CheckArgs {
+    kind: String,
+    target: String,
+}
+
+#[derive(Deserialize)]
 struct SendMailArgs {
     to: String,
     subject: String,
@@ -881,12 +893,17 @@ impl BuiltinTools {
     }
 
     /// The skills `actor` is offered: the workspace's, plus the built-in
-    /// drawing skill while they may draw.
+    /// ones for what they may do (draw, speak, set up the device).
     fn skills_for(&self, actor: Option<&Actor>) -> Option<Skills> {
         let skills = self.skills.as_ref()?;
         let draws = self.image.is_some() && actor.is_some_and(|a| a.can(Capability::ImageGenerate));
         let speaks = self.speaker().is_some() && actor.is_some_and(|a| a.can(Capability::Voice));
+        let sets_up = self.config.shell != Permission::Deny
+            && actor.is_some_and(|a| a.can(Capability::Shell));
         let mut builtins = Vec::new();
+        if sets_up {
+            builtins.push(crate::skills::SYSTEM_SETUP);
+        }
         if draws {
             builtins.push(crate::skills::DRAWING);
             if self.stickers().is_some() {
@@ -1378,6 +1395,42 @@ impl BuiltinTools {
         Ok(text)
     }
 
+    async fn system_service(&self, args: ServiceArgs) -> Result<String, String> {
+        use crate::system::{Action, Host, run_commands, service_commands, valid_service};
+        let name = args.name.trim();
+        if !valid_service(name) {
+            return Err(format!("error: {name:?} is not a service name"));
+        }
+        let action = Action::parse(&args.action)
+            .ok_or_else(|| format!("error: action must be one of {}", Action::NAMES.join(", ")))?;
+        if self.config.shell == Permission::Deny {
+            return Err("error: system_service is disabled by configuration".into());
+        }
+        let commands = service_commands(Host::live().init(), name, action)?;
+        let shown = commands
+            .iter()
+            .map(|c| c.join(" "))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        let reviewed = if action.changes() {
+            self.permit_shell(&shown).await?
+        } else {
+            None
+        };
+        let timeout = Duration::from_secs(self.config.shell_timeout_secs);
+        let mut text = reviewed.map(|note| format!("{note}\n")).unwrap_or_default();
+        text.push_str(&run_commands(&commands, timeout, self.config.max_output_bytes).await);
+        Ok(text)
+    }
+
+    async fn system_check(&self, args: CheckArgs) -> String {
+        use crate::system::{Check, check};
+        match Check::parse(&args.kind) {
+            Some(kind) => check(kind, &args.target).await,
+            None => format!("error: kind must be one of {}", Check::NAMES.join(", ")),
+        }
+    }
+
     async fn read_file(&self, args: ReadArgs) -> Result<String, String> {
         let path = self.resolve(&args.path);
         let bytes = tokio::fs::read(&path)
@@ -1579,7 +1632,7 @@ impl Capture {
 }
 
 /// Keeps the head and tail of long output, where errors usually are.
-fn truncate(bytes: &[u8], cap: usize) -> String {
+pub(crate) fn truncate(bytes: &[u8], cap: usize) -> String {
     if bytes.len() <= cap {
         return String::from_utf8_lossy(bytes).into_owned();
     }
@@ -1913,6 +1966,33 @@ impl BuiltinTools {
         }
         if self.config.shell != Permission::Deny {
             specs.push(ToolSpec::function(
+                "system_inspect",
+                "Describe the device Runo runs on, to set it up: board, OS, init system, whether \
+                 Runo runs as root, hostname, timezone, clock, network interfaces, routes, DNS, \
+                 Wi-Fi networks configured (never their keys), commands present, services. Changes nothing.",
+                json!({"type": "object", "properties": {}}),
+            ));
+            specs.push(ToolSpec::function(
+                "system_service",
+                "Run an action on a system service with the device's own init system (systemd, \
+                 OpenRC, or /etc/init.d scripts on BusyBox init). status changes nothing; the other \
+                 actions need the same permission as shell. Returns each command's exit code and output.",
+                json!({"type": "object", "properties": {
+                    "name": {"type": "string", "description": "service name, e.g. wpa_supplicant or S40network"},
+                    "action": {"type": "string", "enum": crate::system::Action::NAMES}
+                }, "required": ["name", "action"]}),
+            ));
+            specs.push(ToolSpec::function(
+                "system_check",
+                "Verify that a set-up step worked; changes nothing. dns: a host name resolves; \
+                 tcp: host:port accepts a connection; http: a URL answers; process: a process of \
+                 that name runs. The result starts with ok: or failed:.",
+                json!({"type": "object", "properties": {
+                    "kind": {"type": "string", "enum": crate::system::Check::NAMES},
+                    "target": {"type": "string", "description": "host name, host:port, URL or process name"}
+                }, "required": ["kind", "target"]}),
+            ));
+            specs.push(ToolSpec::function(
                 "shell",
                 &format!(
                     "Run a command with sh -c in {workspace}. Times out after {}s. Returns exit code, stdout and stderr.",
@@ -1928,6 +2008,15 @@ impl BuiltinTools {
         match call.function.name.as_str() {
             "shell" => match parse(call) {
                 Ok(args) => self.shell(args).await,
+                Err(e) => Err(e),
+            },
+            "system_inspect" => Ok(crate::system::Host::live().inspect()),
+            "system_service" => match parse(call) {
+                Ok(args) => self.system_service(args).await,
+                Err(e) => Err(e),
+            },
+            "system_check" => match parse(call) {
+                Ok(args) => Ok(self.system_check(args).await),
                 Err(e) => Err(e),
             },
             "read_file" => match parse(call) {
@@ -2452,7 +2541,12 @@ mod tests {
             ..Default::default()
         };
         store.identity_set(&persona("小花")).unwrap();
-        let plain = BuiltinTools::new(dir.path().to_owned(), ToolsConfig::default(), store.clone())
+        // No shell, so no device set-up skill either.
+        let no_shell = ToolsConfig {
+            shell: Permission::Deny,
+            ..ToolsConfig::default()
+        };
+        let plain = BuiltinTools::new(dir.path().to_owned(), no_shell, store.clone())
             .unwrap()
             .with_skills(Some(skills.clone()));
         // No image model: no drawing skill, and no skill tool at all.
@@ -2666,6 +2760,85 @@ mod tests {
                 .await
                 .contains("disabled")
         );
+    }
+
+    #[tokio::test]
+    async fn system_tools_look_freely_and_change_only_with_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let declined = tools(dir.path(), ToolsConfig::default(), false);
+        let names: Vec<String> = owner(async { declined.specs() })
+            .await
+            .into_iter()
+            .map(|s| s.function.name)
+            .collect();
+        for name in ["system_inspect", "system_service", "system_check"] {
+            assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
+        }
+        let inspect = declined.call(&call("system_inspect", json!({}))).await;
+        assert!(
+            inspect.contains("device: ") && inspect.contains("init: "),
+            "{inspect}"
+        );
+        let status = declined
+            .call(&call(
+                "system_service",
+                json!({"name": "runo-test-none", "action": "status"}),
+            ))
+            .await;
+        assert!(status.starts_with("$ "), "{status}");
+        let start = declined
+            .call(&call(
+                "system_service",
+                json!({"name": "runo-test-none", "action": "start"}),
+            ))
+            .await;
+        assert!(start.contains("declined"), "{start}");
+        for (args, error) in [
+            (
+                json!({"name": "../../sbin/reboot", "action": "start"}),
+                "not a service name",
+            ),
+            (
+                json!({"name": "ntpd", "action": "mask"}),
+                "action must be one of",
+            ),
+        ] {
+            let out = declined.call(&call("system_service", args)).await;
+            assert!(out.contains(error), "{out}");
+        }
+        let check = declined
+            .call(&call(
+                "system_check",
+                json!({"kind": "dns", "target": "localhost"}),
+            ))
+            .await;
+        assert!(check.starts_with("ok: "), "{check}");
+        let check = declined
+            .call(&call(
+                "system_check",
+                json!({"kind": "ping", "target": "x"}),
+            ))
+            .await;
+        assert!(check.contains("kind must be one of"), "{check}");
+
+        let config = ToolsConfig {
+            shell: Permission::Deny,
+            ..ToolsConfig::default()
+        };
+        let denied = tools(dir.path(), config, true);
+        let names: Vec<String> = owner(async { denied.specs() })
+            .await
+            .into_iter()
+            .map(|s| s.function.name)
+            .collect();
+        assert!(!names.iter().any(|n| n.starts_with("system_")), "{names:?}");
+        let out = denied
+            .call(&call(
+                "system_service",
+                json!({"name": "ntpd", "action": "restart"}),
+            ))
+            .await;
+        assert!(out.contains("disabled"), "{out}");
     }
 
     #[tokio::test]

@@ -234,7 +234,7 @@ pub(super) fn status(state: &Path, lang: Lang) -> Vec<String> {
         .map(|h| h.trim().to_owned())
         .unwrap_or_else(unknown);
     rows.push(row(S_HOST, host));
-    let addresses = addresses();
+    let addresses = crate::system::addresses();
     rows.push(row(
         S_ADDRESSES,
         if addresses.is_empty() {
@@ -308,42 +308,6 @@ fn tail(path: &PathBuf, lines: usize, lang: Lang) -> Vec<String> {
         }
         Err(err) => vec![LOG_UNREADABLE.fill(lang, &[&err.to_string()])],
     }
-}
-
-/// "eth0 192.168.1.20", every interface but loopback.
-fn addresses() -> Vec<String> {
-    let mut out = Vec::new();
-    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: getifaddrs fills `list`, freed below; each entry is read only
-    // while the list lives, and only the family its sa_family names.
-    unsafe {
-        if libc::getifaddrs(&mut list) != 0 {
-            return out;
-        }
-        let mut at = list;
-        while !at.is_null() {
-            let entry = &*at;
-            at = entry.ifa_next;
-            if entry.ifa_addr.is_null() || entry.ifa_flags & libc::IFF_LOOPBACK as u32 != 0 {
-                continue;
-            }
-            let name = std::ffi::CStr::from_ptr(entry.ifa_name).to_string_lossy();
-            let address = match i32::from((*entry.ifa_addr).sa_family) {
-                libc::AF_INET => {
-                    let a = &*(entry.ifa_addr as *const libc::sockaddr_in);
-                    std::net::IpAddr::from(u32::from_be(a.sin_addr.s_addr).to_be_bytes())
-                }
-                libc::AF_INET6 => {
-                    let a = &*(entry.ifa_addr as *const libc::sockaddr_in6);
-                    std::net::IpAddr::from(a.sin6_addr.s6_addr)
-                }
-                _ => continue,
-            };
-            out.push(format!("{name} {address}"));
-        }
-        libc::freeifaddrs(list);
-    }
-    out
 }
 
 /// Total and free bytes of the file system holding `path`.

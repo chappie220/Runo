@@ -45,6 +45,7 @@ mod skills;
 mod status;
 mod stickers;
 mod store;
+mod system;
 mod tasks;
 mod telegram;
 mod tools;
