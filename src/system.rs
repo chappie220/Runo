@@ -477,9 +477,18 @@ pub fn service_commands(
     })
 }
 
+/// What running commands came to.
+pub struct Ran {
+    /// Each command, its exit code and output.
+    pub text: String,
+    /// Every command ran and exited with 0.
+    pub ok: bool,
+}
+
 /// Runs `commands` in order and reports each one's exit code and output.
-pub async fn run_commands(commands: &[Vec<String>], timeout: Duration, cap: usize) -> String {
+pub async fn run_commands(commands: &[Vec<String>], timeout: Duration, cap: usize) -> Ran {
     let mut out = String::new();
+    let mut ok = true;
     for command in commands {
         let _ = writeln!(out, "$ {}", command.join(" "));
         let run = tokio::process::Command::new(&command[0])
@@ -489,12 +498,15 @@ pub async fn run_commands(commands: &[Vec<String>], timeout: Duration, cap: usiz
             .output();
         match tokio::time::timeout(timeout, run).await {
             Err(_) => {
+                ok = false;
                 let _ = writeln!(out, "timed out after {}s", timeout.as_secs());
             }
             Ok(Err(err)) => {
+                ok = false;
                 let _ = writeln!(out, "cannot run: {err}");
             }
             Ok(Ok(output)) => {
+                ok &= output.status.success();
                 let code = output
                     .status
                     .code()
@@ -511,7 +523,7 @@ pub async fn run_commands(commands: &[Vec<String>], timeout: Duration, cap: usiz
             }
         }
     }
-    out
+    Ran { text: out, ok }
 }
 
 /// One way of checking that a step worked.
@@ -525,10 +537,12 @@ pub enum Check {
     Http,
     /// A process of this name runs.
     Process,
+    /// A service is running, as its init system says.
+    Service,
 }
 
 impl Check {
-    pub const NAMES: &[&str] = &["dns", "tcp", "http", "process"];
+    pub const NAMES: &[&str] = &["dns", "tcp", "http", "process", "service"];
 
     pub fn parse(text: &str) -> Option<Self> {
         Some(match text.trim() {
@@ -536,6 +550,7 @@ impl Check {
             "tcp" => Check::Tcp,
             "http" => Check::Http,
             "process" => Check::Process,
+            "service" => Check::Service,
             _ => return None,
         })
     }
@@ -562,6 +577,7 @@ pub async fn check(kind: Check, target: &str) -> String {
                 Err(_) => format!("connected to {target}"),
             }),
         Check::Http => http(target).await,
+        Check::Service => service_running(target).await,
         Check::Process => {
             let pids = Host::live().processes(target);
             if pids.is_empty() {
@@ -574,6 +590,22 @@ pub async fn check(kind: Check, target: &str) -> String {
     match result {
         Ok(text) => format!("ok: {text}"),
         Err(why) => format!("failed: {why}"),
+    }
+}
+
+/// Whether the init system says `name` runs: its first status command
+/// (`systemctl is-active`, `rc-service … status`, `/etc/init.d/… status`)
+/// exits with 0.
+async fn service_running(name: &str) -> Result<String, String> {
+    if !valid_service(name) {
+        return Err(format!("{name:?} is not a service name"));
+    }
+    let commands = service_commands(Host::live().init(), name, Action::Status)?;
+    let ran = run_commands(&commands[..1], CHECK_TIMEOUT, 2048).await;
+    if ran.ok {
+        Ok(format!("{name} is running"))
+    } else {
+        Err(format!("{name} is not running\n{}", ran.text.trim_end()))
     }
 }
 
@@ -759,7 +791,10 @@ mod tests {
             1024,
         )
         .await;
+        assert!(!out.ok);
+        let out = out.text;
         assert!(out.contains("exit code: 3") && out.contains("hi"), "{out}");
+        assert!(check(Check::Service, "../x").await.starts_with("failed: "));
     }
 
     #[test]

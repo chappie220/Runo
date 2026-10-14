@@ -498,6 +498,13 @@ fn a_model_outage_opens_the_management_view_and_its_menu_works() {
     assert!(app.check_model);
     assert_eq!(app.health, Health::Checking);
     press(&mut app, KeyCode::Char('5'), KeyModifiers::NONE);
+    let (title, rows) = app.manage.as_ref().unwrap().detail.clone().unwrap();
+    assert_eq!(title, "Configuration changes");
+    assert!(
+        rows.iter().any(|r| r.contains("runo changes revert")),
+        "{rows:?}"
+    );
+    press(&mut app, KeyCode::Char('6'), KeyModifiers::NONE);
     assert!(app.open_shell);
     press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
     assert!(app.change_model);

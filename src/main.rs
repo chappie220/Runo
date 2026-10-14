@@ -5,6 +5,7 @@ mod agent;
 mod attachments;
 mod backup;
 mod browser;
+mod changes;
 mod chat;
 mod chatgpt;
 mod cli_text;
@@ -226,6 +227,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<SessionsAction>,
     },
+    /// Recorded changes to the system's configuration: list, show, revert.
+    Changes {
+        #[command(subcommand)]
+        action: Option<ChangesAction>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -371,6 +377,19 @@ enum SessionsAction {
     Delete { name: String },
 }
 
+#[derive(Subcommand)]
+enum ChangesAction {
+    List,
+    Show {
+        id: u64,
+    },
+    Revert {
+        id: u64,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -448,6 +467,31 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let state = config::state_dir()?;
     let config_path = cli.config.unwrap_or_else(|| state.join("config.toml"));
+    // Needs no config or model: the way back when a change broke them.
+    if let Command::Changes { action } = &cli.command {
+        let history = changes::History::in_state(&state);
+        for record in history.recover().await {
+            eprintln!("{}", record.report());
+        }
+        return match action.as_ref().unwrap_or(&ChangesAction::List) {
+            ChangesAction::List => {
+                println!("{}", history.summary(usize::MAX));
+                Ok(())
+            }
+            ChangesAction::Show { id } => {
+                print!("{}", history.load(*id)?.report());
+                Ok(())
+            }
+            ChangesAction::Revert { id, force } => {
+                let record = history.revert(*id, access::CLI, *force).await?;
+                print!("{}", record.report());
+                if record.state != changes::State::Applied {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+        };
+    }
     // Before loading, so a file that does not load can still be repaired.
     if let Command::Config = cli.command {
         return setup::run(&config_path, i18n::current()).map(|_| ());
@@ -576,6 +620,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Config
         | Command::Init
         | Command::Doctor { .. }
+        | Command::Changes { .. }
         | Command::Backup { .. }
         | Command::Restore { .. }
         | Command::Login { .. }
@@ -875,6 +920,11 @@ async fn build_agent(
 ) -> Result<CliAgent> {
     // What the `settings` tool changes takes effect from here, live.
     live::init(config_path, config);
+    // A change to the system cut off by a crash or a power cut goes back first.
+    let history = changes::History::in_state(state);
+    for record in history.recover().await {
+        eprintln!("{}", record.report());
+    }
     let workspace = config
         .tools
         .workspace
@@ -959,7 +1009,8 @@ async fn build_agent(
             .with_speaker(speaker, config.speech.enabled)
             .with_stickers(Some(config.stickers.clone()))
             .with_tasks(Some(config.tasks.clone()))
-            .with_settings(Some(config_path.to_owned())),
+            .with_settings(Some(config_path.to_owned()))
+            .with_changes(Some(history)),
         store,
         config: config::AgentConfig {
             workspace,

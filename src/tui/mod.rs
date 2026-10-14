@@ -1185,6 +1185,7 @@ impl App {
             Item::Model => self.change_model = true,
             Item::Status => show(&mut self.manage, manage::status(&self.state, lang)),
             Item::Logs => show(&mut self.manage, manage::logs(&self.state, lang)),
+            Item::Changes => show(&mut self.manage, manage::changes(&self.state, lang)),
             Item::Shell => self.open_shell = true,
             Item::Back => {
                 self.manage = None;

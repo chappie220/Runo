@@ -276,6 +276,31 @@ const COMMANDS: &[(&str, Tr)] = &[
         tr("Delete a session and its messages", "删除会话及其消息"),
     ),
     (
+        "changes",
+        tr(
+            "Recorded changes to the system's configuration: list, show, revert",
+            "系统配置的修改记录：列出、查看、回退",
+        ),
+    ),
+    (
+        "changes list",
+        tr("List the changes, newest first", "列出修改，最新的在前"),
+    ),
+    (
+        "changes show",
+        tr(
+            "Show one change: files, services, checks and what happened",
+            "查看一次修改：文件、服务、验证和经过",
+        ),
+    ),
+    (
+        "changes revert",
+        tr(
+            "Put the files of a change back as they were, as a new change",
+            "把一次修改涉及的文件恢复原样，记为一次新的修改",
+        ),
+    ),
+    (
         "help",
         tr(
             "Print this message or the help of the given subcommand(s)",
@@ -512,6 +537,16 @@ const ARGS: &[(&str, &str, Tr)] = &[
         tr("How many entries to show", "显示最近几篇"),
     ),
     ("sessions delete", "name", tr("Session name", "会话名")),
+    ("changes show", "id", tr("Change number", "修改编号")),
+    ("changes revert", "id", tr("Change number", "修改编号")),
+    (
+        "changes revert",
+        "force",
+        tr(
+            "Revert even files that were changed again since",
+            "之后又被改过的文件也恢复",
+        ),
+    ),
     (
         "completions install",
         "shell",

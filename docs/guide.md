@@ -257,8 +257,10 @@ one running with `gateway.web = "off"`.
   3. system status: device, host name, addresses, uptime, load, memory,
      disk, temperature, the Gateway,
   4. logs: the end of `tui.log` and of the Gateway's log,
-  5. the shell,
-  6. back to the chat (Esc).
+  5. configuration changes: the recorded changes to the system, newest
+     first (see [System changes](#system-changes)),
+  6. the shell,
+  7. back to the chat (Esc).
 
   ↑/↓ and Enter or the digits pick; typing goes to the input, so `!shell`
   works from here, and Tab moves between the menu and the input. Messages
@@ -267,9 +269,9 @@ one running with `gateway.web = "off"`.
   built-in `system-setup` skill: it inspects the device, shows a short plan
   with any questions (a Wi‑Fi password, the timezone), changes one thing at
   a time, verifies each, and reports. It covers the network and Wi‑Fi, the
-  time and timezone, and the Gateway; it keeps a `<file>.runo.bak` of every
-  file it changes, tries each target at most three times, and puts the
-  backup back when it cannot get it working. On a Raspberry Pi it starts
+  time and timezone, and the Gateway. Each change is a recorded
+  transaction (see [System changes](#system-changes)) that is put back
+  by itself when its checks fail; it tries each target at most three times. On a Raspberry Pi it starts
   by itself the first time the window opens with a working model
   (`<state dir>/system-setup-started` marks that it did). Changing the
   device needs Runo to run as root, skills on, and `tools.shell` not
@@ -1780,12 +1782,52 @@ the result says how many bytes were omitted. For setting up the device
 without their keys, commands present, services), `system_service`
 (status, start, stop, restart, enable, disable through systemd, OpenRC or
 `/etc/init.d` scripts) and `system_check` (a name resolves, a port
-accepts, a URL answers, a process runs). Looking and checking need no
-approval; any other service action is approved like `shell`, and none of
-them is offered when `shell = "deny"`. `ask` prompts on the controlling terminal; with no terminal
+accepts, a URL answers, a process runs, a service runs). Looking and
+checking need no approval; any other service action is approved like
+`shell`, and none of them is offered when `shell = "deny"`.
+`system_change`, `system_history` and `system_revert` change the system's
+configuration as recorded transactions; see
+[System changes](#system-changes). `ask` prompts on the controlling terminal; with no terminal
 the action is declined and the model is told so. Tools set to `deny` are not
 offered to the model at all. `browser` is offered when the host has a
 browser installed; see [Browser](#browser).
+
+## System changes
+
+The agent changes the system's configuration (files under `/etc`, the
+services that read them) only with `system_change`; `write_file` and
+`edit_file` refuse paths under `/etc` while it is offered. One change:
+
+1. saves what each file held, with its owner and mode, in
+   `<state dir>/config-history/<number>/`, and marks the change pending;
+2. writes the new files whole, through a temporary file and a rename (a
+   symlink such as `/etc/resolv.conf` is followed, and its target written);
+3. restarts the services named, in order;
+4. runs its checks (a name resolves, a port accepts, a URL answers, a
+   process or service runs) until all pass, waiting up to `settle_secs`
+   (20 by default, at most 120) for a network to come back.
+
+If a write, a restart or a check fails, the files go back as they were,
+the services restart again, and the change is recorded as rolled back. A
+change cut off half way, by a crash or a power cut, is put back the next
+time Runo starts. Only one change runs at a time. A change is approved
+once, as `tools.write` says (and `tools.shell` when it restarts
+services); `tools.write = "deny"` removes it.
+
+Every change stays recorded: who asked, when, the files, services and
+checks, and what happened. They need neither the model nor a config, so
+they work when a change broke either:
+
+```sh
+runo changes                  # newest first
+runo changes show 3           # files, services, checks and the log
+runo changes revert 3         # put change 3's files back, as a new change
+runo changes revert 3 --force # even files changed again since
+```
+
+A revert is refused while a later change has touched the same files;
+revert that one first. In `runo tui`, `/manage` lists the changes too, and
+the agent has `system_history` and `system_revert`.
 
 ## Thinking level
 

@@ -281,7 +281,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 
 | 阶段 | 内容 | 与现有代码的关系 |
 |---|---|---|
-| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell`；只用 BusyBox 也有的命令，避免依赖 GNU 工具或包管理器 | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`、管理界面和自配置（`system_*` 工具、`system-setup` skill、`/setup`）。待做：配置事务、费用和次数上限 |
+| 1 | 在树莓派现有 Linux（Raspberry Pi OS / Alpine，Pi 5）上做通 Agent 自配置和 `!shell`；只用 BusyBox 也有的命令，避免依赖 GNU 工具或包管理器 | `runo tui` 已有全屏 Agent 界面和首次引导（`onboard.rs`）；本阶段已加入 `!shell`、管理界面、自配置（`system_*` 工具、`system-setup` skill、`/setup`）和配置事务（`changes.rs`、`runo changes`）。待做：费用和次数上限 |
 | 2 | 局域网发现与可信配对 | 新增 `runod`、管理协议、共用的 Rust 核心库、Flutter 管理客户端 |
 | 3 | 开机直达 Agent 的镜像（Pi 5、Pi 4） | Buildroot 2025.02.x 外部树（`buildroot/`）、BusyBox init 与 `inittab` 接管 tty1、`service.rs` 支持 BusyBox init、A/B 分区、中文显示、CI 出镜像 |
 | 4 | 公网连接、更新与恢复 | `runod` 自己实现 A/B 更新（签名、`tryboot`、看门狗），取代 `update.rs` 的单文件替换；IPv6 公网接入与防火墙；Runo 自绘终端（含拼音词库联想）取代 `fbterm` |
@@ -302,14 +302,24 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
     `system_check`（域名解析、TCP 端口、HTTP、进程）。查看和验证不需要批准；改动服务和 `shell` 一样需要批准，`tools.shell = "deny"` 时都不提供。
     写配置文件用现有的 `read_file`、`write_file`、`edit_file`。
   - 步骤写在内置 skill `system-setup` 里：先检查，不是 root 就停下并说明；列出简短计划和要问的问题（一次问完），不再单独确认计划；
-    逐个目标修改：先读文件、首次修改前备份为 `<文件>.runo.bak`、写入、重启并启用服务、验证；
-    失败先查原因（`logread`、`journalctl` 或 `/var/log/messages`），每个目标最多 3 次，仍失败就恢复备份并继续下一个；最后逐项汇报，
+    逐个目标修改：先读文件、用 `system_change` 一次写入、重启、验证（失败自动恢复）；
+    失败先查原因（`logread`、`journalctl` 或 `/var/log/messages`），每个目标最多 3 次，仍失败就继续下一个；最后逐项汇报，
     并存一条不含密码的记忆。
   - 目标：网络与 Wi‑Fi（不改当前默认路由所在的网卡，除非用户要求）、时间与时区、Runo Gateway。主机名、用户、SSH 等不动。
   - 触发：`runo tui` 里输入 `/setup`；在树莓派上第一次打开窗口、模型可用时自动开始一次（状态目录里的 `system-setup-started` 记录已开始过）。
     模型不可用时等到恢复后再开始。
-  - 3 次重试和备份恢复目前靠 skill 的指示；由程序强制的配置事务与回退（4.2）、次数和费用上限（4.6）是下面两项。
-- [ ] 配置事务与回退（4.2）。
+  - 每次修改都走下面的配置事务（`system_change`）；每个目标 3 次重试目前靠 skill 的指示，由程序强制的次数和费用上限见 4.6。
+- [x] 配置事务与回退（4.2）。阶段 1 还没有 `runod`，事务先在 Runo 进程里做（`src/changes.rs`）：
+  - Agent 改系统配置只能用 `system_change`；工具开放时，`write_file`、`edit_file` 拒绝写 `/etc`。
+  - 一次修改：快照每个文件（内容、属主、权限）到 `<状态目录>/config-history/<编号>/`，记为 pending →
+    通过临时文件加改名整体写入（符号链接写到目标）→ 按顺序重启服务 → 运行验证，最多等 `settle_secs`（默认 20 秒，最多 120 秒）。
+  - 写入、重启或验证失败：恢复文件、再重启服务、再验证一次，记为 rolled back。
+  - 修改进行中崩溃或断电：下次启动（`runo tui`、`serve`、`changes` 等）时自动恢复；用文件锁区分"进行中"和"被打断"，同一时间只跑一个修改。
+  - 记录发起者、时间、文件、服务、验证和经过。查看与手动回退：`runo changes [list|show <编号>|revert <编号> [--force]]`
+    （不需要模型和配置），管理界面的"配置修改记录"，Agent 的 `system_history`、`system_revert`。
+    之后又被改过的文件，回退时默认拒绝。
+  - 还没做的"确认提交"（客户端在新地址上重连确认，否则倒计时回退）要等阶段 2 有了 `runod` 和客户端；
+    阶段 1 里，网络类修改靠验证（如能连上模型服务）在失联时自动回退。
 - [ ] 自配置的次数与费用上限（4.6）。
 
 ## 7. 1.0 验收流程

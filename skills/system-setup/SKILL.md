@@ -58,23 +58,28 @@ unless the person asks.
 
 ## 3. Apply, one target at a time
 
-For each change:
+Every change to the system goes through `system_change`: never write files
+under /etc with `write_file`, `edit_file` or `shell`. One call is one
+target:
 
-1. Read the file first (`read_file`). Before changing a file that exists,
-   copy it to `<file>.runo.bak` with `shell` (`cp -p`), once: do not
-   overwrite an older backup.
-2. Write the new content (`write_file` or `edit_file`). Keep the system's
-   own format and comments; change only what the target needs.
-3. Apply it: `system_service` with `restart` (or `start`), and `enable` where
-   the init system has it, so it survives a reboot.
-4. Verify it with `system_check` or `system_service status`. A step that is
-   not verified is not done.
+1. Read the files first (`read_file`). Keep the system's own format and
+   comments; change only what the target needs, and give each file whole.
+2. Name the services to restart, and the checks that show the target works
+   (`dns`, `tcp`, `http`, `process`, `service`). A network change needs
+   `settle_secs` long enough for the link to come back (about 30).
+3. `system_change` saves the old files, writes, restarts and checks. When a
+   check fails it puts everything back by itself and says so; the device is
+   then as it was.
+4. For a service that should start at boot, `system_service enable` after
+   the change is applied (where the init system has it).
 
-If the check fails, find out why before trying again: the service's own
-status, then the log (`logread` on BusyBox, `journalctl -u <name> -n 50`
-with systemd, otherwise /var/log/messages). At most **3 attempts per
-target**. Still failing: copy the `.runo.bak` back, restart the service, check
-the device is as it was, and go on with the next target.
+When a change was put back, find out why before trying again: the
+service's own status, then the log (`logread` on BusyBox,
+`journalctl -u <name> -n 50` with systemd, otherwise /var/log/messages).
+At most **3 attempts per target**; then go on with the next one.
+
+`system_history` lists what was changed; `system_revert` undoes a change
+when the person asks for it.
 
 ## 4. The system is small
 
@@ -87,7 +92,7 @@ the device is as it was, and go on with the next target.
 
 ## 5. Report
 
-End with a short list, one line per target: already fine, changed (what),
-failed (why, and what the person can do), or skipped. Say how each was
-verified. Save one memory of what was set up (no passwords), so later
+End with a short list, one line per target: already fine, changed (what,
+with its change number), failed (why, and what the person can do), or
+skipped. Say how each was verified. Save one memory of what was set up (no passwords), so later
 conversations know the device's state.

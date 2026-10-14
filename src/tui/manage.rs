@@ -13,8 +13,8 @@ use crate::onboard::{Catalog, KeyCheck};
 
 pub(super) const TITLE: Tr = tr("Management", "管理");
 pub(super) const HINTS: Tr = tr(
-    "↑/↓ choose · Enter run · 1–6 · Tab input · Esc back to the chat",
-    "↑/↓ 选择 · 回车执行 · 1–6 · Tab 输入框 · Esc 返回对话",
+    "↑/↓ choose · Enter run · 1–7 · Tab input · Esc back to the chat",
+    "↑/↓ 选择 · 回车执行 · 1–7 · Tab 输入框 · Esc 返回对话",
 );
 const MODEL: Tr = tr("Model {}: {}", "模型 {}：{}");
 const UNCHECKED: Tr = tr("not checked", "未检查");
@@ -41,6 +41,11 @@ const ITEM_CHECK: Tr = tr("Check the model again", "重新检查模型");
 const ITEM_MODEL: Tr = tr("Change the model connection", "修改模型连接");
 const ITEM_STATUS: Tr = tr("System status", "系统状态");
 const ITEM_LOGS: Tr = tr("Logs", "日志");
+const ITEM_CHANGES: Tr = tr("Configuration changes", "配置修改记录");
+const CHANGES_HINT: Tr = tr(
+    "Undo one in the shell with: runo changes revert <number> (runo changes show <number> for the details)",
+    "在 Shell 里撤销某一次：runo changes revert <编号>（详情：runo changes show <编号>）",
+);
 const ITEM_SHELL: Tr = tr("Shell (or type !shell)", "Shell（也可输入 !shell）");
 const ITEM_BACK: Tr = tr("Back to the chat", "返回对话");
 
@@ -85,6 +90,8 @@ pub(super) const ALL: &[Tr] = &[
     ITEM_MODEL,
     ITEM_STATUS,
     ITEM_LOGS,
+    ITEM_CHANGES,
+    CHANGES_HINT,
     ITEM_SHELL,
     ITEM_BACK,
     S_DEVICE,
@@ -177,13 +184,14 @@ fn from_key_check(check: KeyCheck, lang: Lang) -> Health {
     }
 }
 
-/// The menu, in order; 1–6 pick them too.
+/// The menu, in order; 1–7 pick them too.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum Item {
     Check,
     Model,
     Status,
     Logs,
+    Changes,
     Shell,
     Back,
 }
@@ -193,6 +201,7 @@ pub(super) const ITEMS: &[Item] = &[
     Item::Model,
     Item::Status,
     Item::Logs,
+    Item::Changes,
     Item::Shell,
     Item::Back,
 ];
@@ -204,6 +213,7 @@ impl Item {
             Self::Model => ITEM_MODEL,
             Self::Status => ITEM_STATUS,
             Self::Logs => ITEM_LOGS,
+            Self::Changes => ITEM_CHANGES,
             Self::Shell => ITEM_SHELL,
             Self::Back => ITEM_BACK,
         }
@@ -271,6 +281,15 @@ pub(super) fn status(state: &Path, lang: Lang) -> Vec<String> {
     }
     let gateway = crate::service::describe().unwrap_or_else(|| S_GATEWAY_NONE.get(lang).to_owned());
     rows.push(row(S_GATEWAY, gateway));
+    rows
+}
+
+/// The recorded configuration changes, newest first, and how to undo one.
+pub(super) fn changes(state: &Path, lang: Lang) -> Vec<String> {
+    let history = crate::changes::History::in_state(state);
+    let mut rows: Vec<String> = history.summary(30).lines().map(str::to_owned).collect();
+    rows.push(String::new());
+    rows.push(CHANGES_HINT.get(lang).to_owned());
     rows
 }
 
