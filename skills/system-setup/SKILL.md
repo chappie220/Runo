@@ -55,6 +55,17 @@ configuration asks for it.
    and, if they want it, run `runo service install` with `shell`, then check
    `runo service status`.
 
+4. **Remote access from outside (optional).** Only when the person asks to
+   reach the device away from home. It needs a public IPv6 address (the
+   "Public access" line of the status says when the network gives none:
+   tell them so plainly — there is no IPv4 fallback) and a domain of
+   theirs at Cloudflare, Alibaba Cloud DNS or Tencent DNSPod. Never ask for
+   the provider's credentials in the conversation: tell them to type `!shell`
+   and run `runo daemon ddns set <cloudflare|aliyun|dnspod> <domain>`, which
+   asks for them without echo; `runo daemon ddns` then shows the result.
+   Clients outside the network also need the device password, and the
+   router must let IPv6 in to port 7340.
+
 Leave the hostname, users, SSH and anything not listed here as they are,
 unless the person asks.
 

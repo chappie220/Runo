@@ -195,7 +195,7 @@ impl Pairing {
             name: self.link.welcome().name.clone(),
             key: hex::encode(&self.link.device_key()),
             addresses: vec![self.link.address().to_string()],
-            domain: None,
+            domain: self.link.welcome().domain.clone(),
             paired: chrono_now(),
         })
     }
@@ -293,7 +293,7 @@ impl Connection {
             if !link.welcome().trusted {
                 bail!("{} no longer trusts this client: pair again", device.name);
             }
-            home.reached(&device.id, link.address())?;
+            home.reached(&device.id, link.address(), link.welcome().domain.as_deref())?;
             Ok(Connection { link })
         })
         .await

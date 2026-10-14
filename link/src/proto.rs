@@ -157,6 +157,10 @@ pub enum Event {
         /// the local network, must log in with the device password first.
         #[serde(default)]
         login: bool,
+        /// The device's own domain name, kept up to date by dynamic DNS
+        /// (4.9), for reaching it from outside the LAN.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        domain: Option<String>,
     },
     /// A session shown on `channel` ended.
     Exit {

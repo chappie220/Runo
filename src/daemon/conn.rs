@@ -104,6 +104,7 @@ pub async fn handle(
         trusted: client.is_some(),
         pairing: daemon.pairing().open,
         login: client.is_some() && !from_lan(&daemon, peer.ip()),
+        domain: super::ddns::load(&super::dir(&daemon.state)).map(|c| c.domain),
     });
     let (kill, mut killed) = tokio::sync::watch::channel(None::<String>);
     let connection = Arc::new(Connection {

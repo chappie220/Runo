@@ -69,6 +69,8 @@ pub struct Welcome {
     /// Whether it must log in with the device password first: a trusted
     /// client reaching the device from outside the local network.
     pub login: bool,
+    /// Its own domain name, if it keeps one.
+    pub domain: Option<String>,
 }
 
 #[derive(Clone)]
@@ -163,6 +165,7 @@ impl Link {
                 trusted,
                 pairing,
                 login,
+                domain,
             }) => Welcome {
                 device,
                 name,
@@ -170,6 +173,7 @@ impl Link {
                 trusted,
                 pairing,
                 login,
+                domain,
             },
             Down::Event(Event::Closed { reason }) => bail!("the device refused: {reason}"),
             other => bail!("unexpected first message: {other:?}"),
@@ -594,9 +598,11 @@ impl Home {
     }
 
     /// Notes where a device was reached, first.
-    pub fn reached(&self, id: &str, address: SocketAddr) -> Result<()> {
+    /// Remembers where device `id` answered, and the domain it gave.
+    pub fn reached(&self, id: &str, address: SocketAddr, domain: Option<&str>) -> Result<()> {
         let mut devices = self.devices()?;
         if let Some(device) = devices.iter_mut().find(|d| d.id == id) {
+            device.domain = domain.map(str::to_owned);
             let address = address.to_string();
             device.addresses.retain(|a| *a != address);
             device.addresses.insert(0, address);

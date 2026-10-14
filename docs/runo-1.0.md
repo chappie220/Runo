@@ -391,6 +391,23 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 - [x] CI（`.github/workflows/image.yml`）构建 Pi 5 和 Pi 4 镜像，产出 `runo-<板>.img.xz`。
 - [ ] 真机验收（第 7 节）：HDMI 中文显示、Wi‑Fi、首次扩展分区、配对。
 
+### 阶段 4 当前进度
+
+- [x] 公网登录密码（见阶段 2 进度最后一条）。
+- [x] 防火墙：`/etc/nftables.conf`（`S35firewall` 在网络之前加载）。入站默认拒绝，只放行已建立的连接、回环、
+  IPv4/IPv6 必需的 ICMP（邻居发现、路由通告、Packet Too Big 等）、DHCP/DHCPv6 应答、mDNS 和 `runod` 的 7340；转发一律拒绝。
+  自己的规则放在 `/data/etc/nftables.d/*.nft`；这些规则加载失败时退回内置规则。
+- [x] 动态域名：`runo daemon ddns set <cloudflare|aliyun|dnspod> <域名> [--zone <注册域名>]`，在终端里询问凭据
+  （Cloudflare 的 API 令牌；阿里云的 AccessKey ID 和 Secret；DNSPod 的 SecretId 和 SecretKey），服务商接受后才保存到
+  `<状态目录>/runod/ddns.json`（0600）。`runod` 每分钟看一次地址（全球单播、非临时、非 ULA，有线优先），变了就更新 AAAA 记录，
+  失败 5 分钟后重试。`runo daemon ddns`、管理界面“状态”里的“公网访问”显示域名、地址、上次更新或失败原因；
+  没有公网 IPv6 时明确说明“这个网络没有给设备分配公网 IPv6 地址”。
+  - `welcome` 带上设备的域名，客户端（`runo remote`、Flutter）配对和每次连接时记下，之后按“记下的地址 → 域名 → 局域网 mDNS”连接。
+  - 阿里云（签名 1.0，HMAC‑SHA1）和腾讯云（TC3‑HMAC‑SHA256）的签名用两家文档里的示例核对过；三家的接口还没有用真实账号测过。
+- [ ] 从外面测连通（“从外面连不进来”提示去路由器放行端口）：需要一个外部探测点，1.0 先在客户端连接失败时提示检查路由器的 IPv6 入站设置。
+- [ ] A/B 更新、看门狗、恢复（4.5）。
+- [ ] Runo 自绘终端与拼音输入（4.7）。
+
 ## 7. 1.0 验收流程
 
 在**树莓派 5** 和**树莓派 4 B** 上各完成一遍：

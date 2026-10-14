@@ -80,6 +80,7 @@ const ITEM_BACK: Tr = tr("Back to the chat", "返回对话");
 const S_DEVICE: Tr = tr("Device", "设备");
 const S_HOST: Tr = tr("Host name", "主机名");
 const S_ADDRESSES: Tr = tr("Addresses", "地址");
+const S_PUBLIC: Tr = tr("Public access", "公网访问");
 const S_NO_ADDRESS: Tr = tr("none (no network)", "无（没有网络）");
 const S_UPTIME: Tr = tr("Up", "已运行");
 const S_LOAD: Tr = tr("Load", "负载");
@@ -135,6 +136,7 @@ pub(super) const ALL: &[Tr] = &[
     S_DEVICE,
     S_HOST,
     S_ADDRESSES,
+    S_PUBLIC,
     S_NO_ADDRESS,
     S_UPTIME,
     S_LOAD,
@@ -325,6 +327,10 @@ pub(crate) fn status(state: &Path, lang: Lang) -> Vec<String> {
     }
     let gateway = crate::service::describe().unwrap_or_else(|| S_GATEWAY_NONE.get(lang).to_owned());
     rows.push(row(S_GATEWAY, gateway));
+    rows.push(row(
+        S_PUBLIC,
+        crate::daemon::cli::ddns_lines(state, lang).join("; "),
+    ));
     rows
 }
 

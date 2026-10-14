@@ -269,6 +269,28 @@ enum DaemonAction {
     Install,
     /// Stop and remove the service; identity and clients are kept.
     Uninstall,
+    /// Dynamic DNS: keep the device's domain on its public IPv6 address.
+    Ddns {
+        #[command(subcommand)]
+        action: Option<DdnsAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DdnsAction {
+    /// Show the domain, the address it points at and the last update.
+    Show,
+    /// Set the provider and domain; asks for the provider's credentials.
+    Set {
+        provider: String,
+        domain: String,
+        #[arg(long)]
+        zone: Option<String>,
+    },
+    /// Point the domain at the current address now.
+    Update,
+    /// Stop updating the domain and forget the credentials.
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -592,6 +614,16 @@ async fn run(cli: Cli) -> Result<()> {
             DaemonAction::Status => daemon::cli::status(&state).await,
             DaemonAction::Install => daemon::service::install(&state, config.as_deref()),
             DaemonAction::Uninstall => daemon::service::uninstall(&state),
+            DaemonAction::Ddns { action } => match action.as_ref().unwrap_or(&DdnsAction::Show) {
+                DdnsAction::Show => daemon::cli::ddns_show(&state),
+                DdnsAction::Set {
+                    provider,
+                    domain,
+                    zone,
+                } => daemon::cli::ddns_set(&state, provider, domain, zone.as_deref()).await,
+                DdnsAction::Update => daemon::cli::ddns_update(&state).await,
+                DdnsAction::Off => daemon::cli::ddns_off(&state),
+            },
         };
     }
     if let Command::Remote { action } = &cli.command {

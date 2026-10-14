@@ -229,7 +229,7 @@ pub async fn pair(state: &Path, target: Option<&str>) -> Result<()> {
             name: welcome.name.clone(),
             key: runo_link::hex::encode(&link.device_key()),
             addresses: vec![link.address().to_string()],
-            domain: None,
+            domain: welcome.domain.clone(),
             paired: chrono::Utc::now().timestamp(),
         })
     };
@@ -333,7 +333,7 @@ pub async fn connect(state: &Path, query: &str) -> Result<Link> {
         let password = read_secret(PASSWORD.now())?;
         link.login(&password).await?;
     }
-    home.reached(&device.id, link.address())?;
+    home.reached(&device.id, link.address(), link.welcome().domain.as_deref())?;
     Ok(link)
 }
 

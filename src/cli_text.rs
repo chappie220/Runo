@@ -329,6 +329,41 @@ const COMMANDS: &[(&str, Tr)] = &[
         ),
     ),
     (
+        "daemon ddns",
+        tr(
+            "Dynamic DNS: keep the device's domain on its public IPv6 address",
+            "动态域名：让设备的域名始终指向它的公网 IPv6 地址",
+        ),
+    ),
+    (
+        "daemon ddns show",
+        tr(
+            "Show the domain, the address it points at and the last update",
+            "显示域名、它指向的地址和最近一次更新",
+        ),
+    ),
+    (
+        "daemon ddns set",
+        tr(
+            "Set the provider and domain; asks for the provider's credentials",
+            "设置服务商和域名；会询问服务商的凭据",
+        ),
+    ),
+    (
+        "daemon ddns update",
+        tr(
+            "Point the domain at the current address now",
+            "立即把域名指向当前地址",
+        ),
+    ),
+    (
+        "daemon ddns off",
+        tr(
+            "Stop updating the domain and forget the credentials",
+            "停止更新域名并删除凭据",
+        ),
+    ),
+    (
         "daemon password",
         tr(
             "Set the device password that clients give when they pair",
@@ -895,6 +930,30 @@ const ARGS: &[(&str, &str, Tr)] = &[
         tr("Put the change back now instead", "改为立即撤回这次修改"),
     ),
     ("changes revert", "id", tr("Change number", "修改编号")),
+    (
+        "daemon ddns set",
+        "provider",
+        tr(
+            "DNS provider: cloudflare, aliyun or dnspod",
+            "DNS 服务商：cloudflare、aliyun 或 dnspod",
+        ),
+    ),
+    (
+        "daemon ddns set",
+        "domain",
+        tr(
+            "The device's domain, e.g. pi.example.com",
+            "设备的域名，如 pi.example.com",
+        ),
+    ),
+    (
+        "daemon ddns set",
+        "zone",
+        tr(
+            "The registered domain holding it (default: its last two labels)",
+            "它所在的注册域名（默认取最后两段）",
+        ),
+    ),
     (
         "changes confirm",
         "id",

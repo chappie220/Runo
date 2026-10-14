@@ -30,6 +30,31 @@ const FIRST_START: Tr = tr(
     "This device has no device password yet. Clients on this network give it once, when they pair; press Enter to skip (set it later under Manage).",
     "本设备还没有设备密码。本网络中的客户端配对时需要输入一次；直接回车跳过（以后可在管理中设置）。",
 );
+const DDNS_OFF: Tr = tr(
+    "Dynamic DNS is not set up: runo daemon ddns set <cloudflare|aliyun|dnspod> <domain>",
+    "动态域名未设置：runo daemon ddns set <cloudflare|aliyun|dnspod> <域名>",
+);
+const DDNS_LINE: Tr = tr("{} at {}", "{}（{}）");
+const DDNS_POINTS: Tr = tr("points at {} since {}", "指向 {}，更新于 {}");
+const DDNS_PENDING: Tr = tr("not updated yet", "尚未更新");
+const DDNS_FAILED: Tr = tr("last update failed: {}", "上次更新失败：{}");
+const DDNS_NO_IPV6: Tr = tr(
+    "This network gives the device no public IPv6 address, so it can be reached only on the local network.",
+    "这个网络没有给设备分配公网 IPv6 地址，因此只能在局域网内访问。",
+);
+const DDNS_SECRET: Tr = tr("{} for {}: ", "{}（{}）：");
+const DDNS_SAVED: Tr = tr(
+    "Saved. {} now points at {}; runod keeps it up to date.",
+    "已保存。{} 现在指向 {}；runod 会持续更新。",
+);
+const DDNS_SAVED_LATER: Tr = tr(
+    "Saved; runod points {} at the device once it has a public IPv6 address.",
+    "已保存；设备有公网 IPv6 地址后，runod 会把 {} 指向它。",
+);
+const DDNS_REMOVED: Tr = tr(
+    "Dynamic DNS is off and the credentials are deleted.",
+    "动态域名已关闭，凭据已删除。",
+);
 const NOT_RUNNING: Tr = tr(
     "The daemon is not running: start it with `runo daemon` (or install it with `runo daemon install`).",
     "管理守护进程没有运行：用 `runo daemon` 启动（或用 `runo daemon install` 安装成服务）。",
@@ -81,6 +106,16 @@ pub const ALL: &[Tr] = &[
     PASSWORD_SET,
     PASSWORD_FIRST,
     FIRST_START,
+    DDNS_OFF,
+    DDNS_LINE,
+    DDNS_POINTS,
+    DDNS_PENDING,
+    DDNS_FAILED,
+    DDNS_NO_IPV6,
+    DDNS_SECRET,
+    DDNS_SAVED,
+    DDNS_SAVED_LATER,
+    DDNS_REMOVED,
     NOT_RUNNING,
     WINDOW_OPEN,
     CODE,
@@ -154,6 +189,102 @@ pub fn first_password(state: &Path) -> Result<()> {
             Err(err) => eprintln!("{err:#}"),
         }
     }
+}
+
+/// The dynamic DNS lines of the status page, in `lang`.
+pub fn ddns_lines(state: &Path, lang: Lang) -> Vec<String> {
+    use super::ddns;
+    let dir = dir(state);
+    let Some(config) = ddns::load(&dir) else {
+        return vec![DDNS_OFF.get(lang).to_owned()];
+    };
+    let mut lines = vec![DDNS_LINE.fill(
+        lang,
+        &[
+            &config.domain,
+            ddns::Provider::NAMES[config.provider as usize],
+        ],
+    )];
+    let status = ddns::status(&dir);
+    match (&status.address, status.updated) {
+        (Some(address), Some(at)) => lines.push(DDNS_POINTS.fill(lang, &[address, &date(at)])),
+        _ => lines.push(DDNS_PENDING.get(lang).to_owned()),
+    }
+    if let Some(error) = &status.error {
+        lines.push(DDNS_FAILED.fill(lang, &[error]));
+    }
+    if ddns::live_address().is_none() {
+        lines.push(DDNS_NO_IPV6.get(lang).to_owned());
+    }
+    lines
+}
+
+pub fn ddns_show(state: &Path) -> Result<()> {
+    for line in ddns_lines(state, crate::i18n::current()) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+pub async fn ddns_set(
+    state: &Path,
+    provider: &str,
+    domain: &str,
+    zone: Option<&str>,
+) -> Result<()> {
+    use super::ddns::{self, Config, Provider};
+    let Some(provider) = Provider::parse(provider) else {
+        bail!("the provider is one of {}", Provider::NAMES.join(", "));
+    };
+    // Checked before asking for anything.
+    Config::new(
+        provider,
+        domain,
+        zone,
+        provider.secrets().iter().map(|_| "x".to_owned()).collect(),
+    )?;
+    let mut secrets = Vec::new();
+    for name in provider.secrets() {
+        secrets.push(read_secret(
+            &DDNS_SECRET.with(&[name, Provider::NAMES[provider as usize]]),
+        )?);
+    }
+    let config = Config::new(provider, domain, zone, secrets)?;
+    let dir = dir(state);
+    if ddns::live_address().is_none() {
+        ddns::save(&dir, &config)?;
+        println!("{}", DDNS_SAVED_LATER.with(&[&config.domain]));
+        println!("{}", DDNS_NO_IPV6.now());
+        return Ok(());
+    }
+    // Saved only once the provider took it, so wrong credentials are not kept.
+    let address = ddns::update_now(&dir, &config).await?;
+    ddns::save(&dir, &config)?;
+    ddns::record(&dir, address);
+    println!(
+        "{}",
+        DDNS_SAVED.with(&[&config.domain, &address.to_string()])
+    );
+    Ok(())
+}
+
+pub async fn ddns_update(state: &Path) -> Result<()> {
+    let dir = dir(state);
+    let Some(config) = super::ddns::load(&dir) else {
+        bail!("{}", DDNS_OFF.now());
+    };
+    let address = super::ddns::update_now(&dir, &config).await?;
+    println!(
+        "{}",
+        DDNS_SAVED.with(&[&config.domain, &address.to_string()])
+    );
+    Ok(())
+}
+
+pub fn ddns_off(state: &Path) -> Result<()> {
+    super::ddns::remove(&dir(state))?;
+    println!("{}", DDNS_REMOVED.now());
+    Ok(())
 }
 
 pub fn date(unix: i64) -> String {

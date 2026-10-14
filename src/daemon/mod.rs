@@ -17,6 +17,7 @@
 pub mod cli;
 mod conn;
 mod control;
+pub mod ddns;
 mod outbox;
 mod pty;
 pub mod service;
@@ -373,6 +374,18 @@ pub async fn serve(
                     record.state.word()
                 ));
             }
+        }
+    });
+    // Dynamic DNS (4.9): the domain follows the public IPv6 address.
+    let state = daemon.state.clone();
+    tokio::spawn(async move {
+        loop {
+            match ddns::round(&dir(&state), now()).await {
+                ddns::Round::Updated(address) => log(&format!("dynamic DNS: now {address}")),
+                ddns::Round::Failed(why) => log(&format!("dynamic DNS: {why}")),
+                _ => {}
+            }
+            tokio::time::sleep(ddns::EVERY).await;
         }
     });
     loop {
