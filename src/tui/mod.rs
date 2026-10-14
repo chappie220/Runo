@@ -6,6 +6,8 @@
 //! in, tool calls show as they run and open to show their output, approvals
 //! are a prompt in the window, and messages typed while a turn runs are sent
 //! after it. `/` and Ctrl+K open the commands; the mouse scrolls and clicks.
+//! `!shell` leaves the window for a shell and comes back when it exits; it
+//! needs no model, so it works when the model is down.
 
 mod backend;
 mod highlight;
@@ -55,8 +57,8 @@ const QUEUED: Tr = tr("{} waiting", "{} 条待发送");
 const FILES: Tr = tr("files: {}", "附件：{}");
 const YOU: Tr = tr("You", "你");
 const HELP: Tr = tr(
-    "Commands (type / or press Ctrl+K for the list):\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /sidebar         show or hide the session list\n  /expand          open or close every tool output\n  /config          edit the settings: heartbeat, inner life, QQ, models…\n  /quit            leave\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn, Shift+↑/↓ or the mouse wheel scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.\nCtrl+K commands and sessions · Ctrl+N new session · Ctrl+B session list · Tab moves between the list and the input · Ctrl+O opens tool output, or click a tool line · Ctrl+L repaints the screen. Hold Shift to select text with the mouse.",
-    "命令（输入 / 或按 Ctrl+K 弹出列表）：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /sidebar         显示或隐藏会话栏\n  /expand          展开或收起所有工具输出\n  /config          修改设置：心跳、内心生活、QQ、模型……\n  /quit            退出\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn、Shift+↑/↓ 或鼠标滚轮滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。\nCtrl+K 命令和会话 · Ctrl+N 新会话 · Ctrl+B 会话栏 · Tab 在会话栏和输入框之间切换 · Ctrl+O 展开工具输出，也可以点击工具那一行 · Ctrl+L 重绘屏幕。按住 Shift 用鼠标选中文字。",
+    "Commands (type / or press Ctrl+K for the list):\n  /attach <path>   send a file with the next message\n  /session <name>  switch to another session (created when new)\n  /sessions        list sessions\n  /new             start a fresh session\n  /clear           clear the screen (the history is kept)\n  /skills          list skills; @name in a message asks the agent to use one\n  /compact         fold the conversation into a summary to free context\n  /identity …      show or approve the identity, as in chat\n  /sidebar         show or hide the session list\n  /expand          open or close every tool output\n  /config          edit the settings: heartbeat, inner life, QQ, models…\n  /quit            leave\n  !shell           open a shell; exit returns here (works without a model)\nKeys: Enter sends, Alt+Enter or Ctrl+J adds a line, ↑/↓ recall earlier messages, PgUp/PgDn, Shift+↑/↓ or the mouse wheel scroll, Esc or Ctrl+C stops a reply, Ctrl+D on an empty line quits.\nCtrl+K commands and sessions · Ctrl+N new session · Ctrl+B session list · Tab moves between the list and the input · Ctrl+O opens tool output, or click a tool line · Ctrl+L repaints the screen. Hold Shift to select text with the mouse.",
+    "命令（输入 / 或按 Ctrl+K 弹出列表）：\n  /attach <路径>   随下一条消息发送文件\n  /session <名字>  切换到另一个会话（不存在则新建）\n  /sessions        列出会话\n  /new             开始一个新会话\n  /clear           清屏（历史记录保留）\n  /skills          列出 skills；消息里写 @名字 让智能体使用它\n  /compact         把对话折叠成摘要，腾出上下文\n  /identity …      查看或批准身份，和 chat 一样\n  /sidebar         显示或隐藏会话栏\n  /expand          展开或收起所有工具输出\n  /config          修改设置：心跳、内心生活、QQ、模型……\n  /quit            退出\n  !shell           打开 Shell，exit 后回到这里（不需要模型也能用）\n按键：回车发送，Alt+回车或 Ctrl+J 换行，↑/↓ 调出之前的消息，PgUp/PgDn、Shift+↑/↓ 或鼠标滚轮滚动，Esc 或 Ctrl+C 停止回复，空行时 Ctrl+D 退出。\nCtrl+K 命令和会话 · Ctrl+N 新会话 · Ctrl+B 会话栏 · Tab 在会话栏和输入框之间切换 · Ctrl+O 展开工具输出，也可以点击工具那一行 · Ctrl+L 重绘屏幕。按住 Shift 用鼠标选中文字。",
 );
 const SWITCHED: Tr = tr("Session: {}", "会话：{}");
 const ATTACHED: Tr = tr(
@@ -130,6 +132,12 @@ const CONFIG_SAVED: Tr = tr(
     "设置已保存。重启 Gateway（runo service restart）并重新打开这个窗口后生效。",
 );
 const CMD_QUIT: Tr = tr("leave", "退出");
+const SHELL_BANNER: Tr = tr(
+    "Runo shell ({}). Type exit to go back to the agent.",
+    "Runo Shell（{}）。输入 exit 回到智能体。",
+);
+const SHELL_BACK: Tr = tr("Back from the shell ({}).", "已从 Shell 返回（{}）。");
+const SHELL_FAILED: Tr = tr("Could not start {}: {}", "无法启动 {}：{}");
 
 #[cfg(test)]
 const ALL: &[Tr] = &[
@@ -176,7 +184,18 @@ const ALL: &[Tr] = &[
     CONFIG_APPLIED,
     CONFIG_SAVED,
     CMD_QUIT,
+    SHELL_BANNER,
+    SHELL_BACK,
+    SHELL_FAILED,
 ];
+
+/// What opens a shell from the input line.
+const SHELL_COMMAND: &str = "!shell";
+
+/// Whether a line typed in the input asks for the shell.
+fn is_shell_command(text: &str) -> bool {
+    text.trim() == SHELL_COMMAND
+}
 
 /// A slash command: its name, whether it needs an argument, what it does.
 struct Command {
@@ -535,6 +554,8 @@ struct App {
     repaint: bool,
     /// `/config`: the settings editor opens before the next draw.
     open_config: bool,
+    /// `!shell`: leave the window for a shell before the next draw.
+    open_shell: bool,
     /// Ctrl+D was pressed once while a reply ran.
     quit_armed: bool,
     /// `/quit`: leave once the running reply, if any, has stopped.
@@ -580,6 +601,7 @@ impl App {
             spinner: 0,
             repaint: false,
             open_config: false,
+            open_shell: false,
             quit_armed: false,
             quit: false,
             skills: None,
@@ -1190,6 +1212,10 @@ impl App {
     fn run<M: Model, T: Tools>(&mut self, agent: &Agent<M, T>, text: String) -> Option<Outgoing> {
         self.scroll = 0;
         let trimmed = text.trim();
+        if is_shell_command(trimmed) {
+            self.open_shell = true;
+            return None;
+        }
         if trimmed.starts_with('/') && !trimmed.starts_with("/identity") && trimmed != "/compact" {
             self.command(agent, trimmed);
             return None;
@@ -1460,6 +1486,64 @@ impl StderrToFile {
     }
 }
 
+impl StderrToFile {
+    /// A copy of the stderr the window started with, for a child that
+    /// takes over the terminal.
+    fn original(&self) -> Option<std::os::fd::OwnedFd> {
+        use std::os::fd::BorrowedFd;
+        let saved = self.0?;
+        // SAFETY: `saved` stays open until drop, which needs `&mut self`.
+        let fd = unsafe { BorrowedFd::borrow_raw(saved) };
+        fd.try_clone_to_owned().ok()
+    }
+}
+
+/// Runs the person's shell on the terminal and waits for it to exit. The
+/// window must already be off the screen. Like system(3), Ctrl+C and
+/// Ctrl+\ go to the shell only: this process ignores them while it waits,
+/// and the shell gets them back.
+fn run_shell(
+    shell: &str,
+    stderr: Option<std::os::fd::OwnedFd>,
+) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(shell);
+    command.env("RUNO_SHELL", "1");
+    if let Some(fd) = stderr {
+        command.stderr(fd);
+    }
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    // SAFETY: the old handlers are put back below, whatever happens.
+    let (int, quit) = unsafe {
+        (
+            libc::signal(libc::SIGINT, libc::SIG_IGN),
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN),
+        )
+    };
+    let status = command.status();
+    // SAFETY: restores what `signal` returned above.
+    unsafe {
+        libc::signal(libc::SIGINT, int);
+        libc::signal(libc::SIGQUIT, quit);
+    }
+    status
+}
+
+/// `$SHELL` when it names a program, else `/bin/sh`.
+fn shell_path() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/bin/sh".to_owned())
+}
+
 impl Drop for StderrToFile {
     fn drop(&mut self) {
         if let Some(saved) = self.0 {
@@ -1517,7 +1601,7 @@ pub async fn run<M: Model, T: Tools>(
         app.note(FIRST_START_NOTE.get(lang));
     }
 
-    let _stderr = StderrToFile::new(&state.join("tui.log"));
+    let stderr = StderrToFile::new(&state.join("tui.log"));
     // Raw mode, the alternate screen and the panic hook, then a backend
     // that stays clean on terminals that draw wide characters differently.
     drop(ratatui::init());
@@ -1553,6 +1637,35 @@ pub async fn run<M: Model, T: Tools>(
                 Ok(Some(false)) => app.note(CONFIG_SAVED.get(lang)),
                 Ok(None) => {}
                 Err(err) => app.entries.push(Entry::Error(format!("{err:#}"))),
+            }
+        }
+        if std::mem::take(&mut app.open_shell) {
+            // The shell gets the terminal as the person left it: the main
+            // screen, cooked mode and the real stderr. A running reply waits.
+            drop(keys);
+            crossterm::terminal::disable_raw_mode()?;
+            crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::terminal::LeaveAlternateScreen,
+                crossterm::cursor::Show
+            )?;
+            let shell = shell_path();
+            println!("{}", SHELL_BANNER.fill(lang, &[&shell]));
+            let status = tokio::task::block_in_place(|| run_shell(&shell, stderr.original()));
+            crossterm::execute!(
+                std::io::stdout(),
+                crossterm::terminal::EnterAlternateScreen,
+                crossterm::event::EnableMouseCapture
+            )?;
+            crossterm::terminal::enable_raw_mode()?;
+            keys = EventStream::new();
+            app.repaint = true;
+            match status {
+                Ok(status) => app.note(SHELL_BACK.fill(lang, &[&status.to_string()])),
+                Err(err) => app.entries.push(Entry::Error(
+                    SHELL_FAILED.fill(lang, &[&shell, &err.to_string()]),
+                )),
             }
         }
         if std::mem::take(&mut app.repaint) {

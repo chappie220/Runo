@@ -469,3 +469,40 @@ fn the_at_list_says_why_it_is_empty() {
 fn every_text_has_both_languages() {
     crate::i18n::assert_complete(ALL);
 }
+
+#[test]
+fn only_a_bare_bang_shell_opens_the_shell() {
+    assert!(is_shell_command("!shell"));
+    assert!(is_shell_command("  !shell \n"));
+    assert!(!is_shell_command("!shell ls"));
+    assert!(!is_shell_command("!Shell"));
+    assert!(!is_shell_command("please run !shell"));
+    assert!(!is_shell_command("/shell"));
+}
+
+#[test]
+fn bang_shell_runs_a_shell_with_the_signals_given_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("sh");
+    let out = dir.path().join("out");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$RUNO_SHELL\" > {}\ngrep -E '^SigIgn' /proc/self/status >> {}\nexit 3\n",
+            out.display(),
+            out.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let status = run_shell(script.to_str().unwrap(), None).unwrap();
+    assert_eq!(status.code(), Some(3));
+    let written = std::fs::read_to_string(&out).unwrap();
+    let mut lines = written.lines();
+    assert_eq!(lines.next(), Some("1"));
+    // SIGINT (bit 1) and SIGQUIT (bit 2) are not ignored in the shell.
+    let mask =
+        u64::from_str_radix(lines.next().unwrap().split_whitespace().nth(1).unwrap(), 16).unwrap();
+    assert_eq!(mask & 0b110, 0);
+}
