@@ -72,7 +72,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 
 - 用 BusyBox init（`BR2_INIT_BUSYBOX`），不用 OpenRC 或 systemd。服务是 `/etc/init.d/S??*` 脚本，由 `rcS` 按序号启动。
 - 开机直达 Agent 靠 `/etc/inittab`：
-  - 阶段 3：`tty1::respawn:/usr/bin/runo console`。`runo console` 是待加的入口，负责在 tty1 上运行界面，崩溃后由 init 重新拉起。
+  - 阶段 3：`tty1::respawn:/usr/libexec/runo-console`。这个脚本在 tty1 上运行 `runo tui`（有 `/dev/fb0` 时套在 `fbterm` 里显示中文），退出或崩溃后由 init 重新拉起。
   - 有了 `runod` 之后：改由 `runod` 管理 tty1，就不再提供 `getty` 登录。
   - 串口控制台（调试用）保留 `ttyAMA10` 上的 `getty`，只在开发镜像里启用。
 - 网络：有线用 BusyBox `udhcpc`；Wi‑Fi 用 `wpa_supplicant` 加 `udhcpc`（已定，不用 iwd，因此镜像里不需要 D‑Bus）。
@@ -153,7 +153,7 @@ PTY 输出保留一段环形缓冲（如 1 MB），重连时补发。
 
 | 分区 | 内容 |
 |---|---|
-| `boot` (FAT) | 固件、内核、`autoboot.txt` |
+| `boot` (FAT) | 固件、`config.txt`；每个槽的内核、设备树和 `cmdline.txt` 放在 `a/`、`b/` 下，由 `config.txt` 的 `os_prefix` 选择 |
 | `rootfs-A` / `rootfs-B` | 只读系统，A/B 轮换 |
 | `data` | 人格、记忆、会话、配置、配对信息、日志 |
 
@@ -162,7 +162,7 @@ PTY 输出保留一段环形缓冲（如 1 MB），重连时补发。
 **已定：由 `runod` 自己实现，不用 RAUC、SWUpdate、Mender**。范围只有四步：
 
 1. **下载并校验**：更新包用发布密钥签名，私钥只在发布流程里；设备内置公钥，校验通过前不写盘。
-2. **写入备用分区**：写完回读校验；任何一步失败都不碰当前分区和 `autoboot.txt`，写入中途断电也只损坏备用分区。
+2. **写入备用分区**：写完回读校验；任何一步失败都不碰当前分区和 `config.txt`，写入中途断电也只损坏备用分区。
 3. **试启动**：用 `tryboot` 重启进新系统，仅此一次。
 4. **确认**：新系统里 `runod` 自检（`data` 挂载、网络、`runod` 可连、Runo 能启动）通过后，才把新分区写成默认；
    否则重启回到旧分区，并在管理界面报告失败原因。
@@ -361,8 +361,32 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 - [x] Flutter 客户端（`client/`，Windows、Linux、Android）：设备列表（已配对 + 本网络中）、按地址配对、确认码与密码、
   Agent 与 Shell 终端（`xterm.dart`，Android 上带 Esc / Tab / Ctrl / 方向键一行）、会话、状态、日志、文件收发、客户端与撤销、打开配对窗口。
   CI（`.github/workflows/client.yml`）构建三个平台。
-- [ ] 网络类修改的“确认提交”（4.2 第 4 点）：需要把配置事务从 Runo 进程移到 `runod`，客户端在新地址上重连确认；放在阶段 3 镜像里的 `runod` 一起做。
+- [x] 网络类修改的“确认提交”（4.2 第 4 点）：
+  - 在客户端打开的会话里（`RUNO_REMOTE=1`），Agent 的 `system_change` 若涉及网络、防火墙或 `runod`
+    （服务名或路径含 network、wpa_supplicant、dhcpcd、resolv、nftables、iptables、firewall、runod 等），
+    验证通过后进入“等待确认”，120 秒内没人确认就由 `runod` 撤回（每秒检查一次；设备重启后照样到期撤回）。
+  - 确认要能连上设备才做得到，这本身就证明修改没有让客户端失联：Flutter 客户端在设备页和终端页顶部显示“保留 / 撤回”；
+    命令行用 `runo remote confirm <设备> [--reject]`，设备上用 `runo changes confirm|reject`。协议新增 `unconfirmed`、`confirm`。
+  - 有修改在等待确认时，新的修改一律拒绝，所以撤回不会覆盖之后的修改。
+  - 与 4.2 原方案的差别：配置事务仍在 Runo 进程里执行，`runod` 只负责到期撤回和接收确认；任何已信任的客户端都能确认，不限于发起者。
 - [ ] 公网登录时额外要求密码（4.8 最后一条）：随阶段 4 的公网访问一起做；局域网上只用已登记的客户端密钥。
+
+### 阶段 3 当前进度
+
+- [x] Buildroot 外部树 `buildroot/`（说明见 `buildroot/README.md`）：`runo_rpi5_defconfig`、`runo_rpi4_defconfig`，Bootlin aarch64 musl 工具链，
+  树莓派内核（6.12）与固件，BusyBox init，`runo` 包安装 CI 产出的静态二进制。
+- [x] 分区（MBR，磁盘签名固定为 `52554e4f`，所以 `cmdline.txt` 用 `root=PARTUUID=52554e4f-02`，SD、U 盘、NVMe 都能启动）：
+  1 `boot` FAT32 256 MiB（固件在根目录，`config.txt` 用 `os_prefix=a/` 指向槽 A 的内核、设备树、`cmdline.txt`）；
+  2 `rootfs-A` ext4 只读；3 `rootfs-B` 预留；4 `data` ext4，首次开机由 `S00data` 扩展到整盘。
+  4.5 的 `tryboot` 用 `tryboot.txt` 写 `os_prefix=b/` 即可，不需要 `autoboot.txt`。
+- [x] 只读根文件系统：`/etc/hostname`、`timezone`、`localtime`、`wpa_supplicant.conf`、`/root`、`/var/log` 链接到 `/data`；状态目录 `/data/runo`。
+- [x] 服务：`S00data`（挂载、扩展 `data`）、`S40network`（有线 DHCP、稳定 IPv6 地址、Wi‑Fi；首次开机可从 boot 分区的 `runo-wifi.txt` 导入）、
+  `S48time`（时区、RTC 或上次保存的时间、`ntpd`）、`S50runod`、`S60gateway`（`runo service install` 在镜像上即启用它）。
+- [x] Runo 识别自己运行在镜像上（`/etc/runo-system`）：状态目录默认 `/data/runo`；`runo daemon install` 提示已内置；
+  不提供安装浏览器；`system_inspect` 和 `system-setup` skill 说明镜像上 Wi‑Fi 与时区的位置。
+- [x] tty1 上首次启动时询问设备密码（可跳过）；管理界面加入“设备密码”。
+- [x] CI（`.github/workflows/image.yml`）构建 Pi 5 和 Pi 4 镜像，产出 `runo-<板>.img.xz`。
+- [ ] 真机验收（第 7 节）：HDMI 中文显示、Wi‑Fi、首次扩展分区、配对。
 
 ## 7. 1.0 验收流程
 

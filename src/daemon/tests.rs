@@ -202,3 +202,61 @@ async fn the_window_closes_after_too_many_wrong_passwords() {
     let late = link.finish_pairing("device password", "x").await;
     assert!(late.unwrap_err().to_string().contains("window is closed"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_that_may_cut_a_client_off_is_kept_by_a_client_or_put_back() {
+    use crate::changes::{History, Request as Change, State};
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path();
+    let client = Identity::generate().unwrap();
+    Trust::new(&super::dir(state))
+        .add(&client.public_key(), "laptop")
+        .unwrap();
+    let (_daemon, address) = daemon(state).await;
+    let link = Link::connect(&[address], &client, Some(daemon_key(state)))
+        .await
+        .unwrap();
+    let conf = dir.path().join("wpa_supplicant.conf");
+    std::fs::write(&conf, "old\n").unwrap();
+    let history = History::in_state(state);
+    let change = |content: &str, wait: u64| Change {
+        summary: "wifi".into(),
+        actor: "agent".into(),
+        files: vec![(conf.clone(), Some(content.as_bytes().to_vec()))],
+        services: Vec::new(),
+        checks: Vec::new(),
+        settle: Duration::ZERO,
+        reverts: None,
+        confirm: Some(Duration::from_secs(wait)),
+    };
+
+    let none: Vec<proto::Unconfirmed> = link.call(Request::Unconfirmed).await.unwrap();
+    assert!(none.is_empty());
+    let first = history.apply(change("new\n", 120)).await.unwrap();
+    let waiting: Vec<proto::Unconfirmed> = link.call(Request::Unconfirmed).await.unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].id, first.id);
+    assert_eq!(waiting[0].until, first.confirm_by.unwrap());
+    let kept: proto::Text = link
+        .call(Request::Confirm {
+            change: first.id,
+            keep: true,
+        })
+        .await
+        .unwrap();
+    assert!(kept.text.contains("confirmed by client:"), "{}", kept.text);
+    assert_eq!(history.load(first.id).unwrap().state, State::Applied);
+
+    // Nobody confirms this one: runod puts it back when its time is up.
+    let second = history.apply(change("newer\n", 1)).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), "newer\n");
+    let back = tokio::time::timeout(Duration::from_secs(10), async {
+        while history.load(second.id).unwrap().state == State::Unconfirmed {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(back.is_ok(), "never put back");
+    assert_eq!(history.load(second.id).unwrap().state, State::RolledBack);
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), "new\n");
+}

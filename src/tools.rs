@@ -1580,14 +1580,20 @@ impl BuiltinTools {
         }
         self.permit_change(!args.services.is_empty(), &shown)
             .await?;
+        let files: Vec<(PathBuf, Option<Vec<u8>>)> = args
+            .files
+            .into_iter()
+            .map(|f| (PathBuf::from(f.path), f.content.map(String::into_bytes)))
+            .collect();
+        // Over a client, a change that may cut it off waits to be confirmed.
+        let paths: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
+        let confirm = (std::env::var_os("RUNO_REMOTE").is_some_and(|v| v == "1")
+            && crate::changes::may_cut_off(&paths, &args.services))
+        .then_some(crate::changes::CONFIRM_WINDOW);
         let request = Request {
             summary: args.summary,
             actor: actor.id.clone(),
-            files: args
-                .files
-                .into_iter()
-                .map(|f| (PathBuf::from(f.path), f.content.map(String::into_bytes)))
-                .collect(),
+            files,
             services: args.services,
             checks,
             settle: args
@@ -1595,13 +1601,17 @@ impl BuiltinTools {
                 .map_or(DEFAULT_SETTLE, Duration::from_secs)
                 .min(MAX_SETTLE),
             reverts: None,
+            confirm,
         };
         let record = history
             .apply(request)
             .await
             .map_err(|err| format!("error: {err:#}"))?;
         if let Some((runs, session)) = &running
-            && record.state != crate::changes::State::Applied
+            && !matches!(
+                record.state,
+                crate::changes::State::Applied | crate::changes::State::Unconfirmed
+            )
         {
             runs.failed(session, &target);
         }
@@ -3267,10 +3277,9 @@ mod tests {
             .with_setup(Some(runs.clone())),
             Arc::new(Answer(true)),
         );
-        let closed = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().to_string()
-        };
+        // Nothing listens there; a port freed by a dropped listener could
+        // be taken by another test meanwhile.
+        let closed = "127.0.0.1:1";
         let wifi = call(
             "system_change",
             json!({

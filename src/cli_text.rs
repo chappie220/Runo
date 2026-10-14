@@ -301,6 +301,20 @@ const COMMANDS: &[(&str, Tr)] = &[
         ),
     ),
     (
+        "changes confirm",
+        tr(
+            "Keep a change that is waiting for confirmation",
+            "保留一次等待确认的修改",
+        ),
+    ),
+    (
+        "changes reject",
+        tr(
+            "Put back a change that is waiting for confirmation, now",
+            "立即撤回一次等待确认的修改",
+        ),
+    ),
+    (
         "daemon",
         tr(
             "The management daemon (runod): LAN pairing and remote management of this device",
@@ -447,6 +461,13 @@ const COMMANDS: &[(&str, Tr)] = &[
         tr(
             "Open the device's pairing window, for another client",
             "打开设备的配对窗口，供另一个客户端配对",
+        ),
+    ),
+    (
+        "remote confirm",
+        tr(
+            "Keep (or with --reject put back) a change on the device waiting for confirmation",
+            "保留（加 --reject 则撤回）设备上等待确认的修改",
         ),
     ),
     (
@@ -852,7 +873,44 @@ const ARGS: &[(&str, &str, Tr)] = &[
             "已配对的设备：ID、ID 开头或名称",
         ),
     ),
+    (
+        "remote confirm",
+        "device",
+        tr(
+            "Paired device: its ID, the start of it, or its name",
+            "已配对的设备：ID、ID 开头或名称",
+        ),
+    ),
+    (
+        "remote confirm",
+        "id",
+        tr(
+            "Change number; the one waiting if left out",
+            "修改编号；不填则为正在等待的那次",
+        ),
+    ),
+    (
+        "remote confirm",
+        "reject",
+        tr("Put the change back now instead", "改为立即撤回这次修改"),
+    ),
     ("changes revert", "id", tr("Change number", "修改编号")),
+    (
+        "changes confirm",
+        "id",
+        tr(
+            "Change number; the one waiting if left out",
+            "修改编号；不填则为正在等待的那次",
+        ),
+    ),
+    (
+        "changes reject",
+        "id",
+        tr(
+            "Change number; the one waiting if left out",
+            "修改编号；不填则为正在等待的那次",
+        ),
+    ),
     (
         "changes revert",
         "force",

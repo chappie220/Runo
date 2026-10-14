@@ -33,6 +33,26 @@ pub const DEFAULT_SETTLE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_secs(2);
 /// What a restart may take.
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a change that may cut the device off waits to be confirmed.
+pub const CONFIRM_WINDOW: Duration = Duration::from_secs(120);
+/// Names in services and paths that touch the network, the firewall or
+/// runod itself: changing them may cut a client off (4.2, item 4).
+const CUTS_OFF: &[&str] = &[
+    "network",
+    "interfaces",
+    "wpa_supplicant",
+    "dhcpcd",
+    "udhcpc",
+    "netplan",
+    "networkd",
+    "resolv",
+    "nftables",
+    "iptables",
+    "firewall",
+    "ufw",
+    "hostapd",
+    "runod",
+];
 /// Kernel and device trees: not configuration.
 const FORBIDDEN: &[&str] = &["/proc", "/sys", "/dev"];
 
@@ -53,15 +73,20 @@ pub enum State {
     RolledBack,
     /// Putting it back failed too: the log says what is left.
     RollbackFailed,
+    /// Applied and checked, but it may have cut the device off: it stays
+    /// only if someone confirms it from a client or the device in time
+    /// (4.2, item 4); otherwise runod puts it back.
+    Unconfirmed,
 }
 
 impl State {
-    fn word(self) -> &'static str {
+    pub fn word(self) -> &'static str {
         match self {
             State::Pending => "pending",
             State::Applied => "applied",
             State::RolledBack => "rolled back",
             State::RollbackFailed => "ROLLBACK FAILED",
+            State::Unconfirmed => "waiting for confirmation",
         }
     }
 }
@@ -108,9 +133,20 @@ pub struct Record {
     /// What happened: restarts, checks, putting back.
     #[serde(default)]
     pub log: Vec<String>,
+    /// While unconfirmed: the Unix time it is put back unless confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_by: Option<i64>,
 }
 
 impl Record {
+    /// Its checks, as they were asked for.
+    fn check_list(&self) -> Vec<(Check, String)> {
+        self.checks
+            .iter()
+            .filter_map(|c| Some((Check::parse(&c.kind)?, c.target.clone())))
+            .collect()
+    }
+
     /// One line for a list.
     pub fn line(&self) -> String {
         let files: Vec<String> = self
@@ -169,6 +205,11 @@ impl Record {
                 "Putting it back failed: the log above says what is left. Fix it by hand or revert again.\n",
             ),
             State::Pending => out.push_str("Still being applied.\n"),
+            State::Unconfirmed => out.push_str(
+                "It may cut the device off from the client, so it is kept only when confirmed: \
+                 the user confirms it (Keep) in the client app, with `runo remote confirm`, or with `runo changes confirm` on the device, \
+                 within two minutes; otherwise it is put back by itself.\n",
+            ),
         }
         out
     }
@@ -186,6 +227,8 @@ pub struct Request {
     pub checks: Vec<(Check, String)>,
     pub settle: Duration,
     pub reverts: Option<u64>,
+    /// Kept only if confirmed within this time (4.2, item 4).
+    pub confirm: Option<Duration>,
 }
 
 /// Which side of a change to put on disk.
@@ -307,6 +350,12 @@ impl History {
         let Some(_lock) = self.lock()? else {
             bail!("another change is being applied; try again when it has finished");
         };
+        if let Some(waiting) = self.unconfirmed().first() {
+            bail!(
+                "change #{} is waiting for confirmation: confirm or revert it first",
+                waiting.id
+            );
+        }
         let id = self.ids().last().map_or(1, |id| id + 1);
         let entry = self.entry(id);
         for side in [Side::Before, Side::After] {
@@ -330,6 +379,7 @@ impl History {
             state: State::Pending,
             reverts: request.reverts,
             log: Vec::new(),
+            confirm_by: None,
         };
         // The snapshot first, then the record: from here a crash is put back.
         for (index, (path, content)) in files.iter().enumerate() {
@@ -370,7 +420,20 @@ impl History {
             },
         };
         match failed {
-            None => record.state = State::Applied,
+            None => match request.confirm {
+                Some(wait) => {
+                    let by = chrono::Utc::now().timestamp() + wait.as_secs() as i64;
+                    record.state = State::Unconfirmed;
+                    record.confirm_by = Some(by);
+                    record.log.push(format!(
+                        "waiting for confirmation until {}",
+                        chrono::DateTime::from_timestamp(by, 0)
+                            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                            .unwrap_or_default()
+                    ));
+                }
+                None => record.state = State::Applied,
+            },
             Some(why) => {
                 record.log.push(format!("{why}: putting everything back"));
                 self.roll_back(&mut record, &request.checks, request.settle)
@@ -505,8 +568,78 @@ impl History {
             checks,
             settle: DEFAULT_SETTLE,
             reverts: Some(id),
+            confirm: None,
         })
         .await
+    }
+
+    /// The changes waiting for confirmation. No change is made while one
+    /// waits, so only the newest can be.
+    pub fn unconfirmed(&self) -> Vec<Record> {
+        self.ids()
+            .last()
+            .and_then(|id| self.load(*id).ok())
+            .filter(|r| r.state == State::Unconfirmed)
+            .into_iter()
+            .collect()
+    }
+
+    /// Settles change `id`, waiting for confirmation: `keep` confirms it,
+    /// otherwise it is put back now.
+    pub async fn confirm(&self, id: u64, keep: bool, actor: &str) -> Result<Record> {
+        let Some(_lock) = self.lock()? else {
+            bail!("another change is being applied; try again when it has finished");
+        };
+        let mut record = self.load(id)?;
+        if record.state != State::Unconfirmed {
+            bail!(
+                "change #{id} is {}, not waiting for confirmation",
+                record.state.word()
+            );
+        }
+        record.confirm_by = None;
+        if keep {
+            record.state = State::Applied;
+            record.log.push(format!("confirmed by {actor}"));
+        } else {
+            record
+                .log
+                .push(format!("{actor} turned it down: putting everything back"));
+            let checks = record.check_list();
+            self.roll_back(&mut record, &checks, DEFAULT_SETTLE).await;
+        }
+        self.save(&record)?;
+        Ok(record)
+    }
+
+    /// Puts back the changes whose time to be confirmed ran out by `now`
+    /// (Unix time); nothing while another change is being applied.
+    pub async fn expire(&self, now: i64) -> Vec<Record> {
+        let due: Vec<Record> = self
+            .unconfirmed()
+            .into_iter()
+            .filter(|r| r.confirm_by.is_none_or(|by| by <= now))
+            .collect();
+        if due.is_empty() {
+            return due;
+        }
+        let Ok(Some(_lock)) = self.lock() else {
+            return Vec::new();
+        };
+        let mut expired = Vec::new();
+        for mut record in due {
+            record.confirm_by = None;
+            record
+                .log
+                .push("not confirmed in time: putting everything back".into());
+            let checks = record.check_list();
+            self.roll_back(&mut record, &checks, DEFAULT_SETTLE).await;
+            if let Err(err) = self.save(&record) {
+                eprintln!("config history: cannot save change #{}: {err:#}", record.id);
+            }
+            expired.push(record);
+        }
+        expired
     }
 
     /// Puts back every change that was cut off before it finished. Nothing
@@ -537,6 +670,15 @@ impl History {
         }
         recovered
     }
+}
+
+/// Whether a change to these files and services may cut a client off.
+pub fn may_cut_off(files: &[PathBuf], services: &[String]) -> bool {
+    let touches = |text: &str| {
+        let text = text.to_lowercase();
+        CUTS_OFF.iter().any(|word| text.contains(word))
+    };
+    services.iter().any(|s| touches(s)) || files.iter().any(|f| touches(&f.to_string_lossy()))
 }
 
 /// The files a request may write, symlinks resolved; `Err` says why not.
@@ -665,7 +807,63 @@ mod tests {
             checks: Vec::new(),
             settle: Duration::ZERO,
             reverts: None,
+            confirm: None,
         }
+    }
+
+    #[test]
+    fn network_firewall_and_runod_changes_may_cut_off() {
+        let path = |p: &str| vec![PathBuf::from(p)];
+        assert!(may_cut_off(&path("/etc/wpa_supplicant.conf"), &[]));
+        assert!(may_cut_off(&path("/etc/nftables.conf"), &[]));
+        assert!(may_cut_off(&[], &["S40network".into()]));
+        assert!(may_cut_off(&[], &["NetworkManager".into()]));
+        assert!(may_cut_off(&[], &["runod".into()]));
+        assert!(!may_cut_off(&path("/etc/timezone"), &["S48time".into()]));
+        assert!(!may_cut_off(&path("/etc/ntp.conf"), &[]));
+    }
+
+    #[tokio::test]
+    async fn a_change_waiting_for_confirmation_is_kept_or_put_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = History::without_restarts(dir.path().join(DIR));
+        let conf = dir.path().join("wpa_supplicant.conf");
+        std::fs::write(&conf, "old\n").unwrap();
+        let waiting = |content: &'static str| Request {
+            confirm: Some(Duration::from_secs(120)),
+            ..request("wifi", vec![(conf.clone(), Some(content))])
+        };
+
+        let first = history.apply(waiting("new\n")).await.unwrap();
+        assert_eq!(first.state, State::Unconfirmed);
+        assert!(first.report().contains("confirm"));
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "new\n");
+        // Nothing else until it is settled.
+        let err = history.apply(waiting("other\n")).await.unwrap_err();
+        assert!(format!("{err}").contains("#1 is waiting"));
+        // Not yet due.
+        assert!(
+            history
+                .expire(chrono::Utc::now().timestamp())
+                .await
+                .is_empty()
+        );
+        let kept = history.confirm(first.id, true, "client:abc").await.unwrap();
+        assert_eq!(kept.state, State::Applied);
+        assert!(kept.confirm_by.is_none());
+        assert!(history.confirm(first.id, true, "cli").await.is_err());
+
+        let second = history.apply(waiting("newer\n")).await.unwrap();
+        let expired = history.expire(second.confirm_by.unwrap()).await;
+        assert_eq!(expired.len(), 1);
+        assert_eq!(history.load(second.id).unwrap().state, State::RolledBack);
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "new\n");
+
+        let third = history.apply(waiting("newest\n")).await.unwrap();
+        let refused = history.confirm(third.id, false, "cli").await.unwrap();
+        assert_eq!(refused.state, State::RolledBack);
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "new\n");
+        assert!(history.unconfirmed().is_empty());
     }
 
     #[tokio::test]

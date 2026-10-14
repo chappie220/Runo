@@ -314,6 +314,19 @@ impl Conn {
                     json(daemon.close_pairing())
                 }
             }
+            Request::Unconfirmed => json(daemon.unconfirmed()),
+            Request::Confirm { change, keep } => {
+                let record = crate::changes::History::in_state(&daemon.state)
+                    .confirm(change, keep, &format!("client:{client}"))
+                    .await?;
+                super::log(&format!(
+                    "change #{change} {} by client {client}",
+                    if keep { "confirmed" } else { "turned down" }
+                ));
+                json(proto::Text {
+                    text: record.report(),
+                })
+            }
             Request::PairBegin { .. } | Request::PairReveal { .. } | Request::PairFinish { .. } => {
                 unreachable!()
             }

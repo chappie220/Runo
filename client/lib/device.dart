@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'changes.dart';
 import 'main.dart';
 import 'src/rust/api/client.dart' as rust;
 import 'store.dart';
@@ -112,15 +113,18 @@ class _DevicePageState extends State<DevicePage> {
         ),
       );
     } else {
-      body = TabBarView(
+      body = ChangeBanner(
         key: ValueKey(generation),
-        children: [
-          _Sessions(page: this, connection: connection),
-          _Text(load: () => guard((c) => c.status(lang: t.lang))),
-          _Text(load: () => guard((c) => c.logs(lang: t.lang)), tail: true),
-          _Files(page: this),
-          _Clients(page: this),
-        ],
+        connection: connection,
+        child: TabBarView(
+          children: [
+            _Sessions(page: this, connection: connection),
+            _Text(load: () => guard((c) => c.status(lang: t.lang))),
+            _Text(load: () => guard((c) => c.logs(lang: t.lang)), tail: true),
+            _Files(page: this),
+            _Clients(page: this),
+          ],
+        ),
       );
     }
     return DefaultTabController(

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart' as xterm;
 
+import 'changes.dart';
 import 'src/rust/api/client.dart' as rust;
 import 'store.dart';
 import 'text.dart';
@@ -125,50 +126,53 @@ class _TerminalPageState extends State<TerminalPage> {
         ],
       ),
       body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: xterm.TerminalView(
-                terminal,
-                focusNode: focus,
-                autofocus: true,
-                readOnly: ended,
-                padding: const EdgeInsets.all(4),
-                textStyle: const xterm.TerminalStyle(fontSize: 14),
-              ),
-            ),
-            if (touch)
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    key('Esc', '\x1b'),
-                    key('Tab', '\t'),
-                    TextButton(
-                      onPressed: ended
-                          ? null
-                          : () => setState(() => ctrl = !ctrl),
-                      style: ctrl
-                          ? TextButton.styleFrom(
-                              backgroundColor: Theme.of(context)
-                                  .colorScheme
-                                  .primaryContainer,
-                            )
-                          : null,
-                      child: const Text('Ctrl'),
-                    ),
-                    key('↑', '\x1b[A'),
-                    key('↓', '\x1b[B'),
-                    key('←', '\x1b[D'),
-                    key('→', '\x1b[C'),
-                    key('^C', '\x03'),
-                    key('|', '|'),
-                    key('/', '/'),
-                    key('-', '-'),
-                  ],
+        child: ChangeBanner(
+          connection: widget.connection,
+          child: Column(
+            children: [
+              Expanded(
+                child: xterm.TerminalView(
+                  terminal,
+                  focusNode: focus,
+                  autofocus: true,
+                  readOnly: ended,
+                  padding: const EdgeInsets.all(4),
+                  textStyle: const xterm.TerminalStyle(fontSize: 14),
                 ),
               ),
-          ],
+              if (touch)
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      key('Esc', '\x1b'),
+                      key('Tab', '\t'),
+                      TextButton(
+                        onPressed: ended
+                            ? null
+                            : () => setState(() => ctrl = !ctrl),
+                        style: ctrl
+                            ? TextButton.styleFrom(
+                                backgroundColor: Theme.of(context)
+                                    .colorScheme
+                                    .primaryContainer,
+                              )
+                            : null,
+                        child: const Text('Ctrl'),
+                      ),
+                      key('↑', '\x1b[A'),
+                      key('↓', '\x1b[B'),
+                      key('←', '\x1b[D'),
+                      key('→', '\x1b[C'),
+                      key('^C', '\x03'),
+                      key('|', '|'),
+                      key('/', '/'),
+                      key('-', '-'),
+                    ],
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

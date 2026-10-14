@@ -317,6 +317,13 @@ enum RemoteAction {
     Revoke { device: String, client: String },
     /// Open the device's pairing window, for another client.
     OpenPairing { device: String },
+    /// Keep (or put back) a change on the device waiting for confirmation.
+    Confirm {
+        device: String,
+        id: Option<u64>,
+        #[arg(long)]
+        reject: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -473,6 +480,12 @@ enum ChangesAction {
         #[arg(long)]
         force: bool,
     },
+    Confirm {
+        id: Option<u64>,
+    },
+    Reject {
+        id: Option<u64>,
+    },
 }
 
 #[tokio::main]
@@ -609,6 +622,9 @@ async fn run(cli: Cli) -> Result<()> {
             RemoteAction::Clients { device } => remote::clients(&state, device).await,
             RemoteAction::Revoke { device, client } => remote::revoke(&state, device, client).await,
             RemoteAction::OpenPairing { device } => remote::pairing(&state, device, true).await,
+            RemoteAction::Confirm { device, id, reject } => {
+                remote::confirm(&state, device, *id, !reject).await
+            }
         };
     }
     // Needs no config or model: the way back when a change broke them.
@@ -632,6 +648,18 @@ async fn run(cli: Cli) -> Result<()> {
                 if record.state != changes::State::Applied {
                     std::process::exit(1);
                 }
+                Ok(())
+            }
+            ChangesAction::Confirm { id } | ChangesAction::Reject { id } => {
+                let keep = matches!(action, Some(ChangesAction::Confirm { .. }));
+                let id = match id {
+                    Some(id) => *id,
+                    None => match history.unconfirmed().first() {
+                        Some(record) => record.id,
+                        None => bail!("no change is waiting for confirmation"),
+                    },
+                };
+                print!("{}", history.confirm(id, keep, access::CLI).await?.report());
                 Ok(())
             }
         };

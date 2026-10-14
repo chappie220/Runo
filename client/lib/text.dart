@@ -96,4 +96,12 @@ class T {
   String lastSeen(String when) => t('last seen $when', '最近 $when');
   String get never => t('never', '从未');
   String get keys => t('Keys', '按键');
+  String waiting(int id, String summary, int seconds) => t(
+    'Change #$id ($summary) may have cut this client off. Keep it? It is put back in $seconds s.',
+    '修改 #$id（$summary）可能导致本客户端失联。保留吗？$seconds 秒后自动撤回。',
+  );
+  String get keep => t('Keep', '保留');
+  String get putBack => t('Put back', '撤回');
+  String get kept => t('Change kept.', '已保留修改。');
+  String get putBackDone => t('Change put back.', '已撤回修改。');
 }

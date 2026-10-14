@@ -228,6 +228,14 @@ pub struct SessionInfo {
     pub attached: u32,
 }
 
+/// A configuration change on the device waiting for confirmation.
+pub struct ChangeInfo {
+    pub id: u64,
+    pub summary: String,
+    /// Unix time it is put back unless kept.
+    pub until: i64,
+}
+
 pub struct ClientInfo {
     pub id: String,
     pub name: String,
@@ -360,6 +368,26 @@ impl Connection {
     pub async fn revoke(&self, client: String) -> Result<()> {
         let _: proto::Client = self.call(Request::Revoke { client }).await?;
         Ok(())
+    }
+
+    /// The device's configuration changes waiting for confirmation (4.2):
+    /// each is put back at its `until` unless kept.
+    pub async fn unconfirmed(&self) -> Result<Vec<ChangeInfo>> {
+        let changes: Vec<proto::Unconfirmed> = self.call(Request::Unconfirmed).await?;
+        Ok(changes
+            .into_iter()
+            .map(|c| ChangeInfo {
+                id: c.id,
+                summary: c.summary,
+                until: c.until,
+            })
+            .collect())
+    }
+
+    /// Keeps change `id`, or puts it back now; what happened.
+    pub async fn confirm(&self, id: u64, keep: bool) -> Result<String> {
+        let report: proto::Text = self.call(Request::Confirm { change: id, keep }).await?;
+        Ok(report.text)
     }
 
     /// Opens the device's pairing window for another client.

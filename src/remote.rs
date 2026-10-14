@@ -576,6 +576,27 @@ pub async fn pairing(state: &Path, device: &str, open: bool) -> Result<()> {
     Ok(())
 }
 
+/// Keeps change `id` (or the one waiting) on the device, or puts it back.
+pub async fn confirm(state: &Path, device: &str, id: Option<u64>, keep: bool) -> Result<()> {
+    let link = connect(state, device).await?;
+    let change = match id {
+        Some(id) => id,
+        None => {
+            let waiting: Vec<proto::Unconfirmed> = link.call(Request::Unconfirmed).await?;
+            match waiting.first() {
+                Some(change) => change.id,
+                None => bail!(
+                    "no change is waiting for confirmation on {}",
+                    link.welcome().name
+                ),
+            }
+        }
+    };
+    let report: proto::Text = link.call(Request::Confirm { change, keep }).await?;
+    print!("{}", report.text);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -114,6 +114,13 @@ pub enum Request {
     Pairing {
         open: bool,
     },
+    /// The configuration changes waiting for confirmation.
+    Unconfirmed,
+    /// Keeps a change waiting for confirmation, or puts it back now.
+    Confirm {
+        change: u64,
+        keep: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +212,16 @@ pub struct Client {
     /// The client asking.
     #[serde(default)]
     pub this: bool,
+}
+
+/// A configuration change that may have cut the device off: it is put
+/// back at `until` unless a client confirms it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Unconfirmed {
+    pub id: u64,
+    pub summary: String,
+    /// Unix time.
+    pub until: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

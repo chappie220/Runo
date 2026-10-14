@@ -162,6 +162,19 @@ impl Daemon {
         self.pairing()
     }
 
+    /// The configuration changes waiting for a client to confirm them.
+    pub fn unconfirmed(&self) -> Vec<proto::Unconfirmed> {
+        crate::changes::History::in_state(&self.state)
+            .unconfirmed()
+            .into_iter()
+            .map(|r| proto::Unconfirmed {
+                id: r.id,
+                summary: r.summary,
+                until: r.confirm_by.unwrap_or_default(),
+            })
+            .collect()
+    }
+
     pub fn clients(&self, asking: Option<&str>) -> Result<Vec<proto::Client>> {
         let connected: Vec<String> = self
             .connections
@@ -343,6 +356,15 @@ pub async fn serve(
             // Closing it otherwise goes through `close_pairing`.
             if watcher.window.lock().unwrap().expired(now()) {
                 watcher.close_pairing();
+            }
+            // A change nobody confirmed in time is put back (4.2).
+            let history = crate::changes::History::in_state(&watcher.state);
+            for record in history.expire(now()).await {
+                log(&format!(
+                    "change #{} not confirmed in time: {}",
+                    record.id,
+                    record.state.word()
+                ));
             }
         }
     });

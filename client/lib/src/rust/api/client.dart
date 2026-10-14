@@ -40,6 +40,9 @@ abstract class Connection implements RustOpaqueInterface {
   /// Why the connection closed, once it has.
   String? closed();
 
+  /// Keeps change `id`, or puts it back now; what happened.
+  Future<String> confirm({required BigInt id, required bool keep});
+
   String get deviceId;
 
   String get deviceName;
@@ -81,6 +84,10 @@ abstract class Connection implements RustOpaqueInterface {
     required int cols,
     required int rows,
   });
+
+  /// The device's configuration changes waiting for confirmation (4.2):
+  /// each is put back at its `until` unless kept.
+  Future<List<ChangeInfo>> unconfirmed();
 
   /// Sends the local file `local` to `remote` on the device.
   Future<BigInt> upload({required String local, required String remote});
@@ -126,6 +133,33 @@ abstract class Terminal implements RustOpaqueInterface {
 
   /// Sends typed keys.
   void write({required List<int> data});
+}
+
+/// A configuration change on the device waiting for confirmation.
+class ChangeInfo {
+  final BigInt id;
+  final String summary;
+
+  /// Unix time it is put back unless kept.
+  final PlatformInt64 until;
+
+  const ChangeInfo({
+    required this.id,
+    required this.summary,
+    required this.until,
+  });
+
+  @override
+  int get hashCode => id.hashCode ^ summary.hashCode ^ until.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChangeInfo &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          summary == other.summary &&
+          until == other.until;
 }
 
 class ClientInfo {
