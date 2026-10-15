@@ -1,0 +1,2 @@
+# The random seed is kept on /data: the root file system is read-only.
+SEEDRNG_ARGS="--seed-dir=/data/seedrng"
