@@ -54,6 +54,13 @@ jobs:
           path: ~/br/dl
           key: buildroot-dl-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot/configs/*') }}
           restore-keys: buildroot-dl-${{ env.BUILDROOT_VERSION }}-
+      # The compiler cache from the last run on this board: a kernel that did
+      # not change comes out of it instead of an hour of compiling.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/br/ccache
+          key: buildroot-ccache-${{ matrix.board }}-${{ github.run_id }}
+          restore-keys: buildroot-ccache-${{ matrix.board }}-
       - name: Configure
         run: |
           make -C ~/br/buildroot-$BUILDROOT_VERSION O=$HOME/br/out \
@@ -63,7 +70,17 @@ jobs:
         # into the image; without it the image takes no system updates.
         env:
           RUNO_UPDATE_KEY: ${{ secrets.RUNO_UPDATE_SIGNING_KEY }}
-        run: BR2_DL_DIR=$HOME/br/dl make -C ~/br/out
+        run: |
+          export BR2_DL_DIR=$HOME/br/dl BR2_CCACHE_DIR=$HOME/br/ccache
+          make -C ~/br/out
+          ~/br/out/host/bin/ccache -d ~/br/ccache --show-stats || true
+      # Saved even when the build fails, so the next run starts warm.
+      - uses: actions/cache/save@v4
+        if: always()
+        continue-on-error: true
+        with:
+          path: ~/br/ccache
+          key: buildroot-ccache-${{ matrix.board }}-${{ github.run_id }}
       - run: |
           mkdir image
           cp ~/br/out/images/sdcard.img.xz image/runo-${{ matrix.board }}.img.xz
