@@ -1,9 +1,10 @@
 #!/bin/sh
-# tty1: the Agent's window. It runs inside fbterm, which draws Chinese,
-# when there is a framebuffer; init starts it again when it ends.
-export HOME=/root RUNO_HOME=/data/runo LANG=C.UTF-8 TERM=linux
+# tty1: the Agent's window. With a framebuffer, `runo console` draws it
+# itself, Chinese included, and runs `runo tui` inside; without one the
+# Agent runs on the kernel's console. init starts it again when it ends.
+export HOME=/data/root RUNO_HOME=/data/runo LANG=C.UTF-8 TERM=linux
 cd "$HOME" || cd /
-if [ -e /dev/fb0 ] && [ -x /usr/bin/fbterm ]; then
-	exec /usr/bin/fbterm -n "WenQuanYi Zen Hei Mono" -s 20 -- /usr/bin/runo tui
+if [ -e /dev/fb0 ]; then
+	exec /usr/bin/runo console
 fi
 exec /usr/bin/runo tui

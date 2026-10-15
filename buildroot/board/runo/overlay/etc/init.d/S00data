@@ -102,6 +102,8 @@ start() {
 	chmod 0700 /data/root /data/runo
 	[ -s /data/etc/hostname ] || echo runo > /data/etc/hostname
 	[ -s /data/etc/timezone ] || echo Etc/UTC > /data/etc/timezone
+	[ -e /data/etc/localtime ] ||
+		ln -sf "/usr/share/zoneinfo/$(cat /data/etc/timezone)" /data/etc/localtime
 	hostname -F /data/etc/hostname
 	echo "$rootpart" > /run/root-partition
 }
