@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# The clock: from the board's RTC (Pi 5) or, without one (Pi 4), from
+# the time saved at the last shutdown, so that it is not years behind
+# before NTP answers; then BusyBox ntpd keeps it. The timezone is the
+# zone named in /etc/timezone (on /data); restarting applies a new one.
+
+SAVED=/data/etc/clock
+
+start() {
+	zone=$(cat /data/etc/timezone 2>/dev/null)
+	if [ -f "/usr/share/zoneinfo/$zone" ]; then
+		ln -sf "/usr/share/zoneinfo/$zone" /data/etc/localtime
+	else
+		echo "time: unknown timezone \"$zone\", keeping the last one"
+	fi
+	if [ -e /dev/rtc0 ]; then
+		hwclock -s -u 2>/dev/null
+	elif [ -s $SAVED ] && [ "$(cat $SAVED)" -gt "$(date +%s)" ]; then
+		date -s "@$(cat $SAVED)" >/dev/null
+	fi
+	start-stop-daemon -S -q -x /usr/sbin/ntpd -- -S /etc/init.d/S48time \
+		-p 0.pool.ntp.org -p 1.pool.ntp.org -p ntp.aliyun.com
+}
+
+save() {
+	date +%s > $SAVED
+	[ -e /dev/rtc0 ] && hwclock -w -u 2>/dev/null
+}
+
+case "$1" in
+	start) start ;;
+	stop) start-stop-daemon -K -q -x /usr/sbin/ntpd; save ;;
+	restart) start-stop-daemon -K -q -x /usr/sbin/ntpd; sleep 1; start ;;
+	status)
+		if pidof ntpd >/dev/null; then echo running; else echo stopped; exit 3; fi
+		;;
+	# ntpd -S runs this on every step and periodic sync.
+	step|periodic|stratum|unsync) save ;;
+	*) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

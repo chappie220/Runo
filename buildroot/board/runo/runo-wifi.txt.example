@@ -1,0 +1,7 @@
+# To join a Wi-Fi network on the first boot, copy this file to
+# runo-wifi.txt on this partition and fill it in. Runo reads it once,
+# keeps the network in its own settings and deletes the file.
+ssid=
+password=
+# Two letters, for the radio rules of where you are (CN, US, DE, ...).
+country=CN

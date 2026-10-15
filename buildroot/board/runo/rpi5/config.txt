@@ -1,0 +1,7 @@
+# Runo, Raspberry Pi 5. The kernel, device trees and cmdline.txt come
+# from the active slot's directory.
+os_prefix=a/
+kernel=Image
+arm_64bit=1
+disable_overscan=1
+auto_initramfs=0

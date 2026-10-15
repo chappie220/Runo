@@ -1,0 +1,11 @@
+# The root file system and /dev without an initramfs.
+CONFIG_EXT4_FS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+# Stable IPv6 addresses (S40network) and the firewall (nftables).
+CONFIG_IPV6=y
+CONFIG_NF_TABLES=m
+CONFIG_NF_TABLES_INET=y
