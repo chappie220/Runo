@@ -593,7 +593,18 @@ async fn run(cli: Cli) -> Result<()> {
             lang: cli.lang,
             args,
         };
-        std::process::exit(console::run(options, None).await?);
+        // Chinese input; the words the user picks are kept with the state.
+        let user = config::state_dir()
+            .ok()
+            .map(|dir| dir.join("pinyin-words.tsv"));
+        let ime = match console::ime::pinyin(user) {
+            Ok(ime) => Some(ime),
+            Err(err) => {
+                eprintln!("pinyin: {err:#}");
+                None
+            }
+        };
+        std::process::exit(console::run(options, ime).await?);
     }
     if let Command::Service { action } = &cli.command {
         return match action {

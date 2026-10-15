@@ -25,8 +25,6 @@ pub enum Key {
 }
 
 /// What an input method did with a key.
-// Made by input methods only.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     /// Not its key: it goes to the program as usual.
@@ -273,6 +271,54 @@ fn ime_key(sym: Sym) -> Option<Key> {
     })
 }
 
+/// The built-in pinyin input method, with the user's words in `user`.
+pub fn pinyin(user: Option<std::path::PathBuf>) -> anyhow::Result<Box<dyn InputMethod>> {
+    let engine = crate::pinyin::Engine::load(user)?;
+    Ok(Box::new(crate::pinyin::Composer::new(engine)))
+}
+
+impl InputMethod for crate::pinyin::Composer {
+    fn key(&mut self, key: Key) -> Outcome {
+        use crate::pinyin::{Key as K, Outcome as O};
+        let key = match key {
+            Key::Char(c) => K::Char(c),
+            Key::Backspace => K::Backspace,
+            Key::Enter => K::Enter,
+            Key::Space => K::Space,
+            Key::Escape => K::Escape,
+            Key::Left => K::Left,
+            Key::Right => K::Right,
+            Key::Up => K::Up,
+            Key::Down => K::Down,
+            Key::PageUp => K::PageUp,
+            Key::PageDown => K::PageDown,
+            Key::Digit(d) => K::Digit(d),
+        };
+        match crate::pinyin::Composer::key(self, key) {
+            O::Pass => Outcome::Pass,
+            O::Consumed => Outcome::Consumed,
+            O::Commit(text) => Outcome::Commit(text),
+        }
+    }
+
+    fn preedit(&self) -> String {
+        crate::pinyin::Composer::preedit(self)
+    }
+
+    fn page(&self) -> (Vec<String>, usize) {
+        let (words, chosen) = crate::pinyin::Composer::page(self);
+        (words.to_vec(), chosen)
+    }
+
+    fn is_empty(&self) -> bool {
+        crate::pinyin::Composer::is_empty(self)
+    }
+
+    fn save(&mut self) -> anyhow::Result<()> {
+        crate::pinyin::Composer::save(self)
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -460,5 +506,18 @@ pub mod tests {
         let note = typing.bar(20, Lang::En, Some("ended"));
         assert_eq!(note.len(), 20);
         assert_eq!(note[5].ch, 'e');
+    }
+
+    #[test]
+    fn the_pinyin_input_method_types_chinese() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut typing = Typing::new(Some(pinyin(Some(dir.path().join("words.tsv"))).unwrap()));
+        typing.toggle();
+        assert!(typing.chinese());
+        assert_eq!(type_text(&mut typing, "nihao"), "");
+        assert_eq!(
+            typing.press(&press(Sym::Char(' ')), false),
+            "你好".as_bytes()
+        );
     }
 }
