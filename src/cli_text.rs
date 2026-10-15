@@ -24,6 +24,13 @@ const COMMANDS: &[(&str, Tr)] = &[
         tr("Full-screen chat in the terminal", "在终端里全屏聊天"),
     ),
     (
+        "console",
+        tr(
+            "The Agent's window drawn on the screen (framebuffer), with Chinese",
+            "在屏幕上（帧缓冲）绘制 Agent 窗口，可显示中文",
+        ),
+    ),
+    (
         "serve",
         tr(
             "Run the Gateway: Web UI and WebSocket API",
@@ -537,6 +544,14 @@ const ARGS: &[(&str, &str, Tr)] = &[
     ("*", "version", tr("Print version", "显示版本")),
     ("*", "session", tr("Session name", "会话名")),
     ("ask", "message", tr("Message to send", "要发送的消息")),
+    (
+        "console",
+        "args",
+        tr(
+            "Arguments for `runo tui`, after `--`",
+            "传给 `runo tui` 的参数，写在 `--` 之后",
+        ),
+    ),
     (
         "backup",
         "file",

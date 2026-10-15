@@ -72,7 +72,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 
 - 用 BusyBox init（`BR2_INIT_BUSYBOX`），不用 OpenRC 或 systemd。服务是 `/etc/init.d/S??*` 脚本，由 `rcS` 按序号启动。
 - 开机直达 Agent 靠 `/etc/inittab`：
-  - 阶段 3：`tty1::respawn:/usr/libexec/runo-console`。这个脚本在 tty1 上运行 `runo tui`（有 `/dev/fb0` 时套在 `fbterm` 里显示中文），退出或崩溃后由 init 重新拉起。
+  - 阶段 3：`tty1::respawn:/usr/libexec/runo-console`。这个脚本在 tty1 上运行 `runo console`（Runo 自绘的终端，见 4.7，里面运行 `runo tui`；没有 `/dev/fb0` 时直接运行 `runo tui`），退出或崩溃后由 init 重新拉起。
   - 有了 `runod` 之后：改由 `runod` 管理 tty1，就不再提供 `getty` 登录。
   - 串口控制台（调试用）保留 `ttyAMA10` 上的 `getty`，只在开发镜像里启用。
 - 网络：有线用 BusyBox `udhcpc`；Wi‑Fi 用 `wpa_supplicant` 加 `udhcpc`（已定，不用 iwd，因此镜像里不需要 D‑Bus）。
@@ -88,7 +88,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 | 网络 | `wpa_supplicant`、`nftables`（IPv6 公网入站防火墙，见 4.9）、`ca-certificates`（Runo 用系统根证书验证 TLS）；局域网发现由 Runo 自带（见 4.8），不装 avahi、mdnsd |
 | 时间与语言 | `tzdata`；中文字体 `wqy-zenhei`（Buildroot 已有；Noto CJK 没有现成包） |
 | Runo | `runo` 静态二进制；以后加 `runod` |
-| 本地中文显示 | `fbterm`：只在阶段 3 第一版镜像里用于验证，1.0 由 Runo 自己绘制（见 4.7） |
+| 本地中文显示 | Runo 自己绘制（`runo console`，见 4.7）；阶段 3 第一版镜像曾用 `fbterm` 验证，已去掉 |
 | 不放 | 包管理器、`sudo`、D‑Bus、Chromium（Buildroot 没有 Chromium 包）、`getty` 登录（发布镜像） |
 
 ### 3.4 对 Agent 和现有代码的影响
@@ -188,6 +188,10 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
      - 字体渲染用 `wqy-zenhei`。
      - 键盘直接从 evdev 读取。
      - 在这里内置拼音输入法（见下）。
+     - 已实现为 `runo console`（`src/console/`）：先经帧缓冲 `/dev/fb0`（DRM 的 fbdev 兼容层）绘制，支持 32 位和 16 位像素；
+       字体用 `ab_glyph` 按需读取字形（`fontdue` 会在加载时解析全部 4.5 万个字形，占用两百多 MB 内存）；
+       终端解析用 `vte`；最下面一行是输入法栏（中/英、拼写、候选），Ctrl+空格或单按 Shift 切换；
+       字体和字号可用 `RUNO_CONSOLE_FONT`、`RUNO_CONSOLE_FONT_SIZE`（每 em 像素数）改；不能绘制时退回直接运行 `runo tui`。
 - 输入：先支持远程客户端输入中文（客户端本机输入法）；本地键盘中文输入作为单独验收项，在 Runo 自绘终端里内置（Buildroot 没有 fcitx5）。
 - **拼音输入（已定：带词库联想）**：
   - 全拼，支持词组、整句切分（如 `nihao`、`xian` 的多种切法）和简拼（如 `zg` → 中国）。

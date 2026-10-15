@@ -21,6 +21,9 @@ name = "runo"
 path = "src/main.rs"
 
 [dependencies]
+# The console's font: a glyph is read when first drawn (fontdue parses all
+# 45,000 of WenQuanYi Zen Hei at start, over 200 MB).
+ab_glyph = { version = "0.2.32", default-features = false, features = ["std"] }
 anyhow = "1.0.104"
 async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
 async-trait = "0.1.92"
@@ -53,7 +56,10 @@ tokio-rustls = "0.26.6"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots", "connect"] }
 toml = "1.1.8"
 toml_edit = { version = "0.25.17", default-features = false, features = ["parse", "display"] }
+# The faces in a font collection (ab_glyph reads it too).
+ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
 unicode-width = "0.2.2"
+vte = "0.15.0"
 
 [profile.release]
 # Small binary and low RSS on Raspberry Pi class hosts.
@@ -64,4 +70,5 @@ panic = "abort"
 strip = true
 
 [dev-dependencies]
+png = "0.18.1"
 tempfile = "3.27.0"

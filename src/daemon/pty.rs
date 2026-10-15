@@ -84,13 +84,15 @@ fn winsize(cols: u16, rows: u16) -> libc::winsize {
     }
 }
 
-fn set_size(fd: RawFd, cols: u16, rows: u16) {
+pub(crate) fn set_size(fd: RawFd, cols: u16, rows: u16) {
     let size = winsize(cols, rows);
     // SAFETY: TIOCSWINSZ reads a winsize from a valid pointer.
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) };
 }
 
-fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {
+/// A pseudo-terminal of `cols` × `rows`: the master end (non-blocking)
+/// and the slave end.
+pub(crate) fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {
     let mut master = -1;
     let mut slave = -1;
     let size = winsize(cols, rows);
@@ -116,6 +118,33 @@ fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {
         libc::fcntl(master.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
     }
     Ok((master, slave))
+}
+
+/// Starts `command` on the slave end of a pseudo-terminal, as the leader
+/// of a new session whose controlling terminal it is.
+pub(crate) fn spawn_on(
+    mut command: tokio::process::Command,
+    slave: OwnedFd,
+) -> Result<tokio::process::Child> {
+    command
+        .stdin(Stdio::from(slave.try_clone()?))
+        .stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave))
+        .kill_on_drop(false);
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    // The child holds the slave now; this end's copies close with `command`.
+    Ok(command.spawn()?)
 }
 
 impl Session {
@@ -296,27 +325,9 @@ impl Sessions {
         let (master, slave) = open_pty(cols, rows)?;
         let mut command = self.programs.command(kind);
         command
-            .stdin(Stdio::from(slave.try_clone()?))
-            .stdout(Stdio::from(slave.try_clone()?))
-            .stderr(Stdio::from(slave))
             .env("TERM", "xterm-256color")
-            .env("RUNO_REMOTE", "1")
-            .kill_on_drop(false);
-        // SAFETY: only async-signal-safe calls between fork and exec.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = command.spawn().context("starting the session")?;
-        // The child holds the slave now; this end's copies closed with `command`.
-        drop(command);
+            .env("RUNO_REMOTE", "1");
+        let mut child = spawn_on(command, slave).context("starting the session")?;
         let session = Arc::new(Session {
             id: self.next.fetch_add(1, Ordering::Relaxed),
             kind,

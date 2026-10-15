@@ -19,7 +19,7 @@ mod conn;
 mod control;
 pub mod ddns;
 mod outbox;
-mod pty;
+pub(crate) mod pty;
 pub mod service;
 pub mod trust;
 

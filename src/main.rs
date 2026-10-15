@@ -11,6 +11,7 @@ mod chatgpt;
 mod cli_text;
 mod completions;
 mod config;
+mod console;
 mod context;
 mod cron;
 mod daemon;
@@ -109,6 +110,12 @@ enum Command {
     Tui {
         #[arg(short, long, default_value = "main")]
         session: String,
+    },
+    /// The Agent's window drawn on the screen (framebuffer), with Chinese.
+    Console {
+        /// Arguments for `runo tui`, after `--`.
+        #[arg(last = true)]
+        args: Vec<std::ffi::OsString>,
     },
     /// Run the Gateway: Web UI and WebSocket API.
     Serve {
@@ -578,6 +585,15 @@ async fn run(cli: Cli) -> Result<()> {
     if let Command::Completions { shell, action } = cli.command {
         return completions_command(shell, action);
     }
+    // Needs no config: `runo tui` inside it loads it.
+    if let Command::Console { args } = cli.command {
+        let options = console::Options {
+            config: cli.config,
+            lang: cli.lang,
+            args,
+        };
+        std::process::exit(console::run(options, None).await?);
+    }
     if let Command::Service { action } = &cli.command {
         return match action {
             ServiceAction::Install { user } => {
@@ -856,7 +872,7 @@ async fn run(cli: Cli) -> Result<()> {
         | Command::Update { .. } => {
             unreachable!("handled before the config is loaded")
         }
-        Command::Completions { .. } | Command::Skills { .. } => {
+        Command::Completions { .. } | Command::Skills { .. } | Command::Console { .. } => {
             unreachable!("handled before state is opened")
         }
         Command::Serve { bind, web } => {
