@@ -287,6 +287,19 @@ It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over
 the screen.
 
+### On a screen without a desktop
+
+The Linux console cannot draw Chinese. `runo console [-- TUI ARGS]` is a
+small terminal of Runo's own for a screen with no desktop (the Runo system
+image runs it on tty1): it draws on the framebuffer (`/dev/fb0`) with
+WenQuanYi Zen Hei, reads the keyboards itself (US layout), and runs
+`runo tui` inside. The bottom row shows the input mode; with the pinyin
+input method, Ctrl+Space or Shift on its own switches to Chinese, and the
+letters typed and the candidates show there. Set
+`RUNO_CONSOLE_FONT` to another font file and `RUNO_CONSOLE_FONT_SIZE` to a
+size in pixels per em (the default gives about 110 columns). Without a
+framebuffer it runs `runo tui` on the console as it is.
+
 ## Configuration
 
 `runo init` sets up what a first run needs (see [Usage](#usage)).

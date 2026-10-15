@@ -18,7 +18,7 @@ pub mod cli;
 mod conn;
 mod control;
 mod outbox;
-mod pty;
+pub(crate) mod pty;
 pub mod service;
 pub mod trust;
 
