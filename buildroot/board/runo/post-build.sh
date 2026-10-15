@@ -7,6 +7,9 @@ set -eu
 TARGET=$1
 BOARD=${2:-rpi5}
 
+# The mount points S00data mounts on: the root file system is read-only.
+mkdir -p "$TARGET/boot" "$TARGET/data"
+
 # What the system and the Agent change lives on /data.
 link() {
 	rm -rf "${TARGET:?}/$1"

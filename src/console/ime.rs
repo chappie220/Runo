@@ -271,9 +271,16 @@ fn ime_key(sym: Sym) -> Option<Key> {
     })
 }
 
-/// The built-in pinyin input method, with the user's words in `user`.
+/// The built-in pinyin input method, with the user's words in `user`; if
+/// they cannot be read or kept, without them (and it says so).
 pub fn pinyin(user: Option<std::path::PathBuf>) -> anyhow::Result<Box<dyn InputMethod>> {
-    let engine = crate::pinyin::Engine::load(user)?;
+    let engine = match crate::pinyin::Engine::load(user) {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!("pinyin: {err:#}; the words you type are not kept");
+            crate::pinyin::Engine::load(None)?
+        }
+    };
     Ok(Box::new(crate::pinyin::Composer::new(engine)))
 }
 
