@@ -596,6 +596,22 @@ const ARGS: &[(&str, &str, Tr)] = &[
         ),
     ),
     (
+        "update",
+        "source",
+        tr(
+            "Runo system only: a signed update bundle, as a file or https URL, instead of the latest release",
+            "仅 Runo 系统：签名的更新包（文件或 https 地址），代替最新版本",
+        ),
+    ),
+    (
+        "update",
+        "force",
+        tr(
+            "Runo system only: install even when it is not newer",
+            "仅 Runo 系统：不是更新的版本也安装",
+        ),
+    ),
+    (
         "restore",
         "force",
         tr(

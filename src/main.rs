@@ -50,6 +50,7 @@ mod status;
 mod stickers;
 mod store;
 mod system;
+mod sysupdate;
 mod tasks;
 mod telegram;
 mod tools;
@@ -176,10 +177,20 @@ enum Command {
         device: bool,
     },
     /// Install the latest release from GitHub.
+    ///
+    /// On the Runo system this updates the whole system: the other slot,
+    /// tried once before it is kept.
     Update {
         /// Only say whether a newer version exists.
         #[arg(long)]
         check: bool,
+        /// Runo system only: a signed update bundle, as a file or https URL,
+        /// instead of the latest release.
+        #[arg(conflicts_with = "check")]
+        source: Option<String>,
+        /// Runo system only: install even when it is not newer.
+        #[arg(long, conflicts_with = "check")]
+        force: bool,
     },
     /// Finish moving an install from its old name (openclaw-rs): binary, service, state.
     Migrate,
@@ -727,9 +738,20 @@ async fn run(cli: Cli) -> Result<()> {
     if let Command::Migrate = cli.command {
         return rename::finish(false).map(|_| ());
     }
-    if let Command::Update { check } = cli.command {
+    if let Command::Update {
+        check,
+        source,
+        force,
+    } = &cli.command
+    {
         let config = Config::load(&config_path).unwrap_or_default();
-        return update::run(&config.update, check, &config.gateway.bind).await;
+        if config::runo_system() && !check {
+            return sysupdate::update(&state, source.as_deref(), *force, &config.update).await;
+        }
+        if source.is_some() || *force {
+            anyhow::bail!("{}", sysupdate::NOT_SYSTEM.now());
+        }
+        return update::run(&config.update, *check, &config.gateway.bind).await;
     }
     // Before loading: signing in is how a config gets its model.
     if let Command::Login {

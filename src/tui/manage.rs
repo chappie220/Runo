@@ -81,6 +81,7 @@ const S_DEVICE: Tr = tr("Device", "设备");
 const S_HOST: Tr = tr("Host name", "主机名");
 const S_ADDRESSES: Tr = tr("Addresses", "地址");
 const S_PUBLIC: Tr = tr("Public access", "公网访问");
+const S_SYSTEM: Tr = tr("System", "系统");
 const S_NO_ADDRESS: Tr = tr("none (no network)", "无（没有网络）");
 const S_UPTIME: Tr = tr("Up", "已运行");
 const S_LOAD: Tr = tr("Load", "负载");
@@ -137,6 +138,7 @@ pub(super) const ALL: &[Tr] = &[
     S_HOST,
     S_ADDRESSES,
     S_PUBLIC,
+    S_SYSTEM,
     S_NO_ADDRESS,
     S_UPTIME,
     S_LOAD,
@@ -331,6 +333,9 @@ pub(crate) fn status(state: &Path, lang: Lang) -> Vec<String> {
         S_PUBLIC,
         crate::daemon::cli::ddns_lines(state, lang).join("; "),
     ));
+    if let Some(system) = crate::sysupdate::status_line(state, lang) {
+        rows.push(row(S_SYSTEM, system));
+    }
     rows
 }
 

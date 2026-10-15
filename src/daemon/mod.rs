@@ -273,13 +273,67 @@ async fn bind(listen: Option<SocketAddr>) -> Result<TcpListener> {
 pub async fn run(options: Options) -> Result<()> {
     let daemon = start(options).await?;
     let (daemon, listener, local) = daemon;
+    // A system update waiting for this boot is kept or put back (4.5).
+    let state = daemon.state.clone();
+    tokio::spawn(async move {
+        match crate::sysupdate::after_boot(&state).await {
+            crate::sysupdate::AfterBoot::Nothing => {}
+            crate::sysupdate::AfterBoot::Kept(version) => {
+                log(&format!("system update to {version} kept"))
+            }
+            crate::sysupdate::AfterBoot::PutBack(why) => {
+                log(&format!("system update put back: {why}"))
+            }
+        }
+    });
+    let watchdog = feed_watchdog();
     let serving = serve(daemon.clone(), listener, local);
-    tokio::select! {
+    let result = tokio::select! {
         result = serving => result,
         _ = shutdown_signal() => {
             log("stopping");
             daemon.sessions.kill_all();
             Ok(())
+        }
+    };
+    watchdog.stop();
+    result
+}
+
+/// Feeds the hardware watchdog from its own thread, so a stuck runtime
+/// still lets the system restart (4.5).
+struct Feeding {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<crate::sysupdate::Watchdog>>,
+}
+
+fn feed_watchdog() -> Feeding {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut watchdog = crate::sysupdate::Watchdog::start();
+    if !watchdog.active() {
+        return Feeding { stop, thread: None };
+    }
+    let stopped = stop.clone();
+    let thread = std::thread::spawn(move || {
+        while !stopped.load(Ordering::Relaxed) {
+            watchdog.feed();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        watchdog
+    });
+    Feeding {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+impl Feeding {
+    fn stop(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread
+            && let Ok(watchdog) = thread.join()
+        {
+            watchdog.stop();
         }
     }
 }
