@@ -100,7 +100,14 @@ impl Font {
 /// use (`runo tui` among them).
 fn stand_in(c: char) -> Option<char> {
     Some(match c {
-        '›' => '>',
+        '›' | '❯' | '❱' => '>',
+        '‑' => '-',
+        '↺' | '↻' | '⟲' | '⟳' => '◎',
+        '⎺' | '⎻' | '⎼' => '─',
+        '⎽' => '_',
+        '📎' => '#',
+        '🖼' => '▣',
+        '🐒' => '@',
         '‹' => '<',
         '•' => '·',
         '◦' => '○',
@@ -201,5 +208,8 @@ mod tests {
         // Symbols the font lacks get a stand-in.
         assert!(font.glyph('✓', 1).width > 0);
         assert!(font.glyph('›', 1).width > 0);
+        // The menus' marker and the reset label in `runo tui`.
+        assert!(font.glyph('❯', 1).width > 0);
+        assert!(font.glyph('↺', 1).width > 0);
     }
 }
