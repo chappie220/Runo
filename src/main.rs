@@ -34,6 +34,7 @@ mod mcp;
 mod memory;
 mod net;
 mod onboard;
+mod pinyin;
 mod qq;
 mod reasoning;
 mod rename;
