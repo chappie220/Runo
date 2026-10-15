@@ -66,7 +66,7 @@ if [ -n "${RUNO_UPDATE_KEY:-}" ]; then
 		gzip -n -9 > "$UPDATE/boot.tar.gz"
 	gzip -n -c "$BINARIES_DIR/rootfs.ext4" > "$UPDATE/rootfs.ext4.gz"
 	sum() {
-		printf '{"size": %s, "sha256": "%s"}' "$(stat -c %s "$1")" "$(sha256sum "$1" | cut -d' ' -f1)"
+		printf '{"size": %s, "sha256": "%s"}' "$(stat -L -c %s "$1")" "$(sha256sum "$1" | cut -d' ' -f1)"
 	}
 	version=$(sed -n 's/^version=//p' "$TARGET_DIR/etc/runo-system")
 	cat > "$UPDATE/manifest.json" <<EOT
