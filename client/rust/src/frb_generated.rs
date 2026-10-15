@@ -2100,11 +2100,13 @@ impl SseDecode for crate::api::client::PairedDevice {
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_addresses = <Vec<String>>::sse_decode(deserializer);
         let mut var_paired = <i64>::sse_decode(deserializer);
+        let mut var_domain = <Option<String>>::sse_decode(deserializer);
         return crate::api::client::PairedDevice {
             id: var_id,
             name: var_name,
             addresses: var_addresses,
             paired: var_paired,
+            domain: var_domain,
         };
     }
 }
@@ -2377,6 +2379,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::client::PairedDevice {
             self.name.into_into_dart().into_dart(),
             self.addresses.into_into_dart().into_dart(),
             self.paired.into_into_dart().into_dart(),
+            self.domain.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2686,6 +2689,7 @@ impl SseEncode for crate::api::client::PairedDevice {
         <String>::sse_encode(self.name, serializer);
         <Vec<String>>::sse_encode(self.addresses, serializer);
         <i64>::sse_encode(self.paired, serializer);
+        <Option<String>>::sse_encode(self.domain, serializer);
     }
 }
 

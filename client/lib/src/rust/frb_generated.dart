@@ -1665,13 +1665,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   PairedDevice dco_decode_paired_device(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return PairedDevice(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
       addresses: dco_decode_list_String(arr[2]),
       paired: dco_decode_i_64(arr[3]),
+      domain: dco_decode_opt_String(arr[4]),
     );
   }
 
@@ -2092,11 +2093,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_name = sse_decode_String(deserializer);
     var var_addresses = sse_decode_list_String(deserializer);
     var var_paired = sse_decode_i_64(deserializer);
+    var var_domain = sse_decode_opt_String(deserializer);
     return PairedDevice(
       id: var_id,
       name: var_name,
       addresses: var_addresses,
       paired: var_paired,
+      domain: var_domain,
     );
   }
 
@@ -2526,6 +2529,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.name, serializer);
     sse_encode_list_String(self.addresses, serializer);
     sse_encode_i_64(self.paired, serializer);
+    sse_encode_opt_String(self.domain, serializer);
   }
 
   @protected

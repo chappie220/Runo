@@ -73,6 +73,14 @@ class T {
   String get detach => t('Leave running', '保持运行并离开');
   String get closed => t('Disconnected', '已断开');
   String get reconnect => t('Reconnect', '重新连接');
+  String outsideDomain(String domain) => t(
+    'Away from its network? $domain must point at the device\'s public IPv6 address, this network must have IPv6, and the router must let IPv6 connections in to the device on port 7340.',
+    '不在设备所在的网络里？$domain 要指向设备的公网 IPv6 地址，你现在的网络要有 IPv6，并且路由器要放行到设备 7340 端口的 IPv6 入站连接。',
+  );
+  String get outsideNoDomain => t(
+    'Away from its network? Set up public access on the device first: runo daemon ddns set <provider> <domain>.',
+    '不在设备所在的网络里？先在设备上设置公网访问：runo daemon ddns set <服务商> <域名>。',
+  );
   String get upload => t('Send a file', '发送文件');
   String get download => t('Fetch a file', '获取文件');
   String get remotePath => t('Path on the device', '设备上的路径');

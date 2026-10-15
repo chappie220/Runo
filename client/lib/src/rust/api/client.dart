@@ -257,16 +257,24 @@ class PairedDevice {
   /// Unix time.
   final PlatformInt64 paired;
 
+  /// Its public domain, when it has one.
+  final String? domain;
+
   const PairedDevice({
     required this.id,
     required this.name,
     required this.addresses,
     required this.paired,
+    this.domain,
   });
 
   @override
   int get hashCode =>
-      id.hashCode ^ name.hashCode ^ addresses.hashCode ^ paired.hashCode;
+      id.hashCode ^
+      name.hashCode ^
+      addresses.hashCode ^
+      paired.hashCode ^
+      domain.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -276,7 +284,8 @@ class PairedDevice {
           id == other.id &&
           name == other.name &&
           addresses == other.addresses &&
-          paired == other.paired;
+          paired == other.paired &&
+          domain == other.domain;
 }
 
 class SessionInfo {

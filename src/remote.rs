@@ -72,6 +72,14 @@ const NOT_TRUSTED: Tr = tr(
     "{} 不再信任这台电脑（已被撤销，或设备被重置）。重新配对：runo remote pair {}",
 );
 const UNREACHABLE: Tr = tr("Cannot reach {}: {}", "连不上 {}：{}");
+const OUTSIDE_DOMAIN: Tr = tr(
+    "Away from its network? {} must point at the device's public IPv6 address, this network must have IPv6, and the router must let IPv6 connections in to the device on port 7340 (often a setting such as \"IPv6 firewall\" or \"inbound IPv6\").",
+    "不在设备所在的网络里？{} 要指向设备的公网 IPv6 地址，你现在的网络要有 IPv6，并且路由器要放行到设备 7340 端口的 IPv6 入站连接（通常叫“IPv6 防火墙”或“IPv6 入站”之类的设置）。",
+);
+const OUTSIDE_NO_DOMAIN: Tr = tr(
+    "Away from its network? Set up public access on the device first: runo daemon ddns set <provider> <domain>.",
+    "不在设备所在的网络里？先在设备上设置公网访问：runo daemon ddns set <服务商> <域名>。",
+);
 const DETACHED: Tr = tr(
     "\r\nLeft session {} running. Back to it: runo remote attach {} {}",
     "\r\n会话 {} 仍在运行。回到它：runo remote attach {} {}",
@@ -115,6 +123,8 @@ pub const ALL: &[Tr] = &[
     DEVICE_LINE,
     NOT_TRUSTED,
     UNREACHABLE,
+    OUTSIDE_DOMAIN,
+    OUTSIDE_NO_DOMAIN,
     DETACHED,
     ENDED,
     CONNECTED,
@@ -320,7 +330,14 @@ pub async fn connect(state: &Path, query: &str) -> Result<Link> {
         }
     };
     let link = first.map_err(|err| {
-        anyhow::anyhow!("{}", UNREACHABLE.with(&[&device.name, &format!("{err:#}")]))
+        let hint = match &device.domain {
+            Some(domain) => OUTSIDE_DOMAIN.with(&[domain]),
+            None => OUTSIDE_NO_DOMAIN.now().to_owned(),
+        };
+        anyhow::anyhow!(
+            "{}\n{hint}",
+            UNREACHABLE.with(&[&device.name, &format!("{err:#}")])
+        )
     })?;
     if !link.welcome().trusted {
         bail!("{}", NOT_TRUSTED.with(&[&device.name, &device.id]));

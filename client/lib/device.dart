@@ -58,7 +58,11 @@ class _DevicePageState extends State<DevicePage> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = message(e));
+      // From outside its network the device is reached only through its
+      // domain, which needs IPv6 and the router's leave.
+      final domain = widget.device.domain;
+      final hint = domain == null ? t.outsideNoDomain : t.outsideDomain(domain);
+      if (mounted) setState(() => error = '${message(e)}\n\n$hint');
     }
   }
 

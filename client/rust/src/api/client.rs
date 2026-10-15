@@ -76,6 +76,8 @@ pub struct PairedDevice {
     pub addresses: Vec<String>,
     /// Unix time.
     pub paired: i64,
+    /// Its public domain, when it has one.
+    pub domain: Option<String>,
 }
 
 /// The Runo devices answering on the LAN within `seconds`.
@@ -112,6 +114,7 @@ pub fn paired_devices(dir: String) -> Result<Vec<PairedDevice>> {
             name: d.name,
             addresses: d.addresses,
             paired: d.paired,
+            domain: d.domain,
         })
         .collect())
 }
