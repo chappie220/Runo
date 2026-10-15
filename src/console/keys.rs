@@ -23,7 +23,9 @@ pub const KEY_Z: u16 = 44;
 pub fn parse_events(bytes: &[u8]) -> Vec<(u16, u16, i32)> {
     let at = EVENT_SIZE - 8;
     bytes
-        .chunks_exact(EVENT_SIZE)
+        .as_chunks::<EVENT_SIZE>()
+        .0
+        .iter()
         .map(|e| {
             let kind = u16::from_ne_bytes([e[at], e[at + 1]]);
             let code = u16::from_ne_bytes([e[at + 2], e[at + 3]]);

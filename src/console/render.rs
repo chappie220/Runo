@@ -426,7 +426,7 @@ impl Format {
     pub fn write_row(&self, src: &[u32], dst: &mut [u8]) {
         let bytes = self.bytes;
         if *self == Format::XRGB8888 {
-            for (pixel, out) in src.iter().zip(dst.chunks_exact_mut(4)) {
+            for (pixel, out) in src.iter().zip(dst.as_chunks_mut::<4>().0) {
                 out.copy_from_slice(&pixel.to_ne_bytes());
             }
             return;
