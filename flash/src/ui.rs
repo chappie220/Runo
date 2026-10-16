@@ -16,7 +16,7 @@ use ratatui::widgets::{Block, BorderType, Gauge, List, ListItem, ListState, Para
 
 use crate::disk::{self, Disk};
 use crate::text::{size, t};
-use crate::write::{self, Device, Flasher, Wifi};
+use crate::write::{self, Device, Flasher, Settings, Wifi};
 use crate::{image, release};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,6 +74,7 @@ enum Screen {
     Source,
     Path,
     Wifi,
+    Password,
     Disk,
     Confirm,
     Work,
@@ -150,6 +151,9 @@ struct App {
     wifi_fields: [String; 3],
     wifi_field: usize,
     wifi: Option<Wifi>,
+    /// Made up when the program starts; the person may change it.
+    password_field: String,
+    password: Option<String>,
     disks: Vec<Disk>,
     disk_list: ListState,
     disk_error: Option<String>,
@@ -241,6 +245,8 @@ impl App {
             wifi_fields: [String::new(), String::new(), "CN".into()],
             wifi_field: 0,
             wifi: None,
+            password_field: write::new_password(),
+            password: None,
             disks: Vec::new(),
             disk_list: ListState::default(),
             disk_error: None,
@@ -320,8 +326,9 @@ impl App {
                 return;
             }
             Screen::Wifi => Screen::Source,
-            Screen::Disk => Screen::Wifi,
-            Screen::Confirm if self.to_file.is_some() => Screen::Wifi,
+            Screen::Password => Screen::Wifi,
+            Screen::Disk => Screen::Password,
+            Screen::Confirm if self.to_file.is_some() => Screen::Password,
             Screen::Confirm => Screen::Disk,
             Screen::Failed(_) => Screen::Confirm,
             Screen::Work | Screen::Done => return,
@@ -397,6 +404,10 @@ impl App {
                     }
                 }
             },
+            Screen::Password => match key.code {
+                KeyCode::Enter => self.submit_password(),
+                _ => edit(&mut self.password_field, key),
+            },
             Screen::Disk => match key.code {
                 KeyCode::Up | KeyCode::Down => {
                     move_in(&mut self.disk_list, self.disks.len(), key.code)
@@ -448,6 +459,20 @@ impl App {
             }
             self.wifi = Some(wifi);
         }
+        self.go(Screen::Password);
+    }
+
+    fn submit_password(&mut self) {
+        let password = self.password_field.clone();
+        if password.is_empty() {
+            self.password = None;
+        } else {
+            if let Some(problem) = write::password_problem(&password) {
+                self.message = Some(problem.to_string());
+                return;
+            }
+            self.password = Some(password);
+        }
         self.go(if self.to_file.is_some() {
             Screen::Confirm
         } else {
@@ -462,11 +487,14 @@ impl App {
         self.screen = Screen::Work;
         let source = self.source.clone().expect("chosen");
         let target = self.target.clone().expect("chosen");
-        let wifi = self.wifi.clone();
+        let settings = Settings {
+            wifi: self.wifi.clone(),
+            password: self.password.clone(),
+        };
         let board = self.board;
         std::thread::spawn(move || {
             let result =
-                work(source, board, wifi, target, &status).map_err(|err| format!("{err:#}"));
+                work(source, board, settings, target, &status).map_err(|err| format!("{err:#}"));
             *status.result.lock().unwrap() = Some(result);
         });
     }
@@ -510,7 +538,7 @@ fn edit(text: &mut String, key: KeyEvent) {
 fn work(
     source: Source,
     board: Board,
-    wifi: Option<Wifi>,
+    settings: Settings,
     target: Target,
     status: &Status,
 ) -> Result<()> {
@@ -539,7 +567,7 @@ fn work(
         ),
     };
     let written = |d, t| status.written(d, t);
-    let mut flasher = Flasher::new(dev.as_mut(), wifi, capacity, &written);
+    let mut flasher = Flasher::new(dev.as_mut(), settings, capacity, &written);
     image::decode(&path, &mut flasher, &|d, t| status.read(d, t))?;
     let (len, hash) = flasher.finish()?;
     status.stage(Stage::Verify);
@@ -620,15 +648,19 @@ fn draw(f: &mut Frame, app: &mut App) {
                 "Tab/↑↓ 切换  Enter 下一步  Esc 返回",
             ),
         ),
+        Screen::Password => (
+            t("4 · Device password", "4 · 设备密码"),
+            t("Enter next  Esc back", "Enter 下一步  Esc 返回"),
+        ),
         Screen::Disk => (
-            t("4 · Which card?", "4 · 选择 SD 卡"),
+            t("5 · Which card?", "5 · 选择 SD 卡"),
             t(
                 "↑↓ choose  r refresh  Enter next  Esc back",
                 "↑↓ 选择  r 刷新  Enter 下一步  Esc 返回",
             ),
         ),
         Screen::Confirm => (
-            t("5 · Check and start", "5 · 确认并开始"),
+            t("6 · Check and start", "6 · 确认并开始"),
             t(
                 "type yes, Enter start  Esc back",
                 "输入 yes 后 Enter 开始  Esc 返回",
@@ -766,6 +798,31 @@ fn draw(f: &mut Frame, app: &mut App) {
             }
             message(f, rows[5], &app.message);
         }
+        Screen::Password => {
+            let [a, b, c] = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Length(2),
+                Constraint::Min(1),
+            ])
+            .areas(inner);
+            f.render_widget(
+                Paragraph::new(t(
+                    "The client app asks for it when it pairs with the Pi. With it set, the Pi opens pairing by itself on its first start, so it needs no screen. One was made up for you: write it down, or type your own (at least 8 characters). Empty: the Pi asks for one on its screen.",
+                    "客户端配对时要输入这个密码。设置后，树莓派第一次开机会自动打开配对，不需要接屏幕。这里已经随机生成了一个：请记下来，或者改成你自己的（至少 8 个字符）。留空的话，树莓派会在屏幕上询问。",
+                ))
+                .wrap(Wrap { trim: true }),
+                a,
+            );
+            input(
+                f,
+                b,
+                t("Password", "密码"),
+                &app.password_field,
+                true,
+                false,
+            );
+            message(f, c, &app.message);
+        }
         Screen::Disk => {
             if let Some(err) = &app.disk_error {
                 message(f, inner, &Some(err.clone()));
@@ -820,6 +877,17 @@ fn draw(f: &mut Frame, app: &mut App) {
                     "第一次开机会把数据分区扩展到整张卡，并自动重启一次。",
                 )),
             ];
+            if let Some(password) = &app.password {
+                lines.push(Line::raw(""));
+                lines.push(Line::from(vec![
+                    Span::raw(t("Device password: ", "设备密码：")),
+                    Span::styled(password.clone(), Style::new().fg(ACCENT).bold()),
+                ]));
+                lines.push(Line::raw(t(
+                    "Once it is up, pair from the client app on the same network: check that the six digits match, then give this password.",
+                    "开机后，在同一个网络里用客户端配对：确认两边的 6 位数字一致，再输入这个密码。",
+                )));
+            }
             if cfg!(windows) {
                 lines.push(Line::raw(""));
                 lines.push(Line::raw(t(
@@ -936,6 +1004,16 @@ fn confirm(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![label(t("Image", "镜像")), Span::raw(source)]),
         Line::from(vec![label("Wi-Fi"), Span::raw(wifi)]),
+        Line::from(vec![
+            label(t("Password", "设备密码")),
+            match &app.password {
+                Some(p) => Span::raw(p.clone()),
+                None => Span::raw(t(
+                    "not set (asked on the Pi's screen)",
+                    "不设置（在树莓派屏幕上设置）",
+                )),
+            },
+        ]),
         Line::from(vec![
             label(t("Card", "SD 卡")),
             Span::styled(target, Style::new().bold()),
@@ -1101,10 +1179,19 @@ mod tests {
         app.wifi_fields[2] = "CN".into();
         app.wifi_field = 2;
         press(&mut app, KeyCode::Enter);
+        assert_eq!(app.screen, Screen::Password);
+        assert_eq!(app.password_field.len(), 12, "one is made up");
+        app.password_field = "short".into();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.screen, Screen::Password, "a short password is refused");
+        assert!(screen(&mut app).contains("at least 8"));
+        app.password_field = "pair with me".into();
+        press(&mut app, KeyCode::Enter);
         assert_eq!(app.screen, Screen::Confirm);
         let shown = screen(&mut app);
         assert!(shown.contains("Raspberry Pi 4"), "{shown}");
         assert!(shown.contains("home"), "{shown}");
+        assert!(shown.contains("pair with me"), "{shown}");
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.screen, Screen::Confirm, "nothing starts without yes");
         typed(&mut app, "yes");
@@ -1117,6 +1204,11 @@ mod tests {
             crate::write::tests::read_wifi(&written).unwrap(),
             "ssid=home\npassword=long enough\ncountry=CN\n"
         );
+        assert_eq!(
+            crate::write::tests::read_boot(&written, "runo-password.txt").unwrap(),
+            "pair with me\n"
+        );
+        assert!(screen(&mut app).contains("pair with me"), "shown when done");
     }
 
     #[test]
@@ -1143,8 +1235,13 @@ mod tests {
         });
         assert_eq!(app.board, Board::Pi5);
         press(&mut app, KeyCode::Enter);
+        assert_eq!(app.screen, Screen::Password);
+        app.password_field.clear();
+        press(&mut app, KeyCode::Enter);
         assert_eq!(app.screen, Screen::Confirm);
-        assert!(screen(&mut app).contains("network cable"));
+        let shown = screen(&mut app);
+        assert!(shown.contains("network cable"), "{shown}");
+        assert!(shown.contains("not set"), "{shown}");
         typed(&mut app, "yes");
         press(&mut app, KeyCode::Enter);
         wait(&mut app);
@@ -1162,6 +1259,7 @@ mod tests {
             board: None,
             to_file: Some(dir.path().join("card.img")),
         });
+        press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Enter);
         typed(&mut app, "yes");
         press(&mut app, KeyCode::Enter);

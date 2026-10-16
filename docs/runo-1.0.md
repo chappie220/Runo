@@ -395,6 +395,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 - [x] CI（`.github/workflows/image.yml`）构建 Pi 5 和 Pi 4 镜像，产出 `runo-<板>.img.xz`。
 - [x] 电脑上的烧录工具 `runo-flash`（`flash/`，x86_64 的 Linux 和 Windows，终端界面）：选型号 → 选镜像（从 GitHub 发布下载并核对
   `SHA256SUMS-<板>`，或本地的 `.img.xz`、GitHub Actions 下载的 `.zip`、`.img`）→ 可选填写 Wi‑Fi（写入 boot 分区的 `runo-wifi.txt`）→
+  设备密码（默认随机生成，可改可留空；写入 boot 分区的 `runo-password.txt`，无屏幕的树莓派首次开机即可配对）→
   选 SD 卡（只列可移动磁盘，不列系统盘）→ 输入 `yes` 确认 → 写入、读回校验。分区表最后写，写完之前系统不会挂载半张卡；
   SD 卡比镜像小时在写入前拒绝。需要 root（Linux 自动用 `sudo` 重新运行）或管理员（Windows 弹出 UAC）。
   CI 和发布流程产出 `runo-flash-x86_64-linux` 和 `runo-flash-x86_64-windows.exe`。

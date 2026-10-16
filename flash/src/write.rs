@@ -3,8 +3,9 @@
 //! The first sector, with the partition table, is written last: until the
 //! write is complete the card shows no partitions, so the computer does not
 //! mount any of them halfway (Windows refuses writes to a mounted volume).
-//! With Wi-Fi to set up, the boot partition is kept in memory until it has
-//! all arrived, and `runo-wifi.txt` is added to it before it is written.
+//! With settings to add (Wi-Fi, the device password), the boot partition is
+//! kept in memory until it has all arrived, and `runo-wifi.txt` and
+//! `runo-password.txt` are added to it before it is written.
 
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
@@ -81,13 +82,80 @@ impl Wifi {
     }
 }
 
-/// Adds `runo-wifi.txt` to the FAT file system in `fat`.
-pub fn add_wifi(fat: &mut [u8], wifi: &Wifi) -> io::Result<()> {
+/// The device password clients give when they pair; the same rule as
+/// `runo daemon password`.
+pub const MIN_PASSWORD: usize = 8;
+
+/// Why `password` cannot be the device password, if it cannot.
+pub fn password_problem(password: &str) -> Option<&'static str> {
+    if password.chars().count() < MIN_PASSWORD {
+        Some(t(
+            "the device password needs at least 8 characters",
+            "设备密码至少 8 个字符",
+        ))
+    } else if password.contains(['\n', '\r']) {
+        Some(t("the password has a line break", "密码里有换行"))
+    } else if password.trim_start().starts_with('#') {
+        // The Pi skips lines starting with # in runo-password.txt.
+        Some(t(
+            "the device password cannot start with #",
+            "设备密码不能以 # 开头",
+        ))
+    } else {
+        None
+    }
+}
+
+/// A device password made up here: 12 letters and digits that cannot be
+/// mistaken for one another.
+pub fn new_password() -> String {
+    const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let mut bytes = [0u8; 12];
+    getrandom::fill(&mut bytes).expect("the system gives random bytes");
+    bytes
+        .iter()
+        .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
+        .collect()
+}
+
+/// What goes on the boot partition for the Pi's first start.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Settings {
+    pub wifi: Option<Wifi>,
+    /// Becomes the device password, so a Pi without a screen can pair.
+    pub password: Option<String>,
+}
+
+impl Settings {
+    fn is_empty(&self) -> bool {
+        self.wifi.is_none() && self.password.is_none()
+    }
+}
+
+/// Only images that read `runo-password.txt` ship this; on others the
+/// password would stay on the card as it is.
+const PASSWORD_EXAMPLE: &str = "runo-password.txt.example";
+
+/// Adds the files for `settings` to the FAT file system in `fat`.
+pub fn add_settings(fat: &mut [u8], settings: &Settings) -> io::Result<()> {
     let fs = fatfs::FileSystem::new(Cursor::new(fat), fatfs::FsOptions::new())?;
-    {
-        let mut file = fs.root_dir().create_file("runo-wifi.txt")?;
+    let mut files = Vec::new();
+    if let Some(wifi) = &settings.wifi {
+        files.push(("runo-wifi.txt", wifi.file()));
+    }
+    if let Some(password) = &settings.password {
+        if fs.root_dir().open_file(PASSWORD_EXAMPLE).is_err() {
+            return Err(other(t(
+                "this image is too old to take a device password: leave the password empty, or use a newer image",
+                "这个镜像太旧，不支持设置设备密码：请把密码留空，或换用新的镜像",
+            )));
+        }
+        files.push(("runo-password.txt", format!("{password}\n")));
+    }
+    for (name, text) in files {
+        let mut file = fs.root_dir().create_file(name)?;
         file.truncate()?;
-        file.write_all(wifi.file().as_bytes())?;
+        file.write_all(text.as_bytes())?;
         file.flush()?;
     }
     fs.unmount()
@@ -128,7 +196,7 @@ fn other(message: impl Into<String>) -> io::Error {
 /// Takes the uncompressed image and writes it to the device.
 pub struct Flasher<'a> {
     dev: &'a mut dyn Device,
-    wifi: Option<Wifi>,
+    settings: Settings,
     capacity: Option<u64>,
     head: Vec<u8>,
     /// How much of the start is kept back; 0 until the first sector is in.
@@ -148,13 +216,13 @@ impl<'a> Flasher<'a> {
     /// image's length, from when the partition table gives that length.
     pub fn new(
         dev: &'a mut dyn Device,
-        wifi: Option<Wifi>,
+        settings: Settings,
         capacity: Option<u64>,
         progress: &'a dyn Fn(u64, u64),
     ) -> Self {
         Flasher {
             dev,
-            wifi,
+            settings,
             capacity,
             head: Vec::new(),
             head_len: 0,
@@ -201,15 +269,15 @@ impl<'a> Flasher<'a> {
             )));
         }
         self.head_len = SECTOR;
-        if self.wifi.is_some() {
+        if !self.settings.is_empty() {
             let boot = parts
                 .unwrap_or_default()
                 .into_iter()
                 .find(|p| matches!(p.kind, 0x0b | 0x0c | 0x0e))
                 .ok_or_else(|| {
                     other(t(
-                        "the image has no boot partition to put the Wi-Fi settings on",
-                        "镜像里没有引导分区，没法写入 Wi-Fi 设置",
+                        "the image has no boot partition to put the settings on",
+                        "镜像里没有引导分区，没法写入设置",
                     ))
                 })?;
             if boot.end > MAX_HEAD || boot.start < SECTOR as u64 {
@@ -225,13 +293,16 @@ impl<'a> Flasher<'a> {
 
     /// Writes all of the start but the first sector.
     fn close_head(&mut self) -> io::Result<()> {
-        if let Some(wifi) = &self.wifi {
+        if !self.settings.is_empty() {
             let boot = partitions(&self.head)
                 .unwrap_or_default()
                 .into_iter()
                 .find(|p| matches!(p.kind, 0x0b | 0x0c | 0x0e))
                 .expect("found in plan_head");
-            add_wifi(&mut self.head[boot.start as usize..boot.end as usize], wifi)?;
+            add_settings(
+                &mut self.head[boot.start as usize..boot.end as usize],
+                &self.settings,
+            )?;
         }
         self.hash.update(&self.head);
         self.dev.seek(SeekFrom::Start(SECTOR as u64))?;
@@ -365,6 +436,13 @@ pub mod tests {
             fatfs::FormatVolumeOptions::new(),
         )
         .unwrap();
+        {
+            let fat = Cursor::new(&mut img[boot.0 as usize..boot.1 as usize]);
+            let fs = fatfs::FileSystem::new(fat, fatfs::FsOptions::new()).unwrap();
+            let mut file = fs.root_dir().create_file(PASSWORD_EXAMPLE).unwrap();
+            file.write_all(b"# put the device password below\n")
+                .unwrap();
+        }
         for (i, b) in img[root.0 as usize..].iter_mut().enumerate() {
             *b = (i % 251) as u8;
         }
@@ -379,18 +457,30 @@ pub mod tests {
         }
     }
 
-    pub fn read_wifi(img: &[u8]) -> Option<String> {
+    /// A file on the boot partition of `img`, as `image` lays it out.
+    pub fn read_boot(img: &[u8], name: &str) -> Option<String> {
         let fat = img[1 << 20..4 << 20].to_vec();
         let fs = fatfs::FileSystem::new(Cursor::new(fat), fatfs::FsOptions::new()).unwrap();
-        let mut file = fs.root_dir().open_file("runo-wifi.txt").ok()?;
+        let mut file = fs.root_dir().open_file(name).ok()?;
         let mut text = String::new();
         file.read_to_string(&mut text).unwrap();
         Some(text)
     }
 
-    fn flash(img: &[u8], wifi: Option<Wifi>, capacity: Option<u64>) -> Result<Vec<u8>> {
+    pub fn read_wifi(img: &[u8]) -> Option<String> {
+        read_boot(img, "runo-wifi.txt")
+    }
+
+    fn with_wifi() -> Settings {
+        Settings {
+            wifi: Some(wifi()),
+            password: None,
+        }
+    }
+
+    fn flash(img: &[u8], settings: Settings, capacity: Option<u64>) -> Result<Vec<u8>> {
         let mut dev = tempfile::tempfile().unwrap();
-        let mut flasher = Flasher::new(&mut dev, wifi, capacity, &|_, _| {});
+        let mut flasher = Flasher::new(&mut dev, settings, capacity, &|_, _| {});
         // Odd pieces, as a decompressor gives them.
         for piece in img.chunks(777_777) {
             flasher.write_all(piece)?;
@@ -407,13 +497,13 @@ pub mod tests {
     #[test]
     fn the_image_is_written_as_it_is() {
         let img = image(9);
-        assert_eq!(flash(&img, None, None).unwrap(), img);
+        assert_eq!(flash(&img, Settings::default(), None).unwrap(), img);
     }
 
     #[test]
     fn wifi_settings_go_on_the_boot_partition() {
         let img = image(9);
-        let out = flash(&img, Some(wifi()), None).unwrap();
+        let out = flash(&img, with_wifi(), None).unwrap();
         assert_eq!(
             read_wifi(&out).unwrap(),
             "ssid=家里的网\npassword=secret-password\ncountry=CN\n"
@@ -431,7 +521,7 @@ pub mod tests {
         let seen = std::sync::Mutex::new(Vec::new());
         let progress = |done, of| seen.lock().unwrap().push((done, of));
         let mut dev = tempfile::tempfile().unwrap();
-        let mut flasher = Flasher::new(&mut dev, Some(wifi()), None, &progress);
+        let mut flasher = Flasher::new(&mut dev, with_wifi(), None, &progress);
         for piece in img.chunks(777_777) {
             flasher.write_all(piece).unwrap();
         }
@@ -444,9 +534,53 @@ pub mod tests {
     }
 
     #[test]
+    fn the_device_password_goes_on_the_boot_partition() {
+        let img = image(9);
+        let settings = Settings {
+            wifi: Some(wifi()),
+            password: Some("pair with me".into()),
+        };
+        let out = flash(&img, settings, None).unwrap();
+        assert_eq!(
+            read_boot(&out, "runo-password.txt").unwrap(),
+            "pair with me\n"
+        );
+        assert!(read_wifi(&out).is_some());
+        assert_eq!(out[4 << 20..], img[4 << 20..]);
+    }
+
+    #[test]
+    fn an_image_that_cannot_read_the_password_is_refused() {
+        let mut img = image(9);
+        {
+            let fat = Cursor::new(&mut img[1 << 20..4 << 20]);
+            let fs = fatfs::FileSystem::new(fat, fatfs::FsOptions::new()).unwrap();
+            fs.root_dir().remove(PASSWORD_EXAMPLE).unwrap();
+        }
+        let settings = Settings {
+            wifi: None,
+            password: Some("pair with me".into()),
+        };
+        let err = flash(&img, settings, None).unwrap_err();
+        assert!(err.to_string().contains("too old"), "{err}");
+    }
+
+    #[test]
+    fn device_passwords_are_checked_and_made_up_well() {
+        assert_eq!(password_problem("pair with me"), None);
+        for bad in ["short", "two\nlines!", "#comment"] {
+            assert!(password_problem(bad).is_some(), "{bad}");
+        }
+        let a = new_password();
+        assert_eq!(a.len(), 12);
+        assert_eq!(password_problem(&a), None);
+        assert_ne!(a, new_password());
+    }
+
+    #[test]
     fn a_card_too_small_is_refused_before_anything_is_written() {
         let img = image(9);
-        let err = flash(&img, None, Some(8 << 20)).unwrap_err();
+        let err = flash(&img, Settings::default(), Some(8 << 20)).unwrap_err();
         assert!(err.to_string().contains("too small"), "{err}");
     }
 
@@ -454,7 +588,7 @@ pub mod tests {
     fn a_card_that_reads_back_wrong_is_reported() {
         let img = image(6);
         let mut dev = tempfile::tempfile().unwrap();
-        let mut flasher = Flasher::new(&mut dev, None, None, &|_, _| {});
+        let mut flasher = Flasher::new(&mut dev, Settings::default(), None, &|_, _| {});
         flasher.write_all(&img).unwrap();
         let (len, hash) = flasher.finish().unwrap();
         dev.seek(SeekFrom::Start(3 << 20)).unwrap();

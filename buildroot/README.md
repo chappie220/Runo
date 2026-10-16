@@ -44,9 +44,14 @@ request) and run it; it asks for root or administrator rights itself.
    current folder and in Downloads are listed.
 3. Optionally fill in Wi-Fi; it goes on the boot partition as
    `runo-wifi.txt`, read on the first boot.
-4. Choose the card. Only removable disks are listed, never the one the PC
+4. The device password, for pairing the client app. One is made up to
+   start with; write it down or type your own. It goes on the boot
+   partition as `runo-password.txt`, so a Pi without a screen opens
+   pairing by itself on its first start. Empty leaves it to the Pi's
+   screen. Images too old to read that file are refused with it set.
+5. Choose the card. Only removable disks are listed, never the one the PC
    runs from.
-5. Type `yes`. The image is written, the partition table last, and read
+6. Type `yes`. The image is written, the partition table last, and read
    back to check it.
 
 `runo-flash runo-rpi4.img.xz` starts with that file.

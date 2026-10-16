@@ -2527,6 +2527,7 @@ dependencies = [
  "clap",
  "crossterm",
  "fatfs",
+ "getrandom 0.3.4",
  "libc",
  "lzma-rs",
  "ratatui",
