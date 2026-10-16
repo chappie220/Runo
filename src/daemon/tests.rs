@@ -261,6 +261,155 @@ async fn a_change_that_may_cut_a_client_off_is_kept_by_a_client_or_put_back() {
     assert_eq!(std::fs::read_to_string(&conf).unwrap(), "new\n");
 }
 
+/// Feed events from `channel` until one passes `last`.
+async fn until_event(
+    channel: &mut runo_link::client::Channel,
+    last: impl Fn(&runo_link::feed::Event) -> bool,
+) -> Vec<runo_link::feed::Event> {
+    let mut seen = Vec::new();
+    let wait = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(incoming) = channel.recv().await {
+            if let Incoming::Data(data) = incoming {
+                let event: runo_link::feed::Event = serde_json::from_slice(&data).unwrap();
+                let done = last(&event);
+                seen.push(event);
+                if done {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(wait.is_ok(), "never came; saw {seen:?}");
+    seen
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_feed_streams_events_and_catches_up_a_client_that_comes_back() {
+    use runo_link::feed::{Body, Input, Role};
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path();
+    let client = Identity::generate().unwrap();
+    Trust::new(&super::dir(state))
+        .add(&client.public_key(), "laptop")
+        .unwrap();
+    // Stands in for `runo feed`: answers each message in two pieces.
+    let agent = dir.path().join("agent.sh");
+    std::fs::write(
+        &agent,
+        r#"#!/bin/sh
+echo '{"kind":"turn","busy":false}'
+n=0
+while read -r line; do
+  case "$line" in
+    *'"op":"send"'*)
+      n=$((n+1))
+      echo '{"kind":"message","id":"y'$n'","role":"you","text":"hi","done":true}'
+      echo 'not json'
+      echo '{"kind":"message","id":"r'$n'","role":"agent","text":"Hel","append":true,"done":false}'
+      echo '{"kind":"message","id":"r'$n'","role":"agent","text":"lo","append":true,"done":true}' ;;
+    *'"op":"cancel"'*) exit 3 ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (daemon, address) = daemon(state).await;
+    *daemon.sessions.feed_program.lock().unwrap() = Some(agent);
+    let link = Link::connect(&[address], &client, Some(daemon_key(state)))
+        .await
+        .unwrap();
+    assert!(link.welcome().feed);
+
+    let (session, mut channel) = link.open(Kind::Feed, 0, 0).await.unwrap();
+    assert_eq!(session.kind, Kind::Feed);
+    let first = until_event(&mut channel, |e| matches!(e.body, Body::Turn { .. })).await;
+    assert_eq!(first[0].seq, 1);
+    link.feed(
+        session.id,
+        Input::Send {
+            text: "hi".into(),
+            attachments: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    let reply = until_event(&mut channel, |e| {
+        matches!(
+            &e.body,
+            Body::Message {
+                done: true,
+                role: Role::Agent,
+                ..
+            }
+        )
+    })
+    .await;
+    assert_eq!(reply.len(), 3, "{reply:?}");
+    let seen = reply.last().unwrap().seq;
+    drop(channel);
+    drop(link);
+
+    // Away while the next answer comes: back, it gets only that, whole.
+    let link = Link::connect(&[address], &client, Some(daemon_key(state)))
+        .await
+        .unwrap();
+    let (_, mut channel) = link.attach_feed(session.id, seen).await.unwrap();
+    link.feed(
+        session.id,
+        Input::Send {
+            text: "again".into(),
+            attachments: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    let missed = until_event(
+        &mut channel,
+        |e| matches!(&e.body, Body::Message { id, done: true, .. } if id == "r2"),
+    )
+    .await;
+    assert!(missed.iter().all(|e| e.seq > seen), "{missed:?}");
+    let sessions: Vec<proto::Session> = link.call(Request::Sessions).await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert!(sessions[0].running);
+
+    // A new client sees the whole conversation with each message whole.
+    let (_, mut all) = link.attach_feed(session.id, 0).await.unwrap();
+    let whole = until_event(
+        &mut all,
+        |e| matches!(&e.body, Body::Message { id, .. } if id == "r2"),
+    )
+    .await;
+    assert!(whole.iter().any(|e| matches!(&e.body, Body::Message { id, text, append: false, .. } if id == "r1" && text == "Hello")), "{whole:?}");
+
+    link.feed(session.id, Input::Cancel { card: None })
+        .await
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(incoming) = channel.recv().await {
+            if let Incoming::Exit(code) = incoming {
+                return code;
+            }
+        }
+        None
+    })
+    .await;
+    assert_eq!(ended.unwrap(), Some(3));
+    let late = link
+        .feed(
+            session.id,
+            Input::Send {
+                text: "late".into(),
+                attachments: vec![],
+            },
+        )
+        .await;
+    assert!(late.unwrap_err().to_string().contains("ended"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn from_outside_the_lan_only_trusted_clients_that_log_in_get_in() {
     let dir = tempfile::tempdir().unwrap();

@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use runo_link::feed::Input;
 use runo_link::frame::{self, CONTROL, Frame};
 use runo_link::lan::is_lan;
-use runo_link::proto::{self, Call, Down, Event, Request};
+use runo_link::proto::{self, Call, Down, Event, Kind, Request};
 use runo_link::{device_id, hex, pair, tls};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
@@ -105,6 +106,7 @@ pub async fn handle(
         pairing: daemon.pairing().open,
         login: client.is_some() && !from_lan(&daemon, peer.ip()),
         domain: super::ddns::load(&super::dir(&daemon.state)).map(|c| c.domain),
+        feed: true,
     });
     let (kill, mut killed) = tokio::sync::watch::channel(None::<String>);
     let connection = Arc::new(Connection {
@@ -264,6 +266,29 @@ impl Conn {
             Request::Sessions => json(daemon.sessions.list()),
             Request::Open {
                 channel,
+                kind: Kind::Feed,
+                ..
+            } => {
+                self.free_channel(channel)?;
+                let feed = daemon.sessions.open_feed()?;
+                feed.attach(self.id, channel, self.outbox.clone(), 0);
+                log(&format!("{}: opened session {} (Feed)", self.peer, feed.id));
+                json(feed.info())
+            }
+            Request::Attach {
+                channel,
+                session,
+                since,
+                ..
+            } if daemon.sessions.feed(session).is_some() => {
+                self.free_channel(channel)?;
+                let feed = daemon.sessions.feed(session).unwrap();
+                let info = feed.info();
+                feed.attach(self.id, channel, self.outbox.clone(), since.unwrap_or(0));
+                json(info)
+            }
+            Request::Open {
+                channel,
                 kind,
                 cols,
                 rows,
@@ -283,6 +308,7 @@ impl Conn {
                 session,
                 cols,
                 rows,
+                ..
             } => {
                 pty::check_size(cols, rows)?;
                 self.free_channel(channel)?;
@@ -299,12 +325,21 @@ impl Conn {
                 cols,
                 rows,
             } => {
-                pty::check_size(cols, rows)?;
-                self.session_on(channel)?.resize(cols, rows);
+                if daemon.sessions.feed_on(self.id, channel).is_none() {
+                    pty::check_size(cols, rows)?;
+                    self.session_on(channel)?.resize(cols, rows);
+                }
                 Value::Null
             }
             Request::Detach { channel } => {
-                self.session_on(channel)?.detach(self.id, channel);
+                match daemon.sessions.feed_on(self.id, channel) {
+                    Some(feed) => {
+                        feed.detach(self.id, channel);
+                    }
+                    None => {
+                        self.session_on(channel)?.detach(self.id, channel);
+                    }
+                }
                 Value::Null
             }
             Request::Kill { session } => {
@@ -350,6 +385,34 @@ impl Conn {
                     text: record.report(),
                 })
             }
+            Request::FeedSend {
+                session,
+                text,
+                attachments,
+            } => {
+                for path in &attachments {
+                    absolute(path)?;
+                }
+                self.feed(session)?.say(Input::Send { text, attachments })?;
+                Value::Null
+            }
+            Request::FeedAnswer {
+                session,
+                card,
+                action,
+                value,
+            } => {
+                self.feed(session)?.say(Input::Answer {
+                    card,
+                    action,
+                    value,
+                })?;
+                Value::Null
+            }
+            Request::FeedCancel { session, card } => {
+                self.feed(session)?.say(Input::Cancel { card })?;
+                Value::Null
+            }
             Request::PairBegin { .. } | Request::PairReveal { .. } | Request::PairFinish { .. } => {
                 unreachable!()
             }
@@ -361,10 +424,18 @@ impl Conn {
         if channel == CONTROL
             || self.puts.contains_key(&channel)
             || self.daemon.sessions.on_channel(self.id, channel).is_some()
+            || self.daemon.sessions.feed_on(self.id, channel).is_some()
         {
             bail!("channel {channel} is in use");
         }
         Ok(())
+    }
+
+    fn feed(&self, session: u64) -> Result<Arc<super::feed::Feed>> {
+        self.daemon
+            .sessions
+            .feed(session)
+            .ok_or_else(|| anyhow!("no feed session {session}"))
     }
 
     fn session_on(&self, channel: u32) -> Result<Arc<pty::Session>> {

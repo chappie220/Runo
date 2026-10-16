@@ -48,7 +48,6 @@ class T {
   );
   String get password => t('Device password', '设备密码');
   String get clientName => t('This client\'s name', '本客户端名称');
-  String get codesMatch => t('Codes match, pair', '配对码一致，配对');
   String get alreadyTrusted =>
       t('The device already trusts this client.', '设备已信任本客户端。');
   String get pairedDone => t('Paired.', '已配对。');
@@ -66,11 +65,30 @@ class T {
       t('End $what? What runs in it stops.', '结束$what？其中运行的程序会停止。');
   String get running => t('running', '运行中');
   String get ended => t('ended', '已结束');
+  String endedSessions(int n) => t('Ended ($n)', '已结束（$n）');
+  String get look => t('Appearance', '外观');
+  String get lookSystem => t('As the system', '跟随系统');
+  String get lookLight => t('Light', '浅色');
+  String get lookDark => t('Dark', '深色');
   String attached(int n) => t('$n showing', '$n 处查看');
   String sessionEnded(int? code) => code == null
       ? t('Session ended.', '会话已结束。')
       : t('Session ended ($code).', '会话已结束（$code）。');
   String get detach => t('Leave running', '保持运行并离开');
+  String get shortcuts => t('Keyboard shortcuts', '快捷键');
+  String get keyCopy => t('Copy the selection', '复制选中的文字');
+  String get keyCopyOr =>
+      t('Copy the selection, or interrupt', '复制选中的文字；没有选中时中断');
+  String get keyPaste => t('Paste', '粘贴');
+  String get keyClick =>
+      t('Right click: copy the selection, or paste', '右键：复制选中的文字；没有选中时粘贴');
+  String get keySelectAll => t('Select all', '全选');
+  String get keyBigger => t('Larger text', '放大文字');
+  String get keySmaller => t('Smaller text', '缩小文字');
+  String get keyResetSize => t('Text size back to normal', '恢复文字大小');
+  String get keyLine => t('Scroll a line up or down', '向上或向下滚动一行');
+  String get keyPage => t('Scroll a page up or down', '向上或向下滚动一页');
+  String get keyEnds => t('Scroll to the top or bottom', '滚动到最上或最下');
   String get closed => t('Disconnected', '已断开');
   String get reconnect => t('Reconnect', '重新连接');
   String outsideDomain(String domain) => t(
@@ -121,4 +139,73 @@ class T {
     'From outside its network the device needs its password.',
     '从设备所在网络之外连接需要设备密码。',
   );
+  String get tryAgain => t('Try again', '重试');
+  String get details => t('Details', '详细信息');
+  String get reload => t('Refresh', '刷新');
+  String get here => t('On this network', '在本网络');
+  String get away => t('Not on this network', '不在本网络');
+  String remoteAt(String domain) => t('Remote: $domain', '远程：$domain');
+  String get open => t('Open', '打开');
+  String get more => t('More', '更多');
+  String get stepConnect => t('Connect', '连接');
+  String get stepCode => t('Compare code', '核对确认码');
+  String get stepPassword => t('Password', '输入密码');
+  String get codeTitle => t('Pairing code', '配对确认码');
+  String get codesSame => t('Same code, continue', '一致，继续');
+  String get codesDiffer => t('Different, stop', '不一致，取消');
+  String get passwordAbout =>
+      t('Give the device password to finish pairing.', '输入设备密码完成配对。');
+  String get back => t('Back', '上一步');
+  String get noSessions => t(
+    'Nothing running. Open the Agent or a new shell.',
+    '还没有会话。打开 Agent 或新建一个 Shell。',
+  );
+  String get onLan => t('Local network', '局域网');
+  String get onRemote => t('Remote', '远程');
+  String get clientsAbout =>
+      t('The clients this device trusts.', '这台设备信任的客户端。');
+  String get sendAbout => t(
+    'Pick a file here and put it in a folder on the device.',
+    '从本机选一个文件，放到设备上的目录里。',
+  );
+  String get fetchAbout =>
+      t('Copy a file from the device to this computer.', '把设备上的文件复制到本机。');
+
+  String get copy => t('Copy', '复制');
+  String get copied => t('Copied.', '已复制。');
+  String get say => t('Message the Agent', '给 Agent 发消息');
+  String get sayHint => t(
+    'Enter sends, Shift+Enter starts a new line',
+    'Enter 发送，Shift+Enter 换行',
+  );
+  String get send => t('Send', '发送');
+  String get stop => t('Stop', '停止');
+  String get replying => t('Replying…', '正在回复…');
+  String get feedEmpty => t(
+    'Ask the Agent to set something up, look into a problem, or explain what the device is doing.',
+    '让 Agent 帮你装软件、改设置、查问题，或者问问设备现在在做什么。',
+  );
+  String get lost => t('Connection lost', '连接已断开');
+  String get rejoining => t('Reconnecting…', '正在重新连接…');
+  String get cardWaiting => t('Waiting for you', '等你回答');
+  String get cardRunning => t('Running', '进行中');
+  String get cardDone => t('Done', '完成');
+  String get cardFailed => t('Failed', '失败');
+  String get cardCancelled => t('Cancelled', '已取消');
+  String get highRisk => t('High risk', '高风险');
+  String timeout(int s) =>
+      t('No answer within $s s counts as no.', '$s 秒内不回答视为取消。');
+  String change(int id) => t('Change #$id', '修改 #$id');
+  String get secret => t('Secret', '密钥');
+  String get saved => t('Saved', '已保存');
+  String get save => t('Save', '保存');
+  String atLeast(int n) => t('At least $n characters', '至少 $n 个字符');
+  String get choose => t('Choose', '确定');
+  String get fix => t('Handle it', '处理');
+  String get cpu => t('CPU', 'CPU');
+  String get memory => t('Memory', '内存');
+  String get writes => t('Writes', '写入');
+  String get proxy => t('Proxy', '代理');
+  String get proxyUp => t('reachable', '可用');
+  String get proxyDown => t('unreachable', '不可用');
 }

@@ -18,6 +18,7 @@ pub mod cli;
 mod conn;
 mod control;
 pub mod ddns;
+mod feed;
 mod outbox;
 pub(crate) mod pty;
 pub mod service;
@@ -287,6 +288,7 @@ pub async fn run(options: Options) -> Result<()> {
         }
     });
     let watchdog = feed_watchdog();
+    tokio::spawn(status_to_feeds(daemon.clone()));
     let serving = serve(daemon.clone(), listener, local);
     let result = tokio::select! {
         result = serving => result,
@@ -298,6 +300,25 @@ pub async fn run(options: Options) -> Result<()> {
     };
     watchdog.stop();
     result
+}
+
+/// Puts the device's status into every watched feed, every 2 seconds.
+async fn status_to_feeds(daemon: Arc<Daemon>) {
+    let mut sampler = feed::Sampler::new(&daemon.state, daemon.sessions.config());
+    let mut tick = tokio::time::interval(feed::STATUS_EVERY);
+    loop {
+        tick.tick().await;
+        let feeds = daemon.sessions.watched_feeds();
+        if feeds.is_empty() {
+            continue;
+        }
+        let status = sampler.read(daemon.pairing().until).await;
+        for feed in feeds {
+            feed.push(runo_link::feed::Body::Status {
+                status: status.clone(),
+            });
+        }
+    }
 }
 
 /// Feeds the hardware watchdog from its own thread, so a stuck runtime
@@ -379,6 +400,7 @@ pub async fn start(
         sessions: pty::Sessions::new(pty::Programs {
             runo,
             config: options.config.clone(),
+            feed_log: options.state.join("feed.log"),
         }),
         advertiser: Mutex::new(None),
         tls,

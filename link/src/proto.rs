@@ -30,6 +30,11 @@ pub enum Kind {
     Agent,
     /// A login shell, as `!shell` gives.
     Shell,
+    /// The Agent as an event stream (`runo feed`, see `feed`): the
+    /// channel carries one JSON [`crate::feed::Event`] per frame, and what
+    /// the person says goes in `FeedSend`, `FeedAnswer` and `FeedCancel`.
+    /// Only devices whose welcome says `feed` have it.
+    Feed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,19 +68,27 @@ pub enum Request {
     },
     /// The device's terminal sessions.
     Sessions,
-    /// A new session on `channel`.
+    /// A new session on `channel`. A feed has no size.
     Open {
         channel: u32,
         kind: Kind,
+        #[serde(default)]
         cols: u16,
+        #[serde(default)]
         rows: u16,
     },
     /// An existing session on `channel`: what it showed lately, then live.
+    /// For a feed, what changed after event `since` (0 or none: all it
+    /// keeps).
     Attach {
         channel: u32,
         session: u64,
+        #[serde(default)]
         cols: u16,
+        #[serde(default)]
         rows: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
     },
     Resize {
         channel: u32,
@@ -126,6 +139,30 @@ pub enum Request {
         change: u64,
         keep: bool,
     },
+
+    // A feed session's input.
+    /// A message; `attachments` are paths sent before with `FilePut`.
+    FeedSend {
+        session: u64,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
+    },
+    /// Answers a card: one of its actions, with the value of a secret or
+    /// a choice. A secret's value goes into no log.
+    FeedAnswer {
+        session: u64,
+        card: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+    },
+    /// Stops the turn, or the task on `card`.
+    FeedCancel {
+        session: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        card: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +198,10 @@ pub enum Event {
         /// (4.9), for reaching it from outside the LAN.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         domain: Option<String>,
+        /// Whether the device has `Kind::Feed`, the Agent as an event
+        /// stream (4.11); without it the Agent is a terminal.
+        #[serde(default)]
+        feed: bool,
     },
     /// A session shown on `channel` ended.
     Exit {
@@ -266,6 +307,27 @@ mod tests {
         );
         let back: Call = serde_json::from_str(r#"{"id":4,"op":"sessions"}"#).unwrap();
         assert!(matches!(back.request, Request::Sessions));
+        let status: Call = serde_json::from_str(r#"{"id":5,"op":"status"}"#).unwrap();
+        assert!(matches!(status.request, Request::Status { lang: None }));
+        // A feed has no size, and an older client's attach no `since`.
+        let feed: Call =
+            serde_json::from_str(r#"{"id":6,"op":"open","channel":2,"kind":"feed"}"#).unwrap();
+        assert!(matches!(
+            feed.request,
+            Request::Open {
+                kind: Kind::Feed,
+                cols: 0,
+                ..
+            }
+        ));
+        let attach: Call = serde_json::from_str(
+            r#"{"id":7,"op":"attach","channel":2,"session":1,"cols":80,"rows":24}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            attach.request,
+            Request::Attach { since: None, .. }
+        ));
         let status: Call = serde_json::from_str(r#"{"id":5,"op":"status"}"#).unwrap();
         assert!(matches!(status.request, Request::Status { lang: None }));
 

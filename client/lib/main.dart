@@ -4,6 +4,7 @@ import 'devices.dart';
 import 'src/rust/frb_generated.dart';
 import 'store.dart';
 import 'text.dart';
+import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,25 +20,35 @@ class RunoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xFF2E7D6B);
-    return MaterialApp(
-      title: 'Runo',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: seed, useMaterial3: true),
-      darkTheme: ThemeData(
-        colorSchemeSeed: seed,
-        brightness: Brightness.dark,
-        useMaterial3: true,
+    return ValueListenableBuilder(
+      valueListenable: store.look,
+      builder: (context, look, home) => MaterialApp(
+        title: 'Runo',
+        debugShowCheckedModeBanner: false,
+        theme: theme(Brightness.light),
+        darkTheme: theme(Brightness.dark),
+        themeMode: look,
+        home: home,
       ),
-      home: DevicesPage(store: store),
+      child: DevicesPage(store: store),
     );
   }
 }
 
 /// Shows `error` at the bottom of the screen.
 void complain(BuildContext context, Object error) {
-  ScaffoldMessenger.of(context)
-      .showSnackBar(SnackBar(content: Text(message(error))));
+  final colors = Theme.of(context).colorScheme;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Row(
+        children: [
+          Icon(Icons.error_outline, color: colors.errorContainer),
+          const SizedBox(width: 12),
+          Expanded(child: Text(message(error))),
+        ],
+      ),
+    ),
+  );
 }
 
 /// Asks before something that cannot be taken back.
@@ -50,7 +61,8 @@ Future<bool> confirm(
   final yes = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
-      content: Text(question),
+      icon: const Icon(Icons.warning_amber_rounded),
+      content: Text(question, textAlign: TextAlign.center),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, false),

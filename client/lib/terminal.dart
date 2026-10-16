@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart' as xterm;
 
 import 'changes.dart';
+import 'console.dart';
 import 'src/rust/api/client.dart' as rust;
 import 'store.dart';
 import 'text.dart';
@@ -36,6 +37,7 @@ class _TerminalPageState extends State<TerminalPage> {
   final t = T.of;
   final terminal = xterm.Terminal(maxLines: 10000);
   final focus = FocusNode();
+  final console = GlobalKey<ConsoleState>();
   late final Sink<List<int>> screen = const Utf8Decoder(allowMalformed: true)
       .startChunkedConversion(_Writer(terminal.write));
   rust.Terminal? remote;
@@ -115,8 +117,25 @@ class _TerminalPageState extends State<TerminalPage> {
     final touch = Platform.isAndroid;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title),
+        title: Row(
+          children: [
+            Icon(
+              widget.kind == 'agent'
+                  ? Icons.smart_toy_outlined
+                  : Icons.terminal,
+              size: 22,
+            ),
+            const SizedBox(width: 10),
+            Flexible(child: Text(widget.title)),
+          ],
+        ),
         actions: [
+          if (!touch)
+            IconButton(
+              tooltip: t.shortcuts,
+              icon: const Icon(Icons.keyboard_outlined),
+              onPressed: () => console.currentState?.help(),
+            ),
           if (!ended)
             IconButton(
               tooltip: t.detach,
@@ -131,44 +150,46 @@ class _TerminalPageState extends State<TerminalPage> {
           child: Column(
             children: [
               Expanded(
-                child: xterm.TerminalView(
-                  terminal,
+                child: Console(
+                  key: console,
+                  terminal: terminal,
                   focusNode: focus,
-                  autofocus: true,
                   readOnly: ended,
-                  padding: const EdgeInsets.all(4),
-                  textStyle: const xterm.TerminalStyle(fontSize: 14),
                 ),
               ),
               if (touch)
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      key('Esc', '\x1b'),
-                      key('Tab', '\t'),
-                      TextButton(
-                        onPressed: ended
-                            ? null
-                            : () => setState(() => ctrl = !ctrl),
-                        style: ctrl
-                            ? TextButton.styleFrom(
-                                backgroundColor: Theme.of(context)
-                                    .colorScheme
-                                    .primaryContainer,
-                              )
-                            : null,
-                        child: const Text('Ctrl'),
-                      ),
-                      key('↑', '\x1b[A'),
-                      key('↓', '\x1b[B'),
-                      key('←', '\x1b[D'),
-                      key('→', '\x1b[C'),
-                      key('^C', '\x03'),
-                      key('|', '|'),
-                      key('/', '/'),
-                      key('-', '-'),
-                    ],
+                Container(
+                  color: Theme.of(context).colorScheme.surfaceContainer,
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        key('Esc', '\x1b'),
+                        key('Tab', '\t'),
+                        TextButton(
+                          onPressed: ended
+                              ? null
+                              : () => setState(() => ctrl = !ctrl),
+                          style: ctrl
+                              ? TextButton.styleFrom(
+                                  backgroundColor: Theme.of(context)
+                                      .colorScheme
+                                      .primaryContainer,
+                                )
+                              : null,
+                          child: const Text('Ctrl'),
+                        ),
+                        key('↑', '\x1b[A'),
+                        key('↓', '\x1b[B'),
+                        key('←', '\x1b[D'),
+                        key('→', '\x1b[C'),
+                        key('^C', '\x03'),
+                        key('|', '|'),
+                        key('/', '/'),
+                        key('-', '-'),
+                      ],
+                    ),
                   ),
                 ),
             ],

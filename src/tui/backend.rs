@@ -146,6 +146,13 @@ impl<W: Write> Backend for RowBackend<W> {
                 continue;
             }
             self.screen[(x, y)] = cell.clone();
+            // ratatui leaves out the cells a wide character covers: they are
+            // blank in its frame, so blank them here, or what they held
+            // before comes back once the wide character is gone.
+            let end = x.saturating_add(cell.symbol().width() as u16);
+            for covered in x + 1..end.min(self.screen.area.width) {
+                self.screen[(covered, y)].reset();
+            }
             if rows.last() != Some(&y) {
                 rows.push(y);
             }
@@ -297,5 +304,19 @@ mod tests {
         terminal.clear().unwrap();
         show(&mut terminal, &["same".into()]);
         assert!(out.take().contains("same"));
+    }
+
+    #[test]
+    fn text_under_a_wide_character_does_not_come_back() {
+        let (mut terminal, out) = terminal(8, 1);
+        show(&mut terminal, &["Gateway!".into()]);
+        // ratatui sends only 你, 好 and 世 here, not the cells they cover.
+        show(&mut terminal, &["你好世!".into()]);
+        out.take();
+        show(&mut terminal, &["".into()]);
+        let written = out.take();
+        for c in ['a', 'e', 'w', 'y'] {
+            assert!(!written.contains(c), "{written:?}");
+        }
     }
 }

@@ -4,12 +4,17 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'agent.dart';
 import 'changes.dart';
+import 'feed.dart';
 import 'main.dart';
+import 'problem.dart';
 import 'src/rust/api/client.dart' as rust;
 import 'store.dart';
 import 'terminal.dart';
 import 'text.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
 /// One paired device: its sessions, status, logs, files and clients.
 class DevicePage extends StatefulWidget {
@@ -25,8 +30,18 @@ class DevicePage extends StatefulWidget {
 class _DevicePageState extends State<DevicePage> {
   final t = T.of;
   rust.Connection? connection;
-  String? error;
+  Problem? error;
+
+  /// What to try about [error].
+  String? hint;
+
+  /// Reached from outside its network, through its domain.
+  bool away = false;
   int generation = 0;
+  int tab = 0;
+
+  /// Counts the times the user asked for the page again.
+  int reloads = 0;
 
   @override
   void initState() {
@@ -38,6 +53,7 @@ class _DevicePageState extends State<DevicePage> {
     setState(() {
       connection = null;
       error = null;
+      hint = null;
     });
     try {
       final opened = await Multicast.hold(
@@ -48,12 +64,13 @@ class _DevicePageState extends State<DevicePage> {
         ),
       );
       if (opened.needsLogin() && !await logIn(opened)) {
-        if (mounted) setState(() => error = t.loginNeeded);
+        if (mounted) setState(() => error = Problem(t.loginNeeded));
         return;
       }
       if (mounted) {
         setState(() {
           connection = opened;
+          away = opened.needsLogin();
           generation++;
         });
       }
@@ -61,8 +78,12 @@ class _DevicePageState extends State<DevicePage> {
       // From outside its network the device is reached only through its
       // domain, which needs IPv6 and the router's leave.
       final domain = widget.device.domain;
-      final hint = domain == null ? t.outsideNoDomain : t.outsideDomain(domain);
-      if (mounted) setState(() => error = '${message(e)}\n\n$hint');
+      if (mounted) {
+        setState(() {
+          error = Problem.of(e);
+          hint = domain == null ? t.outsideNoDomain : t.outsideDomain(domain);
+        });
+      }
     }
   }
 
@@ -122,6 +143,15 @@ class _DevicePageState extends State<DevicePage> {
     );
   }
 
+  /// The connection, or a new one when it was lost; none when the device
+  /// cannot be reached.
+  Future<rust.Connection?> live() async {
+    final connection = this.connection;
+    if (connection != null && connection.closed() == null) return connection;
+    await connect();
+    return this.connection;
+  }
+
   /// Runs `call`, and offers to reconnect when the connection is gone.
   Future<R?> guard<R>(Future<R> Function(rust.Connection) call) async {
     final connection = this.connection;
@@ -132,7 +162,7 @@ class _DevicePageState extends State<DevicePage> {
       if (!mounted) return null;
       final closed = connection.closed();
       if (closed != null) {
-        setState(() => error = '${t.closed}: $closed');
+        setState(() => error = Problem(t.closed, closed));
       } else {
         complain(context, e);
       }
@@ -143,27 +173,22 @@ class _DevicePageState extends State<DevicePage> {
   @override
   Widget build(BuildContext context) {
     final connection = this.connection;
+    final colors = Theme.of(context).colorScheme;
     final tabs = [
       (Icons.terminal, t.sessions),
       (Icons.info_outline, t.status),
-      (Icons.receipt_long, t.logs),
+      (Icons.receipt_long_outlined, t.logs),
       (Icons.folder_outlined, t.files),
-      (Icons.devices, t.clients),
+      (Icons.devices_outlined, t.clients),
     ];
+    final wide = MediaQuery.sizeOf(context).width >= 840;
     final Widget body;
     if (error != null) {
-      body = Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton(onPressed: connect, child: Text(t.reconnect)),
-            ],
-          ),
-        ),
+      body = ProblemView(
+        problem: error!,
+        hint: hint,
+        retry: connect,
+        retryLabel: t.reconnect,
       );
     } else if (connection == null) {
       body = Center(
@@ -177,38 +202,69 @@ class _DevicePageState extends State<DevicePage> {
         ),
       );
     } else {
-      body = ChangeBanner(
+      final Widget page = switch (tab) {
+        0 => _Sessions(page: this, connection: connection),
+        1 => _Text(load: () => guard((c) => c.status(lang: t.lang))),
+        2 => _Text(load: () => guard((c) => c.logs(lang: t.lang)), tail: true),
+        3 => _Files(page: this),
+        _ => _Clients(page: this),
+      };
+      final content = ChangeBanner(
         key: ValueKey(generation),
         connection: connection,
-        child: TabBarView(
-          children: [
-            _Sessions(page: this, connection: connection),
-            _Text(load: () => guard((c) => c.status(lang: t.lang))),
-            _Text(load: () => guard((c) => c.logs(lang: t.lang)), tail: true),
-            _Files(page: this),
-            _Clients(page: this),
-          ],
-        ),
+        child: KeyedSubtree(key: ValueKey((tab, reloads)), child: page),
       );
-    }
-    return DefaultTabController(
-      length: tabs.length,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(connection?.deviceName ?? widget.device.name),
-          bottom: connection == null
-              ? null
-              : TabBar(
-                  isScrollable: true,
-                  tabAlignment: TabAlignment.start,
-                  tabs: [
+      body = wide
+          ? Row(
+              children: [
+                NavigationRail(
+                  selectedIndex: tab,
+                  onDestinationSelected: (i) => setState(() => tab = i),
+                  destinations: [
                     for (final (icon, label) in tabs)
-                      Tab(icon: Icon(icon), text: label),
+                      NavigationRailDestination(
+                        icon: Icon(icon),
+                        label: Text(label),
+                      ),
                   ],
                 ),
-        ),
-        body: body,
+                VerticalDivider(width: 1, color: colors.outlineVariant),
+                Expanded(child: content),
+              ],
+            )
+          : content;
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(connection?.deviceName ?? widget.device.name),
+        actions: [
+          if (connection != null) ...[
+            Pill(
+              away ? t.onRemote : t.onLan,
+              color: good(context),
+              icon: away ? Icons.public : Icons.lan_outlined,
+            ),
+            IconButton(
+              tooltip: t.reload,
+              icon: const Icon(Icons.refresh),
+              onPressed: () => setState(() => reloads++),
+            ),
+          ],
+          const SizedBox(width: 8),
+        ],
       ),
+      body: body,
+      bottomNavigationBar: connection == null || wide
+          ? null
+          : NavigationBar(
+              selectedIndex: tab,
+              onDestinationSelected: (i) => setState(() => tab = i),
+              labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+              destinations: [
+                for (final (icon, label) in tabs)
+                  NavigationDestination(icon: Icon(icon), label: label),
+              ],
+            ),
     );
   }
 }
@@ -226,6 +282,35 @@ class _Sessions extends StatefulWidget {
 class _SessionsState extends State<_Sessions> {
   final t = T.of;
   List<rust.SessionInfo>? sessions;
+  bool showEnded = false;
+
+  /// The number each running shell goes by here. The device counts every
+  /// session it ever started; this takes the smallest number free, so a
+  /// shell opened after the others closed is "Shell 1" again.
+  final numbers = <BigInt, int>{};
+
+  int get free {
+    var n = 1;
+    while (numbers.containsValue(n)) {
+      n++;
+    }
+    return n;
+  }
+
+  void count(List<rust.SessionInfo> list) {
+    final shells = list.where((s) => s.running && !s.agent).toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
+    numbers.removeWhere((id, _) => !shells.any((s) => s.id == id));
+    for (final shell in shells) {
+      numbers.putIfAbsent(shell.id, () => free);
+    }
+  }
+
+  String name(rust.SessionInfo session) => session.agent
+      ? t.agent
+      : numbers[session.id] == null
+      ? t.shell
+      : '${t.shell} ${numbers[session.id]}';
 
   @override
   void initState() {
@@ -235,19 +320,37 @@ class _SessionsState extends State<_Sessions> {
 
   Future<void> load() async {
     final list = await widget.page.guard((c) => c.sessions());
-    if (mounted && list != null) setState(() => sessions = list);
+    if (mounted && list != null) {
+      setState(() {
+        count(list);
+        sessions = list;
+      });
+    }
   }
 
-  Future<void> show(String kind, String title, {BigInt? attach}) async {
+  /// A terminal, or the Agent as its event stream where the device has
+  /// one (`feed`: a feed session, or a new Agent).
+  Future<void> show(
+    String kind,
+    String title, {
+    BigInt? attach,
+    bool feed = false,
+  }) async {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => TerminalPage(
-          connection: widget.connection,
-          kind: kind,
-          title: title,
-          attach: attach,
-        ),
+        builder: (_) => feed
+            ? AgentPage(
+                open: rustFeed(widget.page.live, attach: attach),
+                title: title,
+                connection: widget.connection,
+              )
+            : TerminalPage(
+                connection: widget.connection,
+                kind: kind,
+                title: title,
+                attach: attach,
+              ),
       ),
     );
     // Leaving detaches on its way out; look once it has arrived too.
@@ -256,72 +359,132 @@ class _SessionsState extends State<_Sessions> {
   }
 
   Future<void> kill(rust.SessionInfo session) async {
-    final name = session.agent ? t.agent : '${t.shell} ${session.id}';
+    final name = this.name(session);
     if (!await confirm(context, t.killAsk(name), t.kill)) return;
     await widget.page.guard((c) => c.kill(session: session.id));
     load();
   }
 
+  Widget card(rust.SessionInfo session) {
+    final theme = Theme.of(context);
+    return Card(
+      child: InkWell(
+        onTap: session.running
+            ? () => show(
+                session.agent ? 'agent' : 'shell',
+                name(session),
+                attach: session.id,
+                feed: session.feed,
+              )
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
+          child: Row(
+            children: [
+              Tile(
+                session.agent ? Icons.smart_toy_outlined : Icons.terminal,
+                active: session.running,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name(session),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      when(session.started),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        Pill(
+                          session.running ? t.running : t.ended,
+                          color: state(context, session.running),
+                        ),
+                        if (session.attached > 0)
+                          Pill(
+                            t.attached(session.attached),
+                            color: theme.colorScheme.primary,
+                            icon: Icons.visibility_outlined,
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              if (session.running)
+                IconButton(
+                  tooltip: t.kill,
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  onPressed: () => kill(session),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sessions = this.sessions;
-    return RefreshIndicator(
+    // An ended session stays listed on the device for a while; it is
+    // kept out of the way here.
+    final running = [...?sessions?.where((s) => s.running)];
+    final ended = [...?sessions?.where((s) => !s.running)];
+    return Listing(
       onRefresh: load,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              FilledButton.icon(
-                icon: const Icon(Icons.smart_toy_outlined),
-                label: Text(t.agent),
-                onPressed: () => show('agent', t.agent),
-              ),
-              FilledButton.tonalIcon(
-                icon: const Icon(Icons.terminal),
-                label: Text(t.newShell),
-                onPressed: () => show('shell', t.shell),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (sessions == null) const LinearProgressIndicator(),
-          for (final session in sessions ?? <rust.SessionInfo>[])
-            Card(
-              child: ListTile(
-                leading: Icon(
-                  session.agent ? Icons.smart_toy_outlined : Icons.terminal,
-                ),
-                title: Text(
-                  session.agent ? t.agent : '${t.shell} ${session.id}',
-                ),
-                subtitle: Text(
-                  [
-                    when(session.started),
-                    session.running ? t.running : t.ended,
-                    if (session.attached > 0) t.attached(session.attached),
-                  ].join(' · '),
-                ),
-                onTap: session.running
-                    ? () => show(
-                        session.agent ? 'agent' : 'shell',
-                        session.agent ? t.agent : '${t.shell} ${session.id}',
-                        attach: session.id,
-                      )
-                    : null,
-                trailing: session.running
-                    ? IconButton(
-                        tooltip: t.kill,
-                        icon: const Icon(Icons.stop_circle_outlined),
-                        onPressed: () => kill(session),
-                      )
-                    : null,
-              ),
+      children: [
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            FilledButton.icon(
+              icon: const Icon(Icons.smart_toy_outlined),
+              label: Text(t.agent),
+              onPressed: () =>
+                  show('agent', t.agent, feed: widget.connection.hasFeed()),
             ),
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.add),
+              label: Text(t.newShell),
+              onPressed: () => show('shell', '${t.shell} $free'),
+            ),
+          ],
+        ),
+        Heading(t.sessions),
+        if (sessions == null)
+          const LinearProgressIndicator()
+        else if (running.isEmpty)
+          Empty(icon: Icons.terminal, text: t.noSessions)
+        else
+          Cards(children: [for (final session in running) card(session)]),
+        if (ended.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              icon: Icon(showEnded ? Icons.expand_less : Icons.expand_more),
+              label: Text(t.endedSessions(ended.length)),
+              onPressed: () => setState(() => showEnded = !showEnded),
+            ),
+          ),
+          if (showEnded) ...[
+            const SizedBox(height: 8),
+            Cards(children: [for (final session in ended) card(session)]),
+          ],
         ],
-      ),
+      ],
     );
   }
 }
@@ -372,14 +535,23 @@ class _TextState extends State<_Text> {
     if (text == null) return const Center(child: CircularProgressIndicator());
     return RefreshIndicator(
       onRefresh: load,
-      child: SingleChildScrollView(
-        controller: scroll,
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(16),
-        child: SelectableText(
-          text,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-        ),
+      child: LayoutBuilder(
+        builder: (context, box) {
+          final side = box.maxWidth > 1112 ? (box.maxWidth - 1080) / 2 : 16.0;
+          return ListView(
+            controller: scroll,
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(side, 16, side, 24),
+            children: [
+              Panel(
+                child: SelectableText(
+                  text,
+                  style: mono.copyWith(fontSize: 13, height: 1.45),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -494,47 +666,106 @@ class _FilesState extends State<_Files> {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
+    final theme = Theme.of(context);
+    Widget card({
+      required IconData icon,
+      required String title,
+      required String about,
+      required Widget field,
+      required Widget button,
+    }) => Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Tile(icon),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        about,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            field,
+            const SizedBox(height: 12),
+            Align(alignment: Alignment.centerRight, child: button),
+          ],
+        ),
+      ),
+    );
+    return Listing(
       children: [
-        TextField(
-          controller: folder,
-          decoration: InputDecoration(
-            labelText: t.remoteDir,
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: FilledButton.tonalIcon(
-            icon: const Icon(Icons.upload),
-            label: Text(t.upload),
-            onPressed: busy ? null : upload,
-          ),
-        ),
-        const SizedBox(height: 24),
-        TextField(
-          controller: path,
-          decoration: InputDecoration(
-            labelText: t.remotePath,
-            hintText: '/var/log/runod.log',
-            border: const OutlineInputBorder(),
-          ),
-          onSubmitted: (_) => busy ? null : download(),
-        ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: FilledButton.tonalIcon(
-            icon: const Icon(Icons.download),
-            label: Text(t.download),
-            onPressed: busy ? null : download,
-          ),
+        Cards(
+          children: [
+            card(
+              icon: Icons.upload,
+              title: t.upload,
+              about: t.sendAbout,
+              field: TextField(
+                controller: folder,
+                style: mono,
+                decoration: InputDecoration(
+                  labelText: t.remoteDir,
+                  prefixIcon: const Icon(Icons.folder_outlined),
+                ),
+              ),
+              button: FilledButton.tonalIcon(
+                icon: const Icon(Icons.file_open_outlined),
+                label: Text(t.upload),
+                onPressed: busy ? null : upload,
+              ),
+            ),
+            card(
+              icon: Icons.download,
+              title: t.download,
+              about: t.fetchAbout,
+              field: TextField(
+                controller: path,
+                style: mono,
+                decoration: InputDecoration(
+                  labelText: t.remotePath,
+                  hintText: '/var/log/runod.log',
+                  prefixIcon: const Icon(Icons.description_outlined),
+                ),
+                onSubmitted: (_) => busy ? null : download(),
+              ),
+              button: FilledButton.tonalIcon(
+                icon: const Icon(Icons.download),
+                label: Text(t.download),
+                onPressed: busy ? null : download,
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
         if (busy) const LinearProgressIndicator(),
-        if (done != null) Text(done!),
+        if (done != null)
+          Card(
+            color: good(context).withValues(alpha: .1),
+            child: ListTile(
+              leading: Icon(Icons.check_circle, color: good(context)),
+              title: Text(done!),
+            ),
+          ),
       ],
     );
   }
@@ -584,53 +815,102 @@ class _ClientsState extends State<_Clients> {
   @override
   Widget build(BuildContext context) {
     final clients = this.clients;
-    return RefreshIndicator(
+    final theme = Theme.of(context);
+    return Listing(
       onRefresh: load,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: FilledButton.tonalIcon(
-              icon: const Icon(Icons.add_moderator_outlined),
-              label: Text(t.openPairing),
-              onPressed: openPairing,
+      children: [
+        Card(
+          color: theme.colorScheme.secondaryContainer.withValues(alpha: .5),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Wrap(
+              spacing: 16,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              alignment: WrapAlignment.spaceBetween,
+              children: [
+                Text(t.clientsAbout, style: theme.textTheme.bodyMedium),
+                FilledButton.tonalIcon(
+                  icon: const Icon(Icons.add_moderator_outlined),
+                  label: Text(t.openPairing),
+                  onPressed: openPairing,
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 16),
-          if (clients == null) const LinearProgressIndicator(),
-          for (final client in clients ?? <rust.ClientInfo>[])
-            Card(
-              child: ListTile(
-                leading: Icon(client.connected ? Icons.link : Icons.link_off),
-                title: Text(
-                  client.this_
-                      ? '${client.name} (${t.thisClient})'
-                      : client.name,
-                ),
-                subtitle: Text(
-                  [
-                    client.id,
-                    client.connected
-                        ? t.online
-                        : t.lastSeen(
-                            client.lastSeen == null
-                                ? t.never
-                                : when(client.lastSeen!),
-                          ),
-                  ].join(' · '),
-                ),
-                trailing: client.this_
-                    ? null
-                    : IconButton(
-                        tooltip: t.revoke,
-                        icon: const Icon(Icons.block),
-                        onPressed: () => revoke(client),
+        ),
+        Heading(t.clients),
+        if (clients == null) const LinearProgressIndicator(),
+        Cards(
+          children: [
+            for (final client in clients ?? <rust.ClientInfo>[])
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
+                  child: Row(
+                    children: [
+                      Tile(Icons.laptop, active: client.connected),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              client.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              client.id,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: mono.copyWith(
+                                fontSize: 12,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                Pill(
+                                  client.connected
+                                      ? t.online
+                                      : t.lastSeen(
+                                          client.lastSeen == null
+                                              ? t.never
+                                              : when(client.lastSeen!),
+                                        ),
+                                  color: state(context, client.connected),
+                                ),
+                                if (client.this_)
+                                  Pill(
+                                    t.thisClient,
+                                    color: theme.colorScheme.primary,
+                                    icon: Icons.person_outline,
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
+                      if (!client.this_)
+                        IconButton(
+                          tooltip: t.revoke,
+                          icon: const Icon(Icons.block),
+                          onPressed: () => revoke(client),
+                        ),
+                    ],
+                  ),
+                ),
               ),
-            ),
-        ],
-      ),
+          ],
+        ),
+      ],
     );
   }
 }

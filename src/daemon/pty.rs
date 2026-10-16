@@ -16,6 +16,7 @@ use runo_link::proto::{self, Down, Event, Kind};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 
+use super::feed::Feed;
 use super::outbox::Outbox;
 use super::trust::now;
 
@@ -41,9 +42,11 @@ pub struct Session {
 
 /// How to start each kind.
 pub struct Programs {
-    /// This program, run as `tui` for the Agent.
+    /// This program, run as `tui` for the Agent and as `feed` for a feed.
     pub runo: PathBuf,
     pub config: Option<PathBuf>,
+    /// Where a feed's Agent writes its errors.
+    pub feed_log: PathBuf,
 }
 
 impl Programs {
@@ -65,14 +68,20 @@ impl Programs {
                 command.arg("-l").env("RUNO_SHELL", "1");
                 command
             }
+            Kind::Feed => unreachable!("a feed is not a terminal"),
         }
     }
 }
 
 pub struct Sessions {
     sessions: Mutex<HashMap<u64, Arc<Session>>>,
+    /// The Agent as an event stream; numbered with the terminals.
+    feeds: Mutex<HashMap<u64, Arc<Feed>>>,
     next: AtomicU64,
     programs: Programs,
+    /// Tests: what runs in place of `runo feed`.
+    #[cfg(test)]
+    pub feed_program: Mutex<Option<PathBuf>>,
 }
 
 fn winsize(cols: u16, rows: u16) -> libc::winsize {
@@ -266,8 +275,11 @@ impl Sessions {
     pub fn new(programs: Programs) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            feeds: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             programs,
+            #[cfg(test)]
+            feed_program: Mutex::new(None),
         }
     }
 
@@ -284,8 +296,61 @@ impl Sessions {
             None => true,
         });
         let mut list: Vec<proto::Session> = sessions.values().map(|s| s.info()).collect();
+        let mut feeds = self.feeds.lock().unwrap();
+        feeds.retain(|_, f| f.ended_at().is_none_or(|when| at - when < ENDED_KEEP_SECS));
+        list.extend(feeds.values().map(|f| f.info()));
         list.sort_by_key(|s| s.id);
         list
+    }
+
+    pub fn config(&self) -> Option<&std::path::Path> {
+        self.programs.config.as_deref()
+    }
+
+    /// Starts the Agent as an event stream.
+    pub fn open_feed(&self) -> Result<Arc<Feed>> {
+        #[cfg(test)]
+        let runo = self
+            .feed_program
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| self.programs.runo.clone());
+        #[cfg(not(test))]
+        let runo = self.programs.runo.clone();
+        let feed = Feed::start(
+            self.next.fetch_add(1, Ordering::Relaxed),
+            &runo,
+            self.programs.config.as_deref(),
+            &self.programs.feed_log,
+        )?;
+        self.feeds.lock().unwrap().insert(feed.id, feed.clone());
+        Ok(feed)
+    }
+
+    pub fn feed(&self, id: u64) -> Option<Arc<Feed>> {
+        self.feeds.lock().unwrap().get(&id).cloned()
+    }
+
+    /// The feed shown on `channel` of `conn`.
+    pub fn feed_on(&self, conn: u64, channel: u32) -> Option<Arc<Feed>> {
+        self.feeds
+            .lock()
+            .unwrap()
+            .values()
+            .find(|f| f.shows_on(conn, channel))
+            .cloned()
+    }
+
+    /// The feeds someone is watching.
+    pub fn watched_feeds(&self) -> Vec<Arc<Feed>> {
+        self.feeds
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|f| f.watched())
+            .cloned()
+            .collect()
     }
 
     /// The session shown on `channel` of `conn`.
@@ -302,12 +367,19 @@ impl Sessions {
         for session in self.sessions.lock().unwrap().values() {
             session.detach_connection(conn);
         }
+        for feed in self.feeds.lock().unwrap().values() {
+            feed.detach_connection(conn);
+        }
     }
 
     pub fn kill(&self, id: u64) -> bool {
-        match self.sessions.lock().unwrap().remove(&id) {
-            Some(session) => {
-                session.kill();
+        if let Some(session) = self.sessions.lock().unwrap().remove(&id) {
+            session.kill();
+            return true;
+        }
+        match self.feeds.lock().unwrap().remove(&id) {
+            Some(feed) => {
+                feed.kill();
                 true
             }
             None => false,
@@ -318,10 +390,16 @@ impl Sessions {
         for (_, session) in self.sessions.lock().unwrap().drain() {
             session.kill();
         }
+        for (_, feed) in self.feeds.lock().unwrap().drain() {
+            feed.kill();
+        }
     }
 
-    /// Starts a `kind` session of `cols` × `rows`.
+    /// Starts a `kind` terminal session of `cols` × `rows`.
     pub fn open(&self, kind: Kind, cols: u16, rows: u16) -> Result<Arc<Session>> {
+        if kind == Kind::Feed {
+            bail!("a feed is not a terminal");
+        }
         let (master, slave) = open_pty(cols, rows)?;
         let mut command = self.programs.command(kind);
         command

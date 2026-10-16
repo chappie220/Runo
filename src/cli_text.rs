@@ -24,6 +24,13 @@ const COMMANDS: &[(&str, Tr)] = &[
         tr("Full-screen chat in the terminal", "在终端里全屏聊天"),
     ),
     (
+        "feed",
+        tr(
+            "The Agent as an event stream on stdin and stdout, for runod's feed sessions; not for people",
+            "以事件流方式在标准输入输出上运行 Agent，供 runod 的事件流会话使用，不是给人用的",
+        ),
+    ),
+    (
         "console",
         tr(
             "The Agent's window drawn on the screen (framebuffer), with Chinese",

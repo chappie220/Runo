@@ -6,6 +6,8 @@ import 'pair.dart';
 import 'src/rust/api/client.dart' as rust;
 import 'store.dart';
 import 'text.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
 /// The paired devices, and the Runo devices answering on this network.
 class DevicesPage extends StatefulWidget {
@@ -108,91 +110,332 @@ class _DevicesPageState extends State<DevicesPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final unpaired = found.where((d) => !d.paired).toList();
     return Scaffold(
-      appBar: AppBar(
-        title: Text(t.devices),
-        actions: [
-          IconButton(
-            tooltip: t.addAddress,
-            icon: const Icon(Icons.add_link),
-            onPressed: pairByAddress,
-          ),
-          IconButton(
-            tooltip: t.refresh,
-            icon: const Icon(Icons.refresh),
-            onPressed: looking ? null : look,
-          ),
-        ],
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add_link),
+        label: Text(t.addAddress),
+        onPressed: pairByAddress,
       ),
-      body: RefreshIndicator(
-        onRefresh: look,
-        child: ListView(
-          children: [
-            _Heading(t.paired),
-            if (paired.isEmpty)
-              ListTile(
-                title: Text(t.noneYet, style: theme.textTheme.bodySmall),
-              ),
-            for (final device in paired)
-              ListTile(
-                leading: Icon(
-                  found.any((d) => d.id == device.id)
-                      ? Icons.memory
-                      : Icons.memory_outlined,
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: look,
+          child: CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Content(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 96),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 28, 0, 0),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  t.devices,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .headlineMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              _Look(widget.store.look),
+                              const SizedBox(width: 4),
+                              IconButton.filledTonal(
+                                tooltip: t.refresh,
+                                icon: const Icon(Icons.refresh),
+                                onPressed: looking ? null : look,
+                              ),
+                            ],
+                          ),
+                        ),
+                        Heading(
+                          t.paired,
+                          trailing: paired.isEmpty
+                              ? null
+                              : _Count(paired.length),
+                        ),
+                        if (paired.isEmpty)
+                          Empty(icon: Icons.devices_other, text: t.noneYet)
+                        else
+                          Cards(
+                            children: [
+                              for (final device in paired)
+                                _PairedCard(
+                                  device: device,
+                                  nearby: found.any((d) => d.id == device.id),
+                                  onOpen: () => open(device),
+                                  onForget: () => forget(device),
+                                ),
+                            ],
+                          ),
+                        Heading(
+                          t.nearby,
+                          trailing: looking
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : null,
+                        ),
+                        if (unpaired.isEmpty)
+                          Empty(
+                            icon: Icons.wifi_find,
+                            text: looking ? t.searching : t.noneNearby,
+                          )
+                        else
+                          Cards(
+                            children: [
+                              for (final device in unpaired)
+                                _FoundCard(
+                                  device: device,
+                                  onPair: () => pair(device.addresses),
+                                ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
-                title: Text(device.name),
-                subtitle: Text(device.id),
-                onTap: () => open(device),
-                trailing: IconButton(
-                  tooltip: t.forget,
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () => forget(device),
-                ),
               ),
-            _Heading(t.nearby),
-            if (looking) const LinearProgressIndicator(),
-            if (looking && unpaired.isEmpty) ListTile(title: Text(t.searching)),
-            if (!looking && unpaired.isEmpty)
-              ListTile(
-                title: Text(t.noneNearby, style: theme.textTheme.bodySmall),
-              ),
-            for (final device in unpaired)
-              ListTile(
-                leading: const Icon(Icons.wifi_tethering),
-                title: Text(device.name),
-                subtitle: Text(
-                  device.incompatible
-                      ? t.incompatible
-                      : '${device.id} · ${device.pairing ? t.pairingOpen : t.pairingClosed}',
-                ),
-                enabled: !device.incompatible,
-                onTap: () => pair(device.addresses),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _Heading extends StatelessWidget {
-  const _Heading(this.text);
+class _Count extends StatelessWidget {
+  const _Count(this.n);
 
-  final String text;
+  final int n;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: colors.secondaryContainer,
+        borderRadius: BorderRadius.circular(99),
+      ),
+      child: Text(
+        '$n',
+        style: Theme.of(context).textTheme.labelMedium
+            ?.copyWith(color: colors.onSecondaryContainer),
+      ),
+    );
+  }
+}
+
+/// A paired device: whether it answers here, or how it is reached from
+/// elsewhere.
+class _PairedCard extends StatelessWidget {
+  const _PairedCard({
+    required this.device,
+    required this.nearby,
+    required this.onOpen,
+    required this.onForget,
+  });
+
+  final rust.PairedDevice device;
+  final bool nearby;
+  final VoidCallback onOpen;
+  final VoidCallback onForget;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = T.of;
+    final domain = device.domain;
+    return Card(
+      child: InkWell(
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 8, 16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Tile(Icons.memory, active: nearby),
+              const SizedBox(width: 14),
+              Expanded(
+                child: _Lines(
+                  name: device.name,
+                  id: device.id,
+                  pills: [
+                    if (nearby)
+                      Pill(t.here, color: good(context))
+                    else if (domain != null)
+                      Pill(
+                        t.remoteAt(domain),
+                        color: Theme.of(context).colorScheme.tertiary,
+                        icon: Icons.public,
+                      )
+                    else
+                      Pill(t.away, color: state(context, false)),
+                  ],
+                ),
+              ),
+              PopupMenuButton<void>(
+                tooltip: t.more,
+                itemBuilder: (_) => [
+                  PopupMenuItem(
+                    onTap: onOpen,
+                    child: ListTile(
+                      leading: const Icon(Icons.open_in_new),
+                      title: Text(t.open),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    onTap: onForget,
+                    child: ListTile(
+                      leading: const Icon(Icons.delete_outline),
+                      title: Text(t.forget),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// An unpaired device answering on this network.
+class _FoundCard extends StatelessWidget {
+  const _FoundCard({required this.device, required this.onPair});
+
+  final rust.FoundDevice device;
+  final VoidCallback onPair;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = T.of;
+    final colors = Theme.of(context).colorScheme;
+    final usable = !device.incompatible;
+    return Card(
+      child: InkWell(
+        onTap: usable ? onPair : null,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Tile(Icons.wifi_tethering, active: usable && device.pairing),
+              const SizedBox(width: 14),
+              Expanded(
+                child: _Lines(
+                  name: device.name,
+                  id: device.id,
+                  pills: [
+                    if (device.incompatible)
+                      Pill(
+                        t.incompatible,
+                        color: colors.error,
+                        icon: Icons.error_outline,
+                      )
+                    else if (device.pairing)
+                      Pill(
+                        t.pairingOpen,
+                        color: colors.primary,
+                        icon: Icons.lock_open,
+                      )
+                    else
+                      Pill(
+                        t.pairingClosed,
+                        color: colors.outline,
+                        icon: Icons.lock_outline,
+                      ),
+                  ],
+                ),
+              ),
+              if (usable) ...[
+                const SizedBox(width: 8),
+                device.pairing
+                    ? FilledButton(onPressed: onPair, child: Text(t.pair))
+                    : OutlinedButton(onPressed: onPair, child: Text(t.pair)),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Lines extends StatelessWidget {
+  const _Lines({required this.name, required this.id, required this.pills});
+
+  final String name;
+  final String id;
+  final List<Widget> pills;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
-      child: Text(
-        text,
-        style: theme.textTheme.titleSmall?.copyWith(
-          color: theme.colorScheme.primary,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
         ),
-      ),
+        const SizedBox(height: 2),
+        Text(
+          id,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: mono.copyWith(
+            fontSize: 12,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(spacing: 6, runSpacing: 6, children: pills),
+      ],
+    );
+  }
+}
+
+/// Chooses light, dark, or as the system is.
+class _Look extends StatelessWidget {
+  const _Look(this.look);
+
+  final ValueNotifier<ThemeMode> look;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = T.of;
+    final names = {
+      ThemeMode.system: (t.lookSystem, Icons.brightness_auto_outlined),
+      ThemeMode.light: (t.lookLight, Icons.light_mode_outlined),
+      ThemeMode.dark: (t.lookDark, Icons.dark_mode_outlined),
+    };
+    return PopupMenuButton<ThemeMode>(
+      tooltip: t.look,
+      icon: Icon(names[look.value]!.$2),
+      initialValue: look.value,
+      onSelected: (mode) => look.value = mode,
+      itemBuilder: (context) => [
+        for (final MapEntry(key: mode, value: (name, _)) in names.entries)
+          CheckedPopupMenuItem(
+            value: mode,
+            checked: mode == look.value,
+            child: Text(name),
+          ),
+      ],
     );
   }
 }

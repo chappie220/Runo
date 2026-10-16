@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `addresses`, `call`, `chrono_now`, `forward`, `on_runtime`, `remember`, `runtime`
+// These functions are ignored because they are not marked as `pub`: `addresses`, `call`, `chrono_now`, `forward_feed`, `forward`, `on_runtime`, `remember`, `runtime`, `say`
 
 /// A new client identity, as PEM, for the app to keep.
 String newIdentity() => RustLib.instance.api.crateApiClientNewIdentity();
@@ -49,6 +49,15 @@ abstract class Connection implements RustOpaqueInterface {
 
   /// Fetches `remote` into the local file `local`; the bytes fetched.
   Future<BigInt> download({required String remote, required String local});
+
+  /// The Agent as an event stream: the session `attach` from after
+  /// event `since` (0: all the device keeps), or else the running one,
+  /// or a new one. Its events come from [`Feed::events`].
+  Future<Feed> feed({BigInt? attach, required BigInt since});
+
+  /// Whether the device has the Agent as an event stream (4.11); without
+  /// it the Agent is a terminal.
+  bool hasFeed();
 
   Future<void> kill({required BigInt session});
 
@@ -98,6 +107,31 @@ abstract class Connection implements RustOpaqueInterface {
 
   /// Sends the local file `local` to `remote` on the device.
   Future<BigInt> upload({required String local, required String remote});
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Feed>>
+abstract class Feed implements RustOpaqueInterface {
+  /// Answers card `card` with its action `action`, and for a secret or
+  /// a choice the value.
+  Future<void> answer({
+    required String card,
+    required String action,
+    String? value,
+  });
+
+  /// Stops the turn, or the task on `card`.
+  Future<void> cancel({String? card});
+
+  /// Stops showing it; it goes on on the device.
+  Future<void> detach();
+
+  /// Its events, from where it was attached on; once.
+  Stream<FeedFrame> events();
+
+  /// Sends a message; `attachments` are paths on the device.
+  Future<void> send({required String text, required List<String> attachments});
+
+  BigInt get session;
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Pairing>>
@@ -208,6 +242,33 @@ class ClientInfo {
           this_ == other.this_;
 }
 
+/// One frame of a feed: an event, or its end.
+class FeedFrame {
+  /// One `runo_link::feed::Event`, as JSON.
+  final String? event;
+
+  /// The session ended (`error` none) or the connection did.
+  final bool ended;
+  final int? code;
+  final String? error;
+
+  const FeedFrame({this.event, required this.ended, this.code, this.error});
+
+  @override
+  int get hashCode =>
+      event.hashCode ^ ended.hashCode ^ code.hashCode ^ error.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FeedFrame &&
+          runtimeType == other.runtimeType &&
+          event == other.event &&
+          ended == other.ended &&
+          code == other.code &&
+          error == other.error;
+}
+
 class FoundDevice {
   final String id;
   final String name;
@@ -290,7 +351,12 @@ class PairedDevice {
 
 class SessionInfo {
   final BigInt id;
+
+  /// The Agent, as a terminal or as an event stream.
   final bool agent;
+
+  /// The Agent as an event stream: shown with [`Connection::feed`].
+  final bool feed;
   final PlatformInt64 started;
   final bool running;
   final int attached;
@@ -298,6 +364,7 @@ class SessionInfo {
   const SessionInfo({
     required this.id,
     required this.agent,
+    required this.feed,
     required this.started,
     required this.running,
     required this.attached,
@@ -307,6 +374,7 @@ class SessionInfo {
   int get hashCode =>
       id.hashCode ^
       agent.hashCode ^
+      feed.hashCode ^
       started.hashCode ^
       running.hashCode ^
       attached.hashCode;
@@ -318,6 +386,7 @@ class SessionInfo {
           runtimeType == other.runtimeType &&
           id == other.id &&
           agent == other.agent &&
+          feed == other.feed &&
           started == other.started &&
           running == other.running &&
           attached == other.attached;
