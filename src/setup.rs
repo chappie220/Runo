@@ -1795,31 +1795,68 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Disables terminal echo on stdin until dropped.
-pub(crate) struct EchoOff(Option<libc::termios>);
+/// Disables terminal echo on stdin until dropped. Ctrl+C (or another
+/// signal that ends the program) at a hidden prompt would skip `drop` and
+/// leave the shell typing blind, with Enter not even starting a new line,
+/// so while echo is off those signals put the terminal back first.
+pub(crate) struct EchoOff(Option<(libc::termios, [libc::sigaction; ENDING.len()])>);
+
+/// The signals that end the program while it waits at a prompt.
+const ENDING: [libc::c_int; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
+/// The terminal as it was, for the signal handler; set while ARMED.
+static mut SAVED_TERMINAL: libc::termios = unsafe { std::mem::zeroed() };
+static ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn restore_and_end(signal: libc::c_int) {
+    // SAFETY: tcsetattr, signal and raise are async-signal-safe;
+    // SAVED_TERMINAL is written before ARMED is set and not after.
+    unsafe {
+        if ARMED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw const SAVED_TERMINAL);
+        }
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+}
 
 impl EchoOff {
     pub(crate) fn new() -> Self {
-        // SAFETY: termios is plain data; tcgetattr fills it or fails.
+        // SAFETY: termios and sigaction are plain data; the calls fill
+        // them or fail. Prompts are asked one at a time, so nothing else
+        // writes SAVED_TERMINAL meanwhile.
         unsafe {
             let mut term: libc::termios = std::mem::zeroed();
             if libc::tcgetattr(libc::STDIN_FILENO, &mut term) != 0 {
                 return Self(None);
             }
             let saved = term;
+            SAVED_TERMINAL = saved;
+            ARMED.store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = restore_and_end as *const () as libc::sighandler_t;
+            libc::sigemptyset(&mut action.sa_mask);
+            let mut before: [libc::sigaction; ENDING.len()] = std::mem::zeroed();
+            for (signal, before) in ENDING.iter().zip(before.iter_mut()) {
+                libc::sigaction(*signal, &action, before);
+            }
             term.c_lflag &= !libc::ECHO;
             libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &term);
-            Self(Some(saved))
+            Self(Some((saved, before)))
         }
     }
 }
 
 impl Drop for EchoOff {
     fn drop(&mut self) {
-        if let Some(saved) = &self.0 {
-            // SAFETY: restores the attributes read in `new`.
+        if let Some((saved, before)) = &self.0 {
+            // SAFETY: restores the attributes and handlers read in `new`.
             unsafe {
+                ARMED.store(false, std::sync::atomic::Ordering::SeqCst);
                 libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, saved);
+                for (signal, before) in ENDING.iter().zip(before.iter()) {
+                    libc::sigaction(*signal, before, std::ptr::null_mut());
+                }
             }
         }
     }
