@@ -271,6 +271,35 @@ class _Sessions extends StatefulWidget {
 class _SessionsState extends State<_Sessions> {
   final t = T.of;
   List<rust.SessionInfo>? sessions;
+  bool showEnded = false;
+
+  /// The number each running shell goes by here. The device counts every
+  /// session it ever started; this takes the smallest number free, so a
+  /// shell opened after the others closed is "Shell 1" again.
+  final numbers = <BigInt, int>{};
+
+  int get free {
+    var n = 1;
+    while (numbers.containsValue(n)) {
+      n++;
+    }
+    return n;
+  }
+
+  void count(List<rust.SessionInfo> list) {
+    final shells = list.where((s) => s.running && !s.agent).toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
+    numbers.removeWhere((id, _) => !shells.any((s) => s.id == id));
+    for (final shell in shells) {
+      numbers.putIfAbsent(shell.id, () => free);
+    }
+  }
+
+  String name(rust.SessionInfo session) => session.agent
+      ? t.agent
+      : numbers[session.id] == null
+      ? t.shell
+      : '${t.shell} ${numbers[session.id]}';
 
   @override
   void initState() {
@@ -280,7 +309,12 @@ class _SessionsState extends State<_Sessions> {
 
   Future<void> load() async {
     final list = await widget.page.guard((c) => c.sessions());
-    if (mounted && list != null) setState(() => sessions = list);
+    if (mounted && list != null) {
+      setState(() {
+        count(list);
+        sessions = list;
+      });
+    }
   }
 
   Future<void> show(String kind, String title, {BigInt? attach}) async {
@@ -301,16 +335,88 @@ class _SessionsState extends State<_Sessions> {
   }
 
   Future<void> kill(rust.SessionInfo session) async {
-    final name = session.agent ? t.agent : '${t.shell} ${session.id}';
+    final name = this.name(session);
     if (!await confirm(context, t.killAsk(name), t.kill)) return;
     await widget.page.guard((c) => c.kill(session: session.id));
     load();
   }
 
+  Widget card(rust.SessionInfo session) {
+    final theme = Theme.of(context);
+    return Card(
+      child: InkWell(
+        onTap: session.running
+            ? () => show(
+                session.agent ? 'agent' : 'shell',
+                name(session),
+                attach: session.id,
+              )
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
+          child: Row(
+            children: [
+              Tile(
+                session.agent ? Icons.smart_toy_outlined : Icons.terminal,
+                active: session.running,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name(session),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      when(session.started),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        Pill(
+                          session.running ? t.running : t.ended,
+                          color: state(context, session.running),
+                        ),
+                        if (session.attached > 0)
+                          Pill(
+                            t.attached(session.attached),
+                            color: theme.colorScheme.primary,
+                            icon: Icons.visibility_outlined,
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              if (session.running)
+                IconButton(
+                  tooltip: t.kill,
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  onPressed: () => kill(session),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sessions = this.sessions;
-    final theme = Theme.of(context);
+    // An ended session stays listed on the device for a while; it is
+    // kept out of the way here.
+    final running = [...?sessions?.where((s) => s.running)];
+    final ended = [...?sessions?.where((s) => !s.running)];
     return Listing(
       onRefresh: load,
       children: [
@@ -326,92 +432,32 @@ class _SessionsState extends State<_Sessions> {
             FilledButton.tonalIcon(
               icon: const Icon(Icons.add),
               label: Text(t.newShell),
-              onPressed: () => show('shell', t.shell),
+              onPressed: () => show('shell', '${t.shell} $free'),
             ),
           ],
         ),
         Heading(t.sessions),
         if (sessions == null)
           const LinearProgressIndicator()
-        else if (sessions.isEmpty)
+        else if (running.isEmpty)
           Empty(icon: Icons.terminal, text: t.noSessions)
         else
-          Cards(
-            children: [
-              for (final session in sessions)
-                Card(
-                  child: InkWell(
-                    onTap: session.running
-                        ? () => show(
-                            session.agent ? 'agent' : 'shell',
-                            session.agent
-                                ? t.agent
-                                : '${t.shell} ${session.id}',
-                            attach: session.id,
-                          )
-                        : null,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
-                      child: Row(
-                        children: [
-                          Tile(
-                            session.agent
-                                ? Icons.smart_toy_outlined
-                                : Icons.terminal,
-                            active: session.running,
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  session.agent
-                                      ? t.agent
-                                      : '${t.shell} ${session.id}',
-                                  style: theme.textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                Text(
-                                  when(session.started),
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Wrap(
-                                  spacing: 6,
-                                  runSpacing: 6,
-                                  children: [
-                                    Pill(
-                                      session.running ? t.running : t.ended,
-                                      color: state(context, session.running),
-                                    ),
-                                    if (session.attached > 0)
-                                      Pill(
-                                        t.attached(session.attached),
-                                        color: theme.colorScheme.primary,
-                                        icon: Icons.visibility_outlined,
-                                      ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                          if (session.running)
-                            IconButton(
-                              tooltip: t.kill,
-                              icon: const Icon(Icons.stop_circle_outlined),
-                              onPressed: () => kill(session),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-            ],
+          Cards(children: [for (final session in running) card(session)]),
+        if (ended.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              icon: Icon(showEnded ? Icons.expand_less : Icons.expand_more),
+              label: Text(t.endedSessions(ended.length)),
+              onPressed: () => setState(() => showEnded = !showEnded),
+            ),
           ),
+          if (showEnded) ...[
+            const SizedBox(height: 8),
+            Cards(children: [for (final session in ended) card(session)]),
+          ],
+        ],
       ],
     );
   }

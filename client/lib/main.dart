@@ -20,12 +20,17 @@ class RunoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Runo',
-      debugShowCheckedModeBanner: false,
-      theme: theme(Brightness.light),
-      darkTheme: theme(Brightness.dark),
-      home: DevicesPage(store: store),
+    return ValueListenableBuilder(
+      valueListenable: store.look,
+      builder: (context, look, home) => MaterialApp(
+        title: 'Runo',
+        debugShowCheckedModeBanner: false,
+        theme: theme(Brightness.light),
+        darkTheme: theme(Brightness.dark),
+        themeMode: look,
+        home: home,
+      ),
+      child: DevicesPage(store: store),
     );
   }
 }

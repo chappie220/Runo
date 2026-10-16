@@ -65,11 +65,30 @@ class T {
       t('End $what? What runs in it stops.', '结束$what？其中运行的程序会停止。');
   String get running => t('running', '运行中');
   String get ended => t('ended', '已结束');
+  String endedSessions(int n) => t('Ended ($n)', '已结束（$n）');
+  String get look => t('Appearance', '外观');
+  String get lookSystem => t('As the system', '跟随系统');
+  String get lookLight => t('Light', '浅色');
+  String get lookDark => t('Dark', '深色');
   String attached(int n) => t('$n showing', '$n 处查看');
   String sessionEnded(int? code) => code == null
       ? t('Session ended.', '会话已结束。')
       : t('Session ended ($code).', '会话已结束（$code）。');
   String get detach => t('Leave running', '保持运行并离开');
+  String get shortcuts => t('Keyboard shortcuts', '快捷键');
+  String get keyCopy => t('Copy the selection', '复制选中的文字');
+  String get keyCopyOr =>
+      t('Copy the selection, or interrupt', '复制选中的文字；没有选中时中断');
+  String get keyPaste => t('Paste', '粘贴');
+  String get keyClick =>
+      t('Right click: copy the selection, or paste', '右键：复制选中的文字；没有选中时粘贴');
+  String get keySelectAll => t('Select all', '全选');
+  String get keyBigger => t('Larger text', '放大文字');
+  String get keySmaller => t('Smaller text', '缩小文字');
+  String get keyResetSize => t('Text size back to normal', '恢复文字大小');
+  String get keyLine => t('Scroll a line up or down', '向上或向下滚动一行');
+  String get keyPage => t('Scroll a page up or down', '向上或向下滚动一页');
+  String get keyEnds => t('Scroll to the top or bottom', '滚动到最上或最下');
   String get closed => t('Disconnected', '已断开');
   String get reconnect => t('Reconnect', '重新连接');
   String outsideDomain(String domain) => t(

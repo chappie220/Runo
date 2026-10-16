@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
@@ -10,7 +11,14 @@ import 'src/rust/api/client.dart' as rust;
 /// Where the app keeps what it knows: the client's identity key in the
 /// system's secure storage, the paired devices in its support folder.
 class Store {
-  Store._(this.dir, this.identity);
+  Store._(this.dir, this.identity) {
+    look.value = switch (_read('look')) {
+      'light' => ThemeMode.light,
+      'dark' => ThemeMode.dark,
+      _ => ThemeMode.system,
+    };
+    look.addListener(() => _write('look', look.value.name));
+  }
 
   /// The folder for the paired devices (`devices.json`).
   final String dir;
@@ -19,6 +27,27 @@ class Store {
   final String identity;
 
   String get id => rust.identityId(pem: identity);
+
+  /// Light, dark, or as the system is; kept in `look` beside the devices.
+  final look = ValueNotifier(ThemeMode.system);
+
+  String? _read(String name) {
+    try {
+      return File('$dir${Platform.pathSeparator}$name')
+          .readAsStringSync()
+          .trim();
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  void _write(String name, String value) {
+    try {
+      File('$dir${Platform.pathSeparator}$name').writeAsStringSync(value);
+    } on FileSystemException {
+      // Not kept: this run still has it.
+    }
+  }
 
   static const _key = 'runo.identity';
 

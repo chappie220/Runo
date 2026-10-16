@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart' as xterm;
 
 import 'changes.dart';
+import 'console.dart';
 import 'src/rust/api/client.dart' as rust;
 import 'store.dart';
 import 'text.dart';
@@ -36,6 +37,7 @@ class _TerminalPageState extends State<TerminalPage> {
   final t = T.of;
   final terminal = xterm.Terminal(maxLines: 10000);
   final focus = FocusNode();
+  final console = GlobalKey<ConsoleState>();
   late final Sink<List<int>> screen = const Utf8Decoder(allowMalformed: true)
       .startChunkedConversion(_Writer(terminal.write));
   rust.Terminal? remote;
@@ -128,6 +130,12 @@ class _TerminalPageState extends State<TerminalPage> {
           ],
         ),
         actions: [
+          if (!touch)
+            IconButton(
+              tooltip: t.shortcuts,
+              icon: const Icon(Icons.keyboard_outlined),
+              onPressed: () => console.currentState?.help(),
+            ),
           if (!ended)
             IconButton(
               tooltip: t.detach,
@@ -142,13 +150,11 @@ class _TerminalPageState extends State<TerminalPage> {
           child: Column(
             children: [
               Expanded(
-                child: xterm.TerminalView(
-                  terminal,
+                child: Console(
+                  key: console,
+                  terminal: terminal,
                   focusNode: focus,
-                  autofocus: true,
                   readOnly: ended,
-                  padding: const EdgeInsets.all(4),
-                  textStyle: const xterm.TerminalStyle(fontSize: 14),
                 ),
               ),
               if (touch)

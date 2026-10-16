@@ -142,6 +142,8 @@ class _DevicesPageState extends State<DevicesPage> {
                                       ?.copyWith(fontWeight: FontWeight.w700),
                                 ),
                               ),
+                              _Look(widget.store.look),
+                              const SizedBox(width: 4),
                               IconButton.filledTonal(
                                 tooltip: t.refresh,
                                 icon: const Icon(Icons.refresh),
@@ -402,6 +404,37 @@ class _Lines extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Wrap(spacing: 6, runSpacing: 6, children: pills),
+      ],
+    );
+  }
+}
+
+/// Chooses light, dark, or as the system is.
+class _Look extends StatelessWidget {
+  const _Look(this.look);
+
+  final ValueNotifier<ThemeMode> look;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = T.of;
+    final names = {
+      ThemeMode.system: (t.lookSystem, Icons.brightness_auto_outlined),
+      ThemeMode.light: (t.lookLight, Icons.light_mode_outlined),
+      ThemeMode.dark: (t.lookDark, Icons.dark_mode_outlined),
+    };
+    return PopupMenuButton<ThemeMode>(
+      tooltip: t.look,
+      icon: Icon(names[look.value]!.$2),
+      initialValue: look.value,
+      onSelected: (mode) => look.value = mode,
+      itemBuilder: (context) => [
+        for (final MapEntry(key: mode, value: (name, _)) in names.entries)
+          CheckedPopupMenuItem(
+            value: mode,
+            checked: mode == look.value,
+            child: Text(name),
+          ),
       ],
     );
   }
