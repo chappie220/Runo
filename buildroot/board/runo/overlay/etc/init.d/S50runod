@@ -5,9 +5,25 @@
 
 PIDFILE=/run/runod.pid
 export HOME=/root RUNO_HOME=/data/runo
+PASSWORD_TXT=/boot/runo-password.txt
+
+# runo-password.txt on the boot partition: the device password, for a Pi
+# with no screen. Read once, kept only as a hash, then deleted. With a
+# password and no client yet, the pairing window opens by itself.
+password_from_boot() {
+	[ -f "$PASSWORD_TXT" ] || return 0
+	password=$(tr -d '\r' < "$PASSWORD_TXT" | sed -n '/^[[:space:]]*#/d;/[^[:space:]]/{p;q}')
+	if [ -n "$password" ]; then
+		printf '%s\n' "$password" | /usr/bin/runo daemon password >/dev/null 2>>/var/log/runod.log &&
+			echo "runod: device password set from the boot partition"
+	fi
+	mount -o remount,rw /boot && rm -f "$PASSWORD_TXT"
+	mount -o remount,ro /boot
+}
 
 case "$1" in
 	start)
+		password_from_boot
 		start-stop-daemon -S -q -b -m -p $PIDFILE -x /bin/sh -- \
 			-c 'exec /usr/bin/runo daemon run >>/var/log/runod.log 2>&1'
 		;;

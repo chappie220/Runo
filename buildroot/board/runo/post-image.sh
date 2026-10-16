@@ -30,6 +30,7 @@ cp "$BINARIES_DIR/Image" "$BOOT/a/Image"
 cp "$BINARIES_DIR"/*.dtb "$BOOT/a/"
 cp "$EXTERNAL/$BOARD/cmdline.txt" "$BOOT/a/cmdline.txt"
 cp "$EXTERNAL/runo-wifi.txt.example" "$BOOT/"
+cp "$EXTERNAL/runo-password.txt.example" "$BOOT/"
 
 # Data starts small and empty; S00data grows it.
 rm -f "$BINARIES_DIR/data.ext4"

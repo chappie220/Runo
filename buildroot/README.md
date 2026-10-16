@@ -60,6 +60,10 @@ request) and run it; it asks for root or administrator rights itself.
   needs nothing.
 - tty1 asks for the device password (for pairing the client app; Enter
   skips), then the Agent asks for the model connection.
+- Without a screen, copy `runo-password.txt.example` on the boot partition
+  to `runo-password.txt` and put the device password in it. It is read
+  once when runod starts, kept only as a hash and removed; with no client
+  paired yet, the pairing window then stays open for the client app.
 
 ## Layout
 
