@@ -100,7 +100,9 @@ either; programs are added by copying them in. What should outlive an
 update goes on `/data` instead (a program in `/data/<name>`, run from
 there), or into the image (`configs/*_defconfig`).
 
-Services (`/etc/init.d`): `S00data` mounts and grows `data`,
-`S40network` brings up Ethernet and Wi-Fi, `S48time` sets the time zone
-and clock, `S50runod` runs the management daemon, `S60gateway` runs the
-gateway once enabled (`runo service install`).
+Services (`/etc/init.d`): `S00data` mounts and grows `data`, `S05zram`
+sets up compressed swap in RAM (as big as the RAM below 8 GB, half of
+it from 8 GB up, or the MiB in `/data/etc/zram`, `0` for none), `S40network` brings up Ethernet and
+Wi-Fi, `S48time` sets the time zone and clock, `S50runod` runs the
+management daemon, `S60gateway` runs the gateway once enabled
+(`runo service install`).

@@ -1,0 +1,56 @@
+#!/bin/sh
+#
+# Compressed swap in memory (zram): pages the system has not used for a
+# while are kept compressed in RAM instead of being dropped, so a Pi with
+# little memory holds more before anything gets killed. Nothing goes to
+# the SD card. The size is all of the RAM on boards with less than 8 GB,
+# half of it from 8 GB up, or the MiB in /data/etc/zram (0 turns it
+# off); restarting applies a new size.
+
+CONF=/data/etc/zram
+DEV=/dev/zram0
+SYS=/sys/block/zram0
+
+size_mib() {
+	if [ -s $CONF ]; then
+		tr -dc '0-9' < $CONF
+	else
+		ram=$(($(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024))
+		# An 8 GB board shows a little under 8 GiB; boards come in 1, 2,
+		# 4, 8 and 16 GB, so 6 GiB tells them apart.
+		if [ "$ram" -lt 6144 ]; then echo "$ram"; else echo $((ram / 2)); fi
+	fi
+}
+
+start() {
+	mib=$(size_mib)
+	[ "${mib:-0}" -gt 0 ] || return 0
+	modprobe zram 2>/dev/null
+	if [ ! -e $SYS ]; then
+		echo "zram: the kernel has no zram"
+		return 0
+	fi
+	# lz4 is faster than the default lzo-rle at a little less squeeze.
+	modprobe lz4 2>/dev/null
+	grep -qw lz4 $SYS/comp_algorithm && echo lz4 > $SYS/comp_algorithm
+	echo "${mib}M" > $SYS/disksize &&
+		mkswap $DEV >/dev/null &&
+		swapon $DEV &&
+		echo "zram: ${mib} MiB of compressed swap ($(sed 's/.*\[\(.*\)\].*/\1/' $SYS/comp_algorithm))"
+}
+
+stop() {
+	[ -e $SYS ] || return 0
+	grep -q "^$DEV " /proc/swaps && swapoff $DEV
+	echo 1 > $SYS/reset
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; start ;;
+	status)
+		if grep -q "^$DEV " /proc/swaps; then grep "^$DEV " /proc/swaps; else echo stopped; exit 3; fi
+		;;
+	*) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
