@@ -26,6 +26,10 @@ if [ -L "$TARGET/root" ]; then
 	mkdir -m 0700 "$TARGET/root"
 fi
 sed -i 's|^\(root:[^:]*:[^:]*:[^:]*:[^:]*:\)/root:|\1/data/root:|' "$TARGET/etc/passwd"
+# bash for people; scripts keep /bin/sh (BusyBox ash).
+if [ -x "$TARGET/bin/bash" ]; then
+	sed -i 's|^\(root:.*:\)/bin/sh$|\1/bin/bash|' "$TARGET/etc/passwd"
+fi
 link var/log /data/log
 
 # No remote logins besides runod.

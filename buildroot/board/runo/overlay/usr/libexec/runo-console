@@ -3,6 +3,8 @@
 # itself, Chinese included, and runs `runo tui` inside; without one the
 # Agent runs on the kernel's console. init starts it again when it ends.
 export HOME=/data/root RUNO_HOME=/data/runo LANG=C.UTF-8 TERM=linux
+# !shell opens bash.
+[ -x /bin/bash ] && export SHELL=/bin/bash
 cd "$HOME" || cd /
 if [ -e /dev/fb0 ]; then
 	exec /usr/bin/runo console
