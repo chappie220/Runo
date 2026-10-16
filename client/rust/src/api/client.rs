@@ -11,6 +11,7 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{bail, Context, Result};
 use flutter_rust_bridge::frb;
 use runo_link::client::{Channel, Device, Home, Incoming, Link};
+use runo_link::feed::Input;
 use runo_link::proto::{self, Kind, Request, PORT};
 use runo_link::{hex, mdns, Identity};
 
@@ -225,7 +226,10 @@ fn chrono_now() -> i64 {
 
 pub struct SessionInfo {
     pub id: u64,
+    /// The Agent, as a terminal or as an event stream.
     pub agent: bool,
+    /// The Agent as an event stream: shown with [`Connection::feed`].
+    pub feed: bool,
     pub started: i64,
     pub running: bool,
     pub attached: u32,
@@ -325,6 +329,13 @@ impl Connection {
         self.link.welcome().device.clone()
     }
 
+    /// Whether the device has the Agent as an event stream (4.11); without
+    /// it the Agent is a terminal.
+    #[frb(sync)]
+    pub fn has_feed(&self) -> bool {
+        self.link.welcome().feed
+    }
+
     /// Why the connection closed, once it has.
     #[frb(sync)]
     pub fn closed(&self) -> Option<String> {
@@ -356,14 +367,12 @@ impl Connection {
 
     pub async fn sessions(&self) -> Result<Vec<SessionInfo>> {
         let sessions: Vec<proto::Session> = self.call(Request::Sessions).await?;
-        // Feeds (the Agent as an event stream) are not terminals; this app
-        // does not draw them yet.
         Ok(sessions
             .into_iter()
-            .filter(|s| s.kind != Kind::Feed)
             .map(|s| SessionInfo {
                 id: s.id,
-                agent: s.kind == Kind::Agent,
+                agent: matches!(s.kind, Kind::Agent | Kind::Feed),
+                feed: s.kind == Kind::Feed,
                 started: s.started,
                 running: s.running,
                 attached: s.attached,
@@ -483,6 +492,141 @@ impl Connection {
             })
         })
         .await
+    }
+
+    /// The Agent as an event stream: the session `attach` from after
+    /// event `since` (0: all the device keeps), or else the running one,
+    /// or a new one. Its events come from [`Feed::events`].
+    pub async fn feed(&self, attach: Option<u64>, since: u64) -> Result<Feed> {
+        let link = self.link.clone();
+        on_runtime(async move {
+            let (session, channel) = match attach {
+                Some(id) => link.attach_feed(id, since).await?,
+                None => {
+                    let sessions: Vec<proto::Session> = link.call(Request::Sessions).await?;
+                    match sessions
+                        .iter()
+                        .rev()
+                        .find(|s| s.kind == Kind::Feed && s.running)
+                    {
+                        Some(running) => link.attach_feed(running.id, 0).await?,
+                        None => link.open(Kind::Feed, 0, 0).await?,
+                    }
+                }
+            };
+            Ok(Feed {
+                link: link.clone(),
+                id: channel.channel,
+                session: session.id,
+                channel: Mutex::new(Some(channel)),
+            })
+        })
+        .await
+    }
+}
+
+/// One frame of a feed: an event, or its end.
+pub struct FeedFrame {
+    /// One `runo_link::feed::Event`, as JSON.
+    pub event: Option<String>,
+    /// The session ended (`error` none) or the connection did.
+    pub ended: bool,
+    pub code: Option<i32>,
+    pub error: Option<String>,
+}
+
+async fn forward_feed(mut channel: Channel, link: Link, sink: StreamSink<FeedFrame>) {
+    let end = |code: Option<i32>, error: Option<String>| FeedFrame {
+        event: None,
+        ended: true,
+        code,
+        error,
+    };
+    loop {
+        match channel.recv().await {
+            Some(Incoming::Data(data)) => {
+                let frame = FeedFrame {
+                    event: Some(String::from_utf8_lossy(&data).into_owned()),
+                    ended: false,
+                    code: None,
+                    error: None,
+                };
+                if sink.add(frame).is_err() {
+                    let _ = link.detach(channel.channel).await;
+                    return;
+                }
+            }
+            Some(Incoming::Exit(code)) => {
+                let _ = sink.add(end(code, None));
+                return;
+            }
+            Some(_) => {}
+            None => {
+                let _ = sink.add(end(None, Some(link.closed().unwrap_or_default())));
+                return;
+            }
+        }
+    }
+}
+
+/// The Agent as an event stream, shown in the app.
+#[frb(opaque)]
+pub struct Feed {
+    link: Link,
+    id: u32,
+    session: u64,
+    /// Until `events` takes it.
+    channel: Mutex<Option<Channel>>,
+}
+
+impl Feed {
+    #[frb(sync, getter)]
+    pub fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// Its events, from where it was attached on; once.
+    pub fn events(&self, sink: StreamSink<FeedFrame>) -> Result<()> {
+        let channel = self
+            .channel
+            .lock()
+            .unwrap()
+            .take()
+            .context("the events are already being shown")?;
+        runtime().spawn(forward_feed(channel, self.link.clone(), sink));
+        Ok(())
+    }
+
+    async fn say(&self, input: Input) -> Result<()> {
+        let (link, session) = (self.link.clone(), self.session);
+        on_runtime(async move { link.feed(session, input).await }).await
+    }
+
+    /// Sends a message; `attachments` are paths on the device.
+    pub async fn send(&self, text: String, attachments: Vec<String>) -> Result<()> {
+        self.say(Input::Send { text, attachments }).await
+    }
+
+    /// Answers card `card` with its action `action`, and for a secret or
+    /// a choice the value.
+    pub async fn answer(&self, card: String, action: String, value: Option<String>) -> Result<()> {
+        self.say(Input::Answer {
+            card,
+            action,
+            value,
+        })
+        .await
+    }
+
+    /// Stops the turn, or the task on `card`.
+    pub async fn cancel(&self, card: Option<String>) -> Result<()> {
+        self.say(Input::Cancel { card }).await
+    }
+
+    /// Stops showing it; it goes on on the device.
+    pub async fn detach(&self) -> Result<()> {
+        let (link, channel) = (self.link.clone(), self.id);
+        on_runtime(async move { link.detach(channel).await }).await
     }
 }
 

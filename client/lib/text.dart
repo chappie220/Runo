@@ -170,4 +170,42 @@ class T {
   );
   String get fetchAbout =>
       t('Copy a file from the device to this computer.', '把设备上的文件复制到本机。');
+
+  String get copy => t('Copy', '复制');
+  String get copied => t('Copied.', '已复制。');
+  String get say => t('Message the Agent', '给 Agent 发消息');
+  String get sayHint => t(
+    'Enter sends, Shift+Enter starts a new line',
+    'Enter 发送，Shift+Enter 换行',
+  );
+  String get send => t('Send', '发送');
+  String get stop => t('Stop', '停止');
+  String get replying => t('Replying…', '正在回复…');
+  String get feedEmpty => t(
+    'Ask the Agent to set something up, look into a problem, or explain what the device is doing.',
+    '让 Agent 帮你装软件、改设置、查问题，或者问问设备现在在做什么。',
+  );
+  String get lost => t('Connection lost', '连接已断开');
+  String get rejoining => t('Reconnecting…', '正在重新连接…');
+  String get cardWaiting => t('Waiting for you', '等你回答');
+  String get cardRunning => t('Running', '进行中');
+  String get cardDone => t('Done', '完成');
+  String get cardFailed => t('Failed', '失败');
+  String get cardCancelled => t('Cancelled', '已取消');
+  String get highRisk => t('High risk', '高风险');
+  String timeout(int s) =>
+      t('No answer within $s s counts as no.', '$s 秒内不回答视为取消。');
+  String change(int id) => t('Change #$id', '修改 #$id');
+  String get secret => t('Secret', '密钥');
+  String get saved => t('Saved', '已保存');
+  String get save => t('Save', '保存');
+  String atLeast(int n) => t('At least $n characters', '至少 $n 个字符');
+  String get choose => t('Choose', '确定');
+  String get fix => t('Handle it', '处理');
+  String get cpu => t('CPU', 'CPU');
+  String get memory => t('Memory', '内存');
+  String get writes => t('Writes', '写入');
+  String get proxy => t('Proxy', '代理');
+  String get proxyUp => t('reachable', '可用');
+  String get proxyDown => t('unreachable', '不可用');
 }

@@ -4,7 +4,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'agent.dart';
 import 'changes.dart';
+import 'feed.dart';
 import 'main.dart';
 import 'problem.dart';
 import 'src/rust/api/client.dart' as rust;
@@ -139,6 +141,15 @@ class _DevicePageState extends State<DevicePage> {
         ],
       ),
     );
+  }
+
+  /// The connection, or a new one when it was lost; none when the device
+  /// cannot be reached.
+  Future<rust.Connection?> live() async {
+    final connection = this.connection;
+    if (connection != null && connection.closed() == null) return connection;
+    await connect();
+    return this.connection;
   }
 
   /// Runs `call`, and offers to reconnect when the connection is gone.
@@ -317,16 +328,29 @@ class _SessionsState extends State<_Sessions> {
     }
   }
 
-  Future<void> show(String kind, String title, {BigInt? attach}) async {
+  /// A terminal, or the Agent as its event stream where the device has
+  /// one (`feed`: a feed session, or a new Agent).
+  Future<void> show(
+    String kind,
+    String title, {
+    BigInt? attach,
+    bool feed = false,
+  }) async {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => TerminalPage(
-          connection: widget.connection,
-          kind: kind,
-          title: title,
-          attach: attach,
-        ),
+        builder: (_) => feed
+            ? AgentPage(
+                open: rustFeed(widget.page.live, attach: attach),
+                title: title,
+                connection: widget.connection,
+              )
+            : TerminalPage(
+                connection: widget.connection,
+                kind: kind,
+                title: title,
+                attach: attach,
+              ),
       ),
     );
     // Leaving detaches on its way out; look once it has arrived too.
@@ -350,6 +374,7 @@ class _SessionsState extends State<_Sessions> {
                 session.agent ? 'agent' : 'shell',
                 name(session),
                 attach: session.id,
+                feed: session.feed,
               )
             : null,
         child: Padding(
@@ -427,7 +452,8 @@ class _SessionsState extends State<_Sessions> {
             FilledButton.icon(
               icon: const Icon(Icons.smart_toy_outlined),
               label: Text(t.agent),
-              onPressed: () => show('agent', t.agent),
+              onPressed: () =>
+                  show('agent', t.agent, feed: widget.connection.hasFeed()),
             ),
             FilledButton.tonalIcon(
               icon: const Icon(Icons.add),
