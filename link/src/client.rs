@@ -71,6 +71,8 @@ pub struct Welcome {
     pub login: bool,
     /// Its own domain name, if it keeps one.
     pub domain: Option<String>,
+    /// Whether it has the Agent as an event stream (`Kind::Feed`).
+    pub feed: bool,
 }
 
 #[derive(Clone)]
@@ -166,6 +168,7 @@ impl Link {
                 pairing,
                 login,
                 domain,
+                feed,
             }) => Welcome {
                 device,
                 name,
@@ -174,6 +177,7 @@ impl Link {
                 pairing,
                 login,
                 domain,
+                feed,
             },
             Down::Event(Event::Closed { reason }) => bail!("the device refused: {reason}"),
             other => bail!("unexpected first message: {other:?}"),
@@ -366,9 +370,50 @@ impl Link {
                 session,
                 cols,
                 rows,
+                since: None,
             })
             .await?;
         Ok((session, channel))
+    }
+
+    /// Shows a feed session: what changed after event `since` (0: all it
+    /// keeps), then live, one JSON `feed::Event` per frame.
+    pub async fn attach_feed(&self, session: u64, since: u64) -> Result<(Session, Channel)> {
+        let channel = self.channel();
+        let session = self
+            .call(Request::Attach {
+                channel: channel.channel,
+                session,
+                cols: 0,
+                rows: 0,
+                since: Some(since),
+            })
+            .await?;
+        Ok((session, channel))
+    }
+
+    /// Says something to a feed session.
+    pub async fn feed(&self, session: u64, input: crate::feed::Input) -> Result<()> {
+        use crate::feed::Input;
+        let request = match input {
+            Input::Send { text, attachments } => Request::FeedSend {
+                session,
+                text,
+                attachments,
+            },
+            Input::Answer {
+                card,
+                action,
+                value,
+            } => Request::FeedAnswer {
+                session,
+                card,
+                action,
+                value,
+            },
+            Input::Cancel { card } => Request::FeedCancel { session, card },
+        };
+        self.call(request).await
     }
 
     pub async fn resize(&self, channel: u32, cols: u16, rows: u16) -> Result<()> {

@@ -281,7 +281,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
   因为界面用 Flutter、核心用 Rust，以后要加这两个平台时不必重写，只需补钥匙串接入和平台权限。
 - 不做网页版主客户端：浏览器做不到 mDNS、自定义 TLS 认证和钥匙串。
 
-### 4.11 主界面：结构化事件流（建议）
+### 4.11 主界面：结构化事件流
 
 建议：主应用重写时，Agent 界面不再是“终端里画出来的聊天记录”，而是一条**结构化事件流**：
 设备只产出事件（消息、卡片、状态），客户端和本地屏幕各用自己的方式原生绘制。终端只留给 `!shell`。
@@ -309,12 +309,14 @@ runod：按会话保存事件（环形缓冲，见 4.3），记下每张卡片�
 ```
 
 - 事件和卡片的数据结构放在 `runo-link`（`link/src/feed.rs`），设备和客户端共用，和现有协议一样保证两端一致。
-- 会话归 `runod` 持有（4.3）。断线重连时，客户端带上最后收到的序号，设备从环形缓冲补发；缓冲里已经没有的部分，先发各卡片的最新状态，再接着推新事件。
+- 会话归 `runod` 持有（4.3）。`runod` 不存原始事件，而是记下每条消息和每张卡片的最新状态（最近 1000 项）及最后改动它的序号。
+  断线重连时，客户端带上最后收到的序号，设备把这之后改动过的消息和卡片各发一次完整的最新状态，再接着推新事件；不丢也不重复。
 - 本地屏幕不走网络，在进程内订阅同一条事件流。
 
 #### 4.11.2 协议扩展
 
-协议版本升到 2（`proto::VERSION`）。`Kind` 加一种 `feed`；`open` / `attach` 一个 `feed` 会话后，这个通道上的帧不再是 PTY 字节，而是一行一个 JSON 事件。
+协议版本不变（`proto::VERSION` 仍为 1，新增的都是追加的请求和字段）；`welcome` 多一个 `feed: true`，表示设备有事件流。
+`Kind` 加一种 `feed`；`open` / `attach` 一个 `feed` 会话后，这个通道上的每一帧是一个 JSON 事件，不再是 PTY 字节；`feed` 会话没有终端大小，`cols` / `rows` 可省略。
 
 新请求（走通道 0）：
 
@@ -323,18 +325,18 @@ runod：按会话保存事件（环形缓冲，见 4.3），记下每张卡片�
 | `feed_send { session, text, attachments }` | 发一条消息。`attachments` 是此前用 `file_put` 送到设备上的文件路径，拖进输入框的文件就走这条路 |
 | `feed_answer { session, card, action, value? }` | 回答一张卡片：确认或取消、选一项、填密钥。`value` 只在密钥卡片里出现，设备不把它写进任何日志 |
 | `feed_cancel { session, card? }` | 停止当前回合，或停止某个任务卡片对应的任务 |
-| `feed_since { session, seq }` | 重连时从某个序号补发 |
+| `attach { session, since }` | 重连时从某个序号补发（`since` 为 0 或不给：设备保留的全部） |
 
 事件（`feed` 通道上）：
 
 | 事件 | 字段 | 说明 |
 |---|---|---|
-| `message` | `seq, id, role, text, done` | `role` 为 `you` / `agent` / `note`；回复按片段流式到达，`done` 为真表示结束 |
+| `message` | `seq, id, role, text, append, done` | `role` 为 `you` / `agent` / `note`；回复按片段流式到达（`append` 为真：接在同一 `id` 已有的文字后面；为假：整条替换），`done` 为真表示结束 |
 | `card` | `seq, card` | 新卡片或卡片的新状态，按 `card.id` 覆盖，同一张卡片后到的 `rev` 覆盖先到的 |
 | `status` | `seq, status` | 设备状态快照，订阅期间每 2 秒一次 |
 | `turn` | `seq, busy` | 回合开始或结束，前端据此显示“正在回复”和“停止”按钮 |
 
-协议版本为 1 的设备仍然只给 PTY：新客户端看到 `welcome` 里的版本是 1，就退回现在的终端方式显示 Agent。
+没有事件流的设备仍然只给 PTY：新客户端看到 `welcome` 里没有 `feed`，就退回现在的终端方式显示 Agent。
 旧客户端连新设备时，照旧用 `Kind::Agent` 的 PTY，`runo tui` 保留这条路直到 1.0 之后。
 
 #### 4.11.3 卡片
@@ -420,7 +422,7 @@ pub struct Status {
 - Agent 装一个软件：任务卡片显示每一步，完成后点“撤销”能恢复原状。
 - 改防火墙前出确认卡片，取消后什么都没改。
 - 客户端和本地屏幕显示同一段中英混排、带 emoji 的回复，都没有错位和残影。
-- 协议版本 1 的设备，新客户端仍能用终端方式进入 Agent。
+- 没有事件流的设备（`welcome` 里没有 `feed`），新客户端仍能用终端方式进入 Agent。
 
 ## 5. 开机与界面状态
 
@@ -444,7 +446,7 @@ pub struct Status {
 | 2 | 局域网发现与可信配对 | 新增 `runod`、管理协议、共用的 Rust 核心库、Flutter 管理客户端 |
 | 3 | 开机直达 Agent 的镜像（Pi 5、Pi 4） | Buildroot 2025.02.x 外部树（`buildroot/`）、BusyBox init 与 `inittab` 接管 tty1、`service.rs` 支持 BusyBox init、A/B 分区、中文显示、CI 出镜像 |
 | 4 | 公网连接、更新与恢复 | `runod` 自己实现 A/B 更新（签名、`tryboot`、看门狗），取代 `update.rs` 的单文件替换；IPv6 公网接入与防火墙；Runo 自绘终端（含拼音词库联想）取代 `fbterm` |
-| 5（建议） | 主界面重写：结构化事件流（4.11） | `runo-link` 加 `feed.rs` 和协议版本 2；`agent.rs` 的 `AgentEvent`、`changes.rs`、`tasks.rs` 接到事件流；Flutter 客户端用原生控件画 Agent 页面；`runo console` / `runo tui` 改画同一条事件流 |
+| 5 | 主界面重写：结构化事件流（4.11） | `runo-link` 加 `feed.rs` 和协议版本 2；`agent.rs` 的 `AgentEvent`、`changes.rs`、`tasks.rs` 接到事件流；Flutter 客户端用原生控件画 Agent 页面；`runo console` / `runo tui` 改画同一条事件流 |
 
 ### 阶段 1 当前进度
 
@@ -579,6 +581,26 @@ pub struct Status {
   - 已知不足：phrase-pinyin-data 主要收多音词，不少常用词（如 西安、公司）开箱不在词库，要输入一次后才排在前面；
     帧缓冲、键盘和速度还没有在真机上测过。
 
+### 阶段 5 当前进度
+
+- [x] 数据结构（`link/src/feed.rs`）：`Body`（`message` / `card` / `status` / `turn`）、带序号的 `Event`、`Input`（`send` / `answer` / `cancel`），
+  卡片外壳和六种 `CardBody`，`Status`；`Log` 记各消息和卡片的最新状态，`since(seq)` 给出某个序号之后改动过的部分。
+- [x] 协议：`Kind::Feed`、`feed_send` / `feed_answer` / `feed_cancel`、`attach` 带 `since`、`welcome.feed`；协议版本不变，旧客户端照旧可用。
+  `runo-link` 客户端有 `attach_feed` 和 `feed`。
+- [x] `runo feed`（`src/feed.rs`）：没有屏幕的 Agent，标准输入一行一个 `Input`，标准输出一行一个 `Body`（原来的标准输出改指标准错误，
+  工具和库打印的东西不会混进事件流）。开始时发会话里已有的消息；回复按片段流式发出；一个回合用到工具时出一张任务卡片，每个工具一步，
+  参数和输出折叠在 `detail`（各留 4 KiB）；需要确认的操作出确认卡片（5 分钟没回答算取消）；停止、出错各有一条 `note`。
+  回合进行中发来的消息排队，回合结束后依次处理。
+- [x] `runod`（`src/daemon/feed.rs`）：`feed` 会话起一个 `runo feed` 子进程（错误写到 `<状态目录>/feed.log`），给它的输出编号、
+  保存并转发；有人看时每 2 秒推一次状态：CPU、温度、内存、交换区（zram 带压缩后大小）、状态目录所在分区的写入速度、地址、
+  `network.proxy` 及能否连上（30 秒查一次）、配对窗口、系统更新。
+- [x] 测试：断线重连只补发错过的部分、新客户端拿到整段对话、子进程结束后通道收到 `exit`。
+- [ ] `ask_secret`、`ask_choice` 工具和密钥卡片；密钥不进历史和日志、发现明文密钥时抹掉并提示。
+- [ ] 任务卡片挂上 `changes.rs` 的记录号和“撤销”；确认提交的倒计时；首次开机检查单。
+- [ ] 工具名换成给人看的说法。
+- [ ] Flutter 客户端用原生控件画 Agent 页面（4.11.5）；现在的客户端先不在会话列表里显示 `feed` 会话。
+- [ ] `runo console` / `runo tui` 改画同一条事件流（4.11.6）。
+
 ## 7. 1.0 验收流程
 
 在**树莓派 5** 和**树莓派 4 B** 上各完成一遍：
@@ -614,4 +636,4 @@ pub struct Status {
 
 ## 8. 待定问题
 
-- **主界面是否按 4.11 的结构化事件流重写**，以及是放进 1.0 还是 1.0 之后。其余设计都已定案。
+- **4.11 的结构化事件流是否全部放进 1.0**：设备一侧（阶段 5 前几项）已经做了，两个前端改画法是否赶在 1.0 之前。其余设计都已定案。

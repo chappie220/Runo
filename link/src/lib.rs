@@ -8,6 +8,7 @@
 //!   by the key pinned at pairing rather than by a CA.
 //! - [`frame`] and [`proto`]: length-prefixed frames on numbered channels;
 //!   channel 0 carries JSON requests, replies and events.
+//! - [`feed`]: the Agent as messages, cards and status (4.11).
 //! - [`pair`]: the 6-digit confirmation code, from both sides' nonces (one
 //!   committed before the other is seen) and the TLS session.
 //! - [`lan`]: which addresses may pair.
@@ -15,6 +16,7 @@
 //! - [`client`]: the client side of a connection.
 
 pub mod client;
+pub mod feed;
 pub mod frame;
 pub mod hex;
 pub mod identity;

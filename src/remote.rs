@@ -469,6 +469,7 @@ pub async fn sessions(state: &Path, device: &str) -> Result<()> {
         let kind = match s.kind {
             Kind::Agent => "agent",
             Kind::Shell => "shell",
+            Kind::Feed => "feed",
         };
         println!(
             "{}",

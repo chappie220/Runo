@@ -356,8 +356,11 @@ impl Connection {
 
     pub async fn sessions(&self) -> Result<Vec<SessionInfo>> {
         let sessions: Vec<proto::Session> = self.call(Request::Sessions).await?;
+        // Feeds (the Agent as an event stream) are not terminals; this app
+        // does not draw them yet.
         Ok(sessions
             .into_iter()
+            .filter(|s| s.kind != Kind::Feed)
             .map(|s| SessionInfo {
                 id: s.id,
                 agent: s.kind == Kind::Agent,

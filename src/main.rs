@@ -20,6 +20,7 @@ mod doctor;
 mod elevate;
 mod embed;
 mod eval;
+mod feed;
 mod feishu;
 mod fetch;
 mod gateway;
@@ -109,6 +110,13 @@ enum Command {
     },
     /// Full-screen chat in the terminal.
     Tui {
+        #[arg(short, long, default_value = "main")]
+        session: String,
+    },
+    /// The Agent as an event stream on stdin and stdout, for runod's feed
+    /// sessions; not for people.
+    #[command(hide = true)]
+    Feed {
         #[arg(short, long, default_value = "main")]
         session: String,
     },
@@ -1050,6 +1058,16 @@ async fn run(cli: Cli) -> Result<()> {
                 // The model's settings changed: start again with them.
                 config = Config::load(&config_path)?;
             }
+        }
+        Command::Feed { session } => {
+            let agent = match build_agent(&config, &config_path, &state, store).await {
+                Ok(agent) => agent,
+                Err(err) => {
+                    feed::fail(&format!("{err:#}")).await;
+                    return Err(err);
+                }
+            };
+            feed::run(&agent, session).await
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);
