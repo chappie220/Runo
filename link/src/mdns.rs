@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use mdns_sd::{ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 
+use crate::lan::is_lan;
 use crate::proto::{SERVICE, VERSION};
 
 pub struct Advertiser {
@@ -83,7 +84,9 @@ pub struct Found {
     pub name: String,
     pub version: u32,
     pub pairing: bool,
-    /// Where it answers, IPv4 first.
+    /// Where it answers: LAN addresses first, IPv4 before IPv6, so a
+    /// connection lands where the device counts it as local (only there
+    /// may a client pair).
     pub addresses: Vec<SocketAddr>,
 }
 
@@ -133,12 +136,11 @@ pub async fn browse(wait: Duration) -> Result<Vec<Found>> {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
                 let pairing = service.get_property_val_str("pair") == Some("1");
-                let mut addresses: Vec<SocketAddr> = service
+                let addresses: Vec<SocketAddr> = service
                     .get_addresses()
                     .iter()
                     .map(|ip| socket_address(ip, service.get_port()))
                     .collect();
-                addresses.sort_by_key(|a| (a.is_ipv6(), *a));
                 let entry = found.entry(id.to_owned()).or_insert_with(|| Found {
                     id: id.to_owned(),
                     name: instance(service.get_fullname()),
@@ -161,9 +163,19 @@ pub async fn browse(wait: Duration) -> Result<Vec<Found>> {
             _ => {}
         }
     }
+    // A device resolves more than once as its addresses arrive, so order
+    // them only once all are in.
+    for device in found.values_mut() {
+        device.addresses.sort_by_key(|&a| preference(a));
+    }
     let _ = daemon.stop_browse(SERVICE);
     let _ = daemon.shutdown();
     Ok(found.into_values().collect())
+}
+
+/// Sort key for a device's addresses: LAN before public, IPv4 before IPv6.
+fn preference(address: SocketAddr) -> (bool, bool, SocketAddr) {
+    (!is_lan(address.ip()), address.is_ipv6(), address)
 }
 
 /// Whether `ip` is one an mDNS answer could carry for a LAN device.
@@ -180,6 +192,28 @@ mod tests {
         assert_eq!(instance("pi._runo._tcp.local."), "pi");
         assert_eq!(instance("my\\.pi._runo._tcp.local."), "my.pi");
         assert_eq!(instance("pi (2)._runo._tcp.local."), "pi (2)");
+    }
+
+    #[test]
+    fn lan_addresses_come_before_public_ones() {
+        let mut addresses: Vec<SocketAddr> = [
+            "[2408:8256:2680:1f32::7ff9]:7340",
+            "[fe80::1%2]:7340",
+            "192.168.101.69:7340",
+        ]
+        .iter()
+        .map(|a| a.parse().unwrap())
+        .collect();
+        addresses.sort_by_key(|&a| preference(a));
+        let order: Vec<String> = addresses.iter().map(|a| a.to_string()).collect();
+        assert_eq!(
+            order,
+            [
+                "192.168.101.69:7340",
+                "[fe80::1%2]:7340",
+                "[2408:8256:2680:1f32::7ff9]:7340"
+            ]
+        );
     }
 
     /// Needs multicast on the host; run by hand with `--ignored`.
