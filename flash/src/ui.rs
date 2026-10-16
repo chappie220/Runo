@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -94,6 +94,8 @@ struct Status {
     stage: Mutex<(Stage, Instant)>,
     done: AtomicU64,
     total: AtomicU64,
+    /// Whether the writing is counted on the card, not in the file read.
+    exact: AtomicBool,
     result: Mutex<Option<Result<(), String>>>,
 }
 
@@ -103,6 +105,7 @@ impl Status {
             stage: Mutex::new((Stage::Find, Instant::now())),
             done: AtomicU64::new(0),
             total: AtomicU64::new(0),
+            exact: AtomicBool::new(false),
             result: Mutex::new(None),
         }
     }
@@ -110,12 +113,28 @@ impl Status {
     fn stage(&self, stage: Stage) {
         self.done.store(0, Ordering::Relaxed);
         self.total.store(0, Ordering::Relaxed);
+        self.exact.store(false, Ordering::Relaxed);
         *self.stage.lock().unwrap() = (stage, Instant::now());
     }
 
     fn progress(&self, done: u64, total: u64) {
         self.done.store(done, Ordering::Relaxed);
         self.total.store(total, Ordering::Relaxed);
+    }
+
+    /// How much of the image is on the card; from the first call on, the
+    /// position in the file read no longer counts.
+    fn written(&self, done: u64, total: u64) {
+        self.exact.store(true, Ordering::Relaxed);
+        self.progress(done, total);
+    }
+
+    /// How far into the image file reading has got: a rough measure,
+    /// used only until the image's own length is known.
+    fn read(&self, done: u64, total: u64) {
+        if !self.exact.load(Ordering::Relaxed) {
+            self.progress(done, total);
+        }
     }
 }
 
@@ -519,8 +538,9 @@ fn work(
             None,
         ),
     };
-    let mut flasher = Flasher::new(dev.as_mut(), wifi, capacity);
-    image::decode(&path, &mut flasher, &|d, t| status.progress(d, t))?;
+    let written = |d, t| status.written(d, t);
+    let mut flasher = Flasher::new(dev.as_mut(), wifi, capacity, &written);
+    image::decode(&path, &mut flasher, &|d, t| status.read(d, t))?;
     let (len, hash) = flasher.finish()?;
     status.stage(Stage::Verify);
     write::verify(dev.as_mut(), len, hash, &|d, t| status.progress(d, t))?;

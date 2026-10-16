@@ -15,6 +15,10 @@ use crate::text::{size, t};
 
 pub const SECTOR: usize = 512;
 const CHUNK: usize = 4 << 20;
+/// How much is written before waiting for the card to take it. Without
+/// it the computer's memory takes gigabytes at once, the progress runs
+/// ahead of the card, and the end is a long wait with nothing moving.
+const SYNC_EVERY: u64 = 64 << 20;
 /// The most of the image kept in memory to add the Wi-Fi settings.
 const MAX_HEAD: u64 = 1 << 30;
 
@@ -133,10 +137,21 @@ pub struct Flasher<'a> {
     chunk: Vec<u8>,
     len: u64,
     hash: Sha256,
+    /// The image's length by its partition table, once that is in.
+    total: Option<u64>,
+    unsynced: u64,
+    progress: &'a dyn Fn(u64, u64),
 }
 
 impl<'a> Flasher<'a> {
-    pub fn new(dev: &'a mut dyn Device, wifi: Option<Wifi>, capacity: Option<u64>) -> Self {
+    /// `progress` is told how much of the image is on the card and the
+    /// image's length, from when the partition table gives that length.
+    pub fn new(
+        dev: &'a mut dyn Device,
+        wifi: Option<Wifi>,
+        capacity: Option<u64>,
+        progress: &'a dyn Fn(u64, u64),
+    ) -> Self {
         Flasher {
             dev,
             wifi,
@@ -147,25 +162,43 @@ impl<'a> Flasher<'a> {
             chunk: Vec::with_capacity(CHUNK),
             len: 0,
             hash: Sha256::new(),
+            total: None,
+            unsynced: 0,
+            progress,
         }
+    }
+
+    /// Waits for the card, then says how much of the image is on it.
+    fn synced(&mut self) -> io::Result<()> {
+        self.dev.flush()?;
+        self.dev.sync()?;
+        self.unsynced = 0;
+        if let Some(total) = self.total {
+            let written = self.len - self.chunk.len() as u64;
+            (self.progress)(written.min(total), total);
+        }
+        Ok(())
     }
 
     /// Decides how much to keep back, once the partition table is in.
     fn plan_head(&mut self) -> io::Result<()> {
         let parts = partitions(&self.head);
-        if let (Some(parts), Some(capacity)) = (&parts, self.capacity) {
-            let need = parts.iter().map(|p| p.end).max().unwrap_or(0);
-            if need > capacity {
-                return Err(other(format!(
-                    "{} ({} < {})",
-                    t(
-                        "the card is too small for the image",
-                        "SD 卡比镜像小，放不下"
-                    ),
-                    size(capacity),
-                    size(need),
-                )));
-            }
+        let need = parts.iter().flatten().map(|p| p.end).max().unwrap_or(0);
+        if need > 0 {
+            self.total = Some(need);
+        }
+        if let Some(capacity) = self.capacity
+            && need > capacity
+        {
+            return Err(other(format!(
+                "{} ({} < {})",
+                t(
+                    "the card is too small for the image",
+                    "SD 卡比镜像小，放不下"
+                ),
+                size(capacity),
+                size(need),
+            )));
         }
         self.head_len = SECTOR;
         if self.wifi.is_some() {
@@ -204,7 +237,7 @@ impl<'a> Flasher<'a> {
         self.dev.seek(SeekFrom::Start(SECTOR as u64))?;
         self.dev.write_all(&self.head[SECTOR..])?;
         self.head_done = true;
-        Ok(())
+        self.synced()
     }
 
     fn write_chunk(&mut self) -> io::Result<()> {
@@ -213,7 +246,11 @@ impl<'a> Flasher<'a> {
         let padded = self.chunk.len().div_ceil(SECTOR) * SECTOR;
         self.chunk.resize(padded, 0);
         self.dev.write_all(&self.chunk)?;
+        self.unsynced += self.chunk.len() as u64;
         self.chunk.clear();
+        if self.unsynced >= SYNC_EVERY {
+            self.synced()?;
+        }
         Ok(())
     }
 
@@ -231,8 +268,7 @@ impl<'a> Flasher<'a> {
         }
         self.dev.seek(SeekFrom::Start(0))?;
         self.dev.write_all(&self.head[..SECTOR])?;
-        self.dev.flush()?;
-        self.dev.sync()?;
+        self.synced()?;
         Ok((self.len, self.hash.finalize().into()))
     }
 }
@@ -354,7 +390,7 @@ pub mod tests {
 
     fn flash(img: &[u8], wifi: Option<Wifi>, capacity: Option<u64>) -> Result<Vec<u8>> {
         let mut dev = tempfile::tempfile().unwrap();
-        let mut flasher = Flasher::new(&mut dev, wifi, capacity);
+        let mut flasher = Flasher::new(&mut dev, wifi, capacity, &|_, _| {});
         // Odd pieces, as a decompressor gives them.
         for piece in img.chunks(777_777) {
             flasher.write_all(piece)?;
@@ -387,6 +423,27 @@ pub mod tests {
     }
 
     #[test]
+    fn progress_counts_what_is_on_the_card_against_the_partition_table() {
+        // Longer than its partitions, as an image may be padded.
+        let mut img = image(9);
+        img.extend_from_slice(&[0u8; 4096]);
+        let total = 9u64 << 20;
+        let seen = std::sync::Mutex::new(Vec::new());
+        let progress = |done, of| seen.lock().unwrap().push((done, of));
+        let mut dev = tempfile::tempfile().unwrap();
+        let mut flasher = Flasher::new(&mut dev, Some(wifi()), None, &progress);
+        for piece in img.chunks(777_777) {
+            flasher.write_all(piece).unwrap();
+        }
+        flasher.finish().unwrap();
+        let seen = seen.into_inner().unwrap();
+        // The boot partition, held back for the Wi-Fi settings, then the end.
+        assert_eq!(seen.first(), Some(&(4 << 20, total)));
+        assert_eq!(seen.last(), Some(&(total, total)));
+        assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0), "{seen:?}");
+    }
+
+    #[test]
     fn a_card_too_small_is_refused_before_anything_is_written() {
         let img = image(9);
         let err = flash(&img, None, Some(8 << 20)).unwrap_err();
@@ -397,7 +454,7 @@ pub mod tests {
     fn a_card_that_reads_back_wrong_is_reported() {
         let img = image(6);
         let mut dev = tempfile::tempfile().unwrap();
-        let mut flasher = Flasher::new(&mut dev, None, None);
+        let mut flasher = Flasher::new(&mut dev, None, None, &|_, _| {});
         flasher.write_all(&img).unwrap();
         let (len, hash) = flasher.finish().unwrap();
         dev.seek(SeekFrom::Start(3 << 20)).unwrap();
