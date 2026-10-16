@@ -522,6 +522,11 @@ fn remount_boot(writable: bool) -> Result<()> {
 /// Stops the services, then restarts the Pi into the other slot once
 /// (`tryboot`), or normally.
 fn reboot(tryboot: bool) -> Result<()> {
+    // Stopping the services stops runod, which hangs up its terminal
+    // sessions, the one this may run in among them: carry on regardless,
+    // or the Pi is left with nothing running and no restart.
+    // SAFETY: plain signal(2) with SIG_IGN.
+    unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
     if Path::new("/etc/init.d/rcK").exists() {
         let _ = std::process::Command::new("/etc/init.d/rcK").status();
     }

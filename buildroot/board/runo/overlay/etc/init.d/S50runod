@@ -5,6 +5,8 @@
 
 PIDFILE=/run/runod.pid
 export HOME=/root RUNO_HOME=/data/runo
+# The shell clients open: bash, as for root's logins.
+[ -x /bin/bash ] && export SHELL=/bin/bash
 PASSWORD_TXT=/boot/runo-password.txt
 
 # runo-password.txt on the boot partition: the device password, for a Pi

@@ -83,7 +83,8 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 
 | 类别 | 内容 |
 |---|---|
-| 基础 | BusyBox（`ash`、coreutils 子集、`udhcpc`、`ntpd`、`syslogd`、`hwclock`、`mount`）、`kmod`、`e2fsprogs`（首次开机扩展 `data` 分区） |
+| 基础 | BusyBox（`ash`、coreutils 子集、`udhcpc`、`ntpd`、`syslogd`、`hwclock`、`mount`）、`kmod`（带 xz，内核模块是 `.ko.xz`）、`e2fsprogs`（首次开机扩展 `data` 分区） |
+| 排查用 | `htop`、`bash`（`!shell`、客户端打开的 Shell 和 root 登录默认用它；`/bin/sh` 和开机脚本仍是 BusyBox ash）、`lsblk`（util-linux） |
 | 固件与驱动 | `rpi-firmware`、`linux-firmware` 中的 Broadcom Wi‑Fi 固件（CYW43455） |
 | 网络 | `wpa_supplicant`、`nftables`（IPv6 公网入站防火墙，见 4.9）、`ca-certificates`（Runo 用系统根证书验证 TLS）；局域网发现由 Runo 自带（见 4.8），不装 avahi、mdnsd |
 | 时间与语言 | `tzdata`；中文字体 `wqy-zenhei`（Buildroot 已有；Noto CJK 没有现成包） |
