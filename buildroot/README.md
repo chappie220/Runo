@@ -77,6 +77,24 @@ request) and run it; it asks for root or administrator rights itself.
 The disk signature is `52554e4f`, so `cmdline.txt` names the root by
 `PARTUUID=52554e4f-02` wherever the disk is attached.
 
+### Changing the system by hand
+
+The running system can be made writable for a while, as root:
+
+```sh
+mount -o remount,rw /
+# ... change files ...
+sync
+mount -o remount,ro /
+```
+
+It goes back to read-only on the next boot anyway. Such changes are not
+kept by an update: it writes a whole new system to the other slot, so
+they are gone once it is the running one. There is no package manager
+either; programs are added by copying them in. What should outlive an
+update goes on `/data` instead (a program in `/data/<name>`, run from
+there), or into the image (`configs/*_defconfig`).
+
 Services (`/etc/init.d`): `S00data` mounts and grows `data`,
 `S40network` brings up Ethernet and Wi-Fi, `S48time` sets the time zone
 and clock, `S50runod` runs the management daemon, `S60gateway` runs the
