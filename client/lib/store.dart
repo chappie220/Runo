@@ -1,10 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
-import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'problem.dart';
 import 'src/rust/api/client.dart' as rust;
 
 /// Where the app keeps what it knows: the client's identity key in the
@@ -71,8 +71,5 @@ String when(int seconds) {
   return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
 }
 
-/// The message of an error from the device or the bridge.
-String message(Object error) {
-  final text = error is AnyhowException ? error.message : error.toString();
-  return text.trim();
-}
+/// The message of an error from the device or the bridge, in one line.
+String message(Object error) => Problem.of(error).title;

@@ -48,7 +48,6 @@ class T {
   );
   String get password => t('Device password', '设备密码');
   String get clientName => t('This client\'s name', '本客户端名称');
-  String get codesMatch => t('Codes match, pair', '配对码一致，配对');
   String get alreadyTrusted =>
       t('The device already trusts this client.', '设备已信任本客户端。');
   String get pairedDone => t('Paired.', '已配对。');
@@ -121,4 +120,35 @@ class T {
     'From outside its network the device needs its password.',
     '从设备所在网络之外连接需要设备密码。',
   );
+  String get tryAgain => t('Try again', '重试');
+  String get details => t('Details', '详细信息');
+  String get reload => t('Refresh', '刷新');
+  String get here => t('On this network', '在本网络');
+  String get away => t('Not on this network', '不在本网络');
+  String remoteAt(String domain) => t('Remote: $domain', '远程：$domain');
+  String get open => t('Open', '打开');
+  String get more => t('More', '更多');
+  String get stepConnect => t('Connect', '连接');
+  String get stepCode => t('Compare code', '核对确认码');
+  String get stepPassword => t('Password', '输入密码');
+  String get codeTitle => t('Pairing code', '配对确认码');
+  String get codesSame => t('Same code, continue', '一致，继续');
+  String get codesDiffer => t('Different, stop', '不一致，取消');
+  String get passwordAbout =>
+      t('Give the device password to finish pairing.', '输入设备密码完成配对。');
+  String get back => t('Back', '上一步');
+  String get noSessions => t(
+    'Nothing running. Open the Agent or a new shell.',
+    '还没有会话。打开 Agent 或新建一个 Shell。',
+  );
+  String get onLan => t('Local network', '局域网');
+  String get onRemote => t('Remote', '远程');
+  String get clientsAbout =>
+      t('The clients this device trusts.', '这台设备信任的客户端。');
+  String get sendAbout => t(
+    'Pick a file here and put it in a folder on the device.',
+    '从本机选一个文件，放到设备上的目录里。',
+  );
+  String get fetchAbout =>
+      t('Copy a file from the device to this computer.', '把设备上的文件复制到本机。');
 }

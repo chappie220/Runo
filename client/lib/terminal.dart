@@ -115,7 +115,18 @@ class _TerminalPageState extends State<TerminalPage> {
     final touch = Platform.isAndroid;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title),
+        title: Row(
+          children: [
+            Icon(
+              widget.kind == 'agent'
+                  ? Icons.smart_toy_outlined
+                  : Icons.terminal,
+              size: 22,
+            ),
+            const SizedBox(width: 10),
+            Flexible(child: Text(widget.title)),
+          ],
+        ),
         actions: [
           if (!ended)
             IconButton(
@@ -141,34 +152,38 @@ class _TerminalPageState extends State<TerminalPage> {
                 ),
               ),
               if (touch)
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      key('Esc', '\x1b'),
-                      key('Tab', '\t'),
-                      TextButton(
-                        onPressed: ended
-                            ? null
-                            : () => setState(() => ctrl = !ctrl),
-                        style: ctrl
-                            ? TextButton.styleFrom(
-                                backgroundColor: Theme.of(context)
-                                    .colorScheme
-                                    .primaryContainer,
-                              )
-                            : null,
-                        child: const Text('Ctrl'),
-                      ),
-                      key('↑', '\x1b[A'),
-                      key('↓', '\x1b[B'),
-                      key('←', '\x1b[D'),
-                      key('→', '\x1b[C'),
-                      key('^C', '\x03'),
-                      key('|', '|'),
-                      key('/', '/'),
-                      key('-', '-'),
-                    ],
+                Container(
+                  color: Theme.of(context).colorScheme.surfaceContainer,
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        key('Esc', '\x1b'),
+                        key('Tab', '\t'),
+                        TextButton(
+                          onPressed: ended
+                              ? null
+                              : () => setState(() => ctrl = !ctrl),
+                          style: ctrl
+                              ? TextButton.styleFrom(
+                                  backgroundColor: Theme.of(context)
+                                      .colorScheme
+                                      .primaryContainer,
+                                )
+                              : null,
+                          child: const Text('Ctrl'),
+                        ),
+                        key('↑', '\x1b[A'),
+                        key('↓', '\x1b[B'),
+                        key('←', '\x1b[D'),
+                        key('→', '\x1b[C'),
+                        key('^C', '\x03'),
+                        key('|', '|'),
+                        key('/', '/'),
+                        key('-', '-'),
+                      ],
+                    ),
                   ),
                 ),
             ],
