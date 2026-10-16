@@ -34,7 +34,7 @@ cp "$EXTERNAL/runo-password.txt.example" "$BOOT/"
 
 # Data starts small and empty; S00data grows it.
 rm -f "$BINARIES_DIR/data.ext4"
-"$HOST_DIR/sbin/mkfs.ext4" -q -L data -E root_owner=0:0 "$BINARIES_DIR/data.ext4" 64M
+"$HOST_DIR/sbin/mkfs.ext4" -q -L data -b 4096 -i 16384 -E root_owner=0:0 "$BINARIES_DIR/data.ext4" 64M
 
 files=""
 for f in "$BOOT"/*; do
