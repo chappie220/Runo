@@ -14,7 +14,7 @@ publish = false
 release = "0.5.0"
 
 [workspace]
-members = [".", "link"]
+members = [".", "link", "flash"]
 
 [[bin]]
 name = "runo"

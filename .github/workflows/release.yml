@@ -51,8 +51,36 @@ jobs:
           name: runo-${{ matrix.target }}
           path: runo-${{ matrix.target }}
 
+  # The SD card writer for PCs (runo-flash), for Linux and Windows.
+  flash:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            exe: runo-flash
+            file: runo-flash-x86_64-linux
+          - target: x86_64-pc-windows-gnu
+            exe: runo-flash.exe
+            file: runo-flash-x86_64-windows.exe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: flash-${{ matrix.target }}
+      - run: pip install ziglang cargo-zigbuild
+      - run: cargo zigbuild --locked --release -p runo-flash --target ${{ matrix.target }}
+      - run: cp target/${{ matrix.target }}/release/${{ matrix.exe }} ${{ matrix.file }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.file }}
+          path: ${{ matrix.file }}
+
   publish:
-    needs: build
+    needs: [build, flash]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -65,7 +93,7 @@ jobs:
       # by looking for openclaw-rs-<target>: the same files under that name.
       - run: |
           cd dist
-          for f in runo-*; do cp "$f" "openclaw-rs-${f#runo-}"; done
+          for f in runo-*-linux-musl; do cp "$f" "openclaw-rs-${f#runo-}"; done
           sha256sum runo-* openclaw-rs-* > SHA256SUMS && cat SHA256SUMS
       # A release made by hand for this tag (e.g. on the website) gets the
       # files; otherwise one is created. Re-runs replace the files.

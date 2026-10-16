@@ -393,6 +393,11 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
   不提供安装浏览器；`system_inspect` 和 `system-setup` skill 说明镜像上 Wi‑Fi 与时区的位置。
 - [x] tty1 上首次启动时询问设备密码（可跳过）；管理界面加入“设备密码”。
 - [x] CI（`.github/workflows/image.yml`）构建 Pi 5 和 Pi 4 镜像，产出 `runo-<板>.img.xz`。
+- [x] 电脑上的烧录工具 `runo-flash`（`flash/`，x86_64 的 Linux 和 Windows，终端界面）：选型号 → 选镜像（从 GitHub 发布下载并核对
+  `SHA256SUMS-<板>`，或本地的 `.img.xz`、GitHub Actions 下载的 `.zip`、`.img`）→ 可选填写 Wi‑Fi（写入 boot 分区的 `runo-wifi.txt`）→
+  选 SD 卡（只列可移动磁盘，不列系统盘）→ 输入 `yes` 确认 → 写入、读回校验。分区表最后写，写完之前系统不会挂载半张卡；
+  SD 卡比镜像小时在写入前拒绝。需要 root（Linux 自动用 `sudo` 重新运行）或管理员（Windows 弹出 UAC）。
+  CI 和发布流程产出 `runo-flash-x86_64-linux` 和 `runo-flash-x86_64-windows.exe`。
 - [ ] 真机验收（第 7 节）：HDMI 中文显示、Wi‑Fi、首次扩展分区、配对。
 
 ### 阶段 4 当前进度
@@ -435,7 +440,7 @@ Linux 内核的 VT 控制台字形数有限，**不能显示中文**；这一项
 
 在**树莓派 5** 和**树莓派 4 B** 上各完成一遍：
 
-1. **烧录**：用常见烧录工具把镜像写入 SD 卡（Pi 5 另测 NVMe）。
+1. **烧录**：用 `runo-flash`（或 Raspberry Pi Imager 的“使用自定义镜像”）把镜像写入 SD 卡（Pi 5 另测 NVMe）。
 2. **联网**：有线自动获取地址；或在本地界面 / 启动分区填写 Wi‑Fi。
 3. **局域网配对**：客户端发现设备，确认码一致，配对成功；公网地址上的配对请求被拒绝。
 4. **填入模型连接信息**：本地或在已配对的客户端上填写。

@@ -27,8 +27,29 @@ host with the usual Buildroot prerequisites (`build-essential`, `bc`,
    hour; keep `BR2_DL_DIR` between builds to skip the downloads.
 
 3. Write `images/sdcard.img.xz` (or `sdcard.img`) to an SD card, USB
-   drive or NVMe disk, e.g. with Raspberry Pi Imager or
+   drive or NVMe disk: with `runo-flash` (below), Raspberry Pi Imager or
    `xzcat sdcard.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync`.
+
+## Writing the card from a PC: runo-flash
+
+`runo-flash` (source in `flash/`) writes the image from a Linux or Windows
+PC, with screens in the terminal. Download `runo-flash-x86_64-linux` or
+`runo-flash-x86_64-windows.exe` from a release (or the CI run of a pull
+request) and run it; it asks for root or administrator rights itself.
+
+1. Choose the board.
+2. Choose the image: the latest release from GitHub (checked against its
+   `SHA256SUMS-<board>`), or a file: `runo-<board>.img.xz`, the `.zip`
+   GitHub Actions gives for an Image build, or an `.img`. Files in the
+   current folder and in Downloads are listed.
+3. Optionally fill in Wi-Fi; it goes on the boot partition as
+   `runo-wifi.txt`, read on the first boot.
+4. Choose the card. Only removable disks are listed, never the one the PC
+   runs from.
+5. Type `yes`. The image is written, the partition table last, and read
+   back to check it.
+
+`runo-flash runo-rpi4.img.xz` starts with that file.
 
 ## First boot
 
