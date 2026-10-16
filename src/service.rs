@@ -29,6 +29,10 @@ const OPENRC_RUN: &str = "/sbin/openrc-run";
 const INIT_SCRIPT: &str = "/etc/init.d/runo";
 const CONF_FILE: &str = "/etc/conf.d/runo";
 const LOG_FILE: &str = "/var/log/runo.log";
+/// The Gateway's script on the Runo system image; `enable` and `disable`
+/// say whether it starts at boot.
+const IMAGE_SCRIPT: &str = "/etc/init.d/S60gateway";
+const IMAGE_ENABLED: &str = "/data/runo/gateway.enabled";
 /// What `service install` made before 0.5, under the old name.
 const LEGACY_NAME: &str = crate::rename::LEGACY_NAME;
 pub const LEGACY_INIT_SCRIPT: &str = "/etc/init.d/openclaw-rs";
@@ -99,6 +103,15 @@ const REPLACED: Tr = tr(
 );
 const KIND_SYSTEM: Tr = tr("system service (OpenRC)", "系统服务（OpenRC）");
 const KIND_USER: Tr = tr("user service (OpenRC --user)", "用户服务（OpenRC --user）");
+const KIND_IMAGE: Tr = tr("system service (Runo system)", "系统服务（Runo 系统）");
+const IMAGE_INSTALLED: Tr = tr(
+    "The Gateway runs now and starts at every boot ({}).",
+    "Gateway 已运行，并会在每次开机时启动（{}）。",
+);
+const IMAGE_REMOVED: Tr = tr(
+    "The Gateway is stopped and no longer starts at boot; state and logs ({}) are kept.",
+    "Gateway 已停止，开机不再启动；状态和日志（{}）保留。",
+);
 const KIND_DETACHED: Tr = tr(
     "background process (no OpenRC service)",
     "后台进程（没有 OpenRC 服务）",
@@ -124,6 +137,9 @@ const ALL: &[Tr] = &[
     KIND_SYSTEM,
     KIND_USER,
     KIND_DETACHED,
+    KIND_IMAGE,
+    IMAGE_INSTALLED,
+    IMAGE_REMOVED,
 ];
 
 pub struct Account {
@@ -347,6 +363,8 @@ fn user_services_available() -> bool {
 }
 
 enum Backend {
+    /// The Runo system image's own script.
+    Image,
     /// /etc/init.d; `root` says whether this process may control it.
     System {
         root: bool,
@@ -357,6 +375,9 @@ enum Backend {
 
 impl Backend {
     fn detect() -> Result<Self> {
+        if crate::config::runo_system() && Path::new(IMAGE_SCRIPT).exists() {
+            return Ok(Self::Image);
+        }
         let openrc = Path::new(OPENRC_RUN).exists();
         if is_root() {
             return Ok(if openrc {
@@ -382,6 +403,7 @@ impl Backend {
 
     fn rc_service(&self, action: &str) -> Result<()> {
         match self {
+            Self::Image => run(IMAGE_SCRIPT, &[action]),
             Self::System { root: true } => run("rc-service", &[NAME, action]),
             Self::System { root: false } => {
                 if !crate::elevate::can_ask() {
@@ -405,6 +427,14 @@ impl Backend {
         if matches!(self, Self::System { root: false }) {
             return gateway_pids().next().is_some();
         }
+        if matches!(self, Self::Image) {
+            return Command::new(IMAGE_SCRIPT)
+                .arg("status")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+        }
         let mut cmd = Command::new("rc-service");
         if matches!(self, Self::User(_)) {
             cmd.arg("--user");
@@ -418,6 +448,7 @@ impl Backend {
 
     fn kind(&self) -> Tr {
         match self {
+            Self::Image => KIND_IMAGE,
             Self::System { .. } => KIND_SYSTEM,
             Self::User(_) => KIND_USER,
             Self::Detached => KIND_DETACHED,
@@ -426,7 +457,7 @@ impl Backend {
 
     fn log(&self) -> String {
         match self {
-            Self::System { .. } => LOG_FILE.to_owned(),
+            Self::Image | Self::System { .. } => LOG_FILE.to_owned(),
             _ => state_file(USER_LOG).display().to_string(),
         }
     }
@@ -477,6 +508,12 @@ fn remove_files(paths: &[&Path]) -> Result<()> {
 pub fn install(user: Option<&str>, config: Option<&Path>) -> Result<()> {
     let binary = std::env::current_exe()?.canonicalize()?;
     let env = forwarded_env();
+    if let Backend::Image = Backend::detect()? {
+        run(IMAGE_SCRIPT, &["enable"])?;
+        run(IMAGE_SCRIPT, &["restart"])?;
+        println!("{}", IMAGE_INSTALLED.with(&[LOG_FILE]));
+        return Ok(());
+    }
     replace_legacy(&binary)?;
     if is_root() {
         if !Path::new(OPENRC_RUN).exists() {
@@ -572,6 +609,11 @@ pub fn install(user: Option<&str>, config: Option<&Path>) -> Result<()> {
 /// Stops and removes what `install` made; state and logs are kept.
 pub fn uninstall() -> Result<()> {
     match Backend::detect()? {
+        Backend::Image => {
+            let _ = run(IMAGE_SCRIPT, &["stop"]);
+            run(IMAGE_SCRIPT, &["disable"])?;
+            println!("{}", IMAGE_REMOVED.with(&[LOG_FILE]));
+        }
         Backend::System { root: true } => {
             if !Path::new(INIT_SCRIPT).exists() {
                 println!(
@@ -702,6 +744,7 @@ pub fn restart_if_running() -> bool {
 pub fn describe() -> Option<String> {
     let backend = Backend::detect().ok()?;
     let installed = match &backend {
+        Backend::Image => Path::new(IMAGE_ENABLED).exists(),
         Backend::System { .. } => Path::new(INIT_SCRIPT).exists(),
         Backend::User(paths) => paths.init.exists(),
         Backend::Detached => detached_pid().is_some(),
@@ -720,6 +763,13 @@ pub fn describe() -> Option<String> {
         state,
         backend.log()
     ))
+}
+
+/// Where the Gateway writes its log, however it runs.
+pub fn log_file() -> Option<PathBuf> {
+    Backend::detect()
+        .ok()
+        .map(|backend| PathBuf::from(backend.log()))
 }
 
 /// The pid in the pid file, when that process is still a Gateway.

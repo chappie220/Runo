@@ -264,6 +264,42 @@ impl std::fmt::Display for StreamError {
 
 impl std::error::Error for StreamError {}
 
+/// Marks a failure that says the model cannot be used right now (no
+/// network, a refused key or sign-in, no credit, the provider down) rather
+/// than something wrong with one request. It shows exactly as the error it
+/// wraps.
+#[derive(Debug)]
+struct Unavailable(anyhow::Error);
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for Unavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.chain().nth(1)
+    }
+}
+
+fn unavailable(error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(Unavailable(error))
+}
+
+/// Whether a turn failed because the model cannot be used right now, so the
+/// person needs the management view rather than another try.
+pub fn is_unavailable(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<Unavailable>())
+}
+
+/// Whether an HTTP failure from the model's server means the model cannot
+/// be used (the key, credit, the model's id, the provider) rather than that
+/// this request was wrong (too long, malformed).
+fn unavailable_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 401..=404) || retryable_status(status)
+}
+
 /// Whether `model` is served by a provider that caches only at explicit
 /// `cache_control` breakpoints.
 fn needs_cache_breakpoints(model: &str) -> bool {
@@ -529,17 +565,20 @@ impl Client {
             .send()
             .await
             .map_err(|err| Failure::Retry {
-                error: anyhow::Error::new(err).context("model request failed"),
+                error: unavailable(anyhow::Error::new(err).context("model request failed")),
                 after: None,
             })?;
         let status = response.status();
         if !status.is_success() {
             let after = retry_after(&response);
             let body = response.text().await.unwrap_or_default();
-            let error = anyhow::anyhow!(
+            let mut error = anyhow::anyhow!(
                 "model request failed with HTTP {status}: {}",
                 error_message(&body)
             );
+            if unavailable_status(status) {
+                error = unavailable(error);
+            }
             return Err(if retryable_status(status) {
                 Failure::Retry { error, after }
             } else {
@@ -557,7 +596,7 @@ impl Client {
         };
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(|err| Failure::Retry {
-                error: anyhow::Error::new(err).context("model stream interrupted"),
+                error: unavailable(anyhow::Error::new(err).context("model stream interrupted")),
                 after: None,
             })?;
             parser
@@ -582,7 +621,10 @@ impl Client {
     ) -> Result<Completion, Failure> {
         let mut refreshed = false;
         let response = loop {
-            let (token, account) = auth.access(refreshed).await.map_err(Failure::Fatal)?;
+            let (token, account) = auth
+                .access(refreshed)
+                .await
+                .map_err(|err| Failure::Fatal(unavailable(err)))?;
             let mut request = self
                 .http
                 .post(format!("{}/responses", self.base_url))
@@ -596,7 +638,7 @@ impl Client {
                 request = request.header("chatgpt-account-id", account);
             }
             let response = request.send().await.map_err(|err| Failure::Retry {
-                error: anyhow::Error::new(err).context("model request failed"),
+                error: unavailable(anyhow::Error::new(err).context("model request failed")),
                 after: None,
             })?;
             if response.status() == reqwest::StatusCode::UNAUTHORIZED && !refreshed {
@@ -610,7 +652,10 @@ impl Client {
             let after = retry_after(&response);
             let body = response.text().await.unwrap_or_default();
             let (message, usage_limit) = crate::chatgpt::error_message(status, &body);
-            let error = anyhow::anyhow!(message);
+            let mut error = anyhow::anyhow!(message);
+            if usage_limit || unavailable_status(status) {
+                error = unavailable(error);
+            }
             // The plan's limit lasts hours; retrying only wastes the wait.
             return Err(if retryable_status(status) && !usage_limit {
                 Failure::Retry { error, after }
@@ -622,7 +667,7 @@ impl Client {
         let mut body = response.bytes_stream();
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(|err| Failure::Retry {
-                error: anyhow::Error::new(err).context("model stream interrupted"),
+                error: unavailable(anyhow::Error::new(err).context("model stream interrupted")),
                 after: None,
             })?;
             parser
@@ -1011,8 +1056,36 @@ mod tests {
     async fn gives_up_after_max_retries() {
         let (url, hits, _) = scripted_server(vec![(502, None, "bad gateway")]).await;
         let (result, _) = run(&test_client(&url, &[])).await;
-        assert!(result.unwrap_err().to_string().contains("HTTP 502"));
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("HTTP 502"));
+        assert!(is_unavailable(&err));
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_refused_key_or_no_server_means_the_model_is_unavailable() {
+        let (url, hits, _) =
+            scripted_server(vec![(401, None, "{\"error\":{\"message\":\"no auth\"}}")]).await;
+        let (result, _) = run(&test_client(&url, &[])).await;
+        let err = result.unwrap_err();
+        assert!(is_unavailable(&err));
+        assert_eq!(
+            err.to_string(),
+            "model request failed with HTTP 401 Unauthorized: no auth"
+        );
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Nothing listens on a port just freed.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let (result, _) = run(&test_client(&url, &[])).await;
+        let err = result.unwrap_err();
+        assert!(is_unavailable(&err));
+        assert!(
+            format!("{err:#}").starts_with("model request failed: "),
+            "{err:#}"
+        );
     }
 
     #[tokio::test]
@@ -1020,7 +1093,9 @@ mod tests {
         let (url, hits, last) =
             scripted_server(vec![(400, None, "{\"error\":{\"message\":\"bad\"}}")]).await;
         let (result, _) = run(&test_client(&url, &[])).await;
-        assert!(result.unwrap_err().to_string().contains("bad"));
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("bad"));
+        assert!(!is_unavailable(&err), "a bad request is not a model outage");
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(last.lock().unwrap().get("models").is_none());
     }

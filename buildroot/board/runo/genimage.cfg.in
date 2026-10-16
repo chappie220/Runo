@@ -1,0 +1,37 @@
+image boot.vfat {
+	vfat {
+		label = "RUNO-BOOT"
+		files = { #BOOT_FILES# }
+	}
+	size = 256M
+}
+
+image sdcard.img {
+	hdimage {
+		partition-table-type = "mbr"
+		disk-signature = 0x52554e4f
+	}
+
+	partition boot {
+		partition-type = 0xC
+		bootable = "true"
+		image = "boot.vfat"
+		offset = 4M
+	}
+
+	partition rootfs-a {
+		partition-type = 0x83
+		image = "rootfs.ext4"
+		size = 768M
+	}
+
+	partition rootfs-b {
+		partition-type = 0x83
+		size = 768M
+	}
+
+	partition data {
+		partition-type = 0x83
+		image = "data.ext4"
+	}
+}

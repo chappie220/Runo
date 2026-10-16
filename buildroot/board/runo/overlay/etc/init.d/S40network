@@ -1,0 +1,90 @@
+#!/bin/sh
+#
+# Wired network by DHCP; Wi-Fi with wpa_supplicant when it is set up in
+# /data/etc/wpa_supplicant.conf, or in runo-wifi.txt on the boot
+# partition (read once, then deleted). IPv6 addresses come from router
+# advertisements, as stable addresses that do not change between boots.
+
+WPA_CONF=/data/etc/wpa_supplicant.conf
+WIFI_TXT=/boot/runo-wifi.txt
+
+# runo-wifi.txt: lines of ssid=, password= and country= (two letters).
+wifi_from_boot() {
+	[ -f "$WIFI_TXT" ] || return 0
+	ssid=$(sed -n 's/^ssid=//p' "$WIFI_TXT" | tr -d '\r' | head -n 1)
+	password=$(sed -n 's/^password=//p' "$WIFI_TXT" | tr -d '\r' | head -n 1)
+	country=$(sed -n 's/^country=//p' "$WIFI_TXT" | tr -d '\r' | head -n 1)
+	if [ -n "$ssid" ]; then
+		umask 077
+		{
+			echo "ctrl_interface=/run/wpa_supplicant"
+			echo "update_config=1"
+			[ -n "$country" ] && echo "country=$country"
+			if [ -n "$password" ]; then
+				wpa_passphrase "$ssid" "$password" | grep -v '^[[:space:]]*#psk='
+			else
+				printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n}\n' "$ssid"
+			fi
+		} > "$WPA_CONF.new" && mv "$WPA_CONF.new" "$WPA_CONF"
+		echo "network: Wi-Fi \"$ssid\" set up from the boot partition"
+	fi
+	mount -o remount,rw /boot && rm -f "$WIFI_TXT"
+	mount -o remount,ro /boot
+}
+
+stable_ipv6() {
+	secret=/data/etc/ipv6-secret
+	[ -s $secret ] || hexdump -n 16 -v -e '7/2 "%04x:" 1/2 "%04x" "\n"' /dev/urandom > $secret
+	for conf in /proc/sys/net/ipv6/conf/*; do
+		case "${conf##*/}" in all|lo) continue ;; esac
+		cat $secret > "$conf/stable_secret" 2>/dev/null
+		echo 2 > "$conf/addr_gen_mode" 2>/dev/null
+	done
+}
+
+dhcp() {
+	udhcpc -b -S -R -i "$1" -p /run/udhcpc."$1".pid -x hostname:"$(hostname)" >/dev/null 2>&1
+}
+
+start() {
+	stable_ipv6
+	ip link set lo up
+	if [ -e /sys/class/net/eth0 ]; then
+		ip link set eth0 up
+		dhcp eth0
+	fi
+	wifi_from_boot
+	if [ -s "$WPA_CONF" ]; then
+		# The Wi-Fi chip shows up once its firmware has loaded.
+		n=0
+		while [ ! -e /sys/class/net/wlan0 ] && [ $n -lt 10 ]; do
+			sleep 1
+			n=$((n + 1))
+		done
+		if [ -e /sys/class/net/wlan0 ]; then
+			mkdir -p /run/wpa_supplicant
+			wpa_supplicant -B -s -i wlan0 -c "$WPA_CONF" -P /run/wpa_supplicant.pid
+			dhcp wlan0
+		else
+			echo "network: Wi-Fi is set up but there is no Wi-Fi device"
+		fi
+	fi
+}
+
+stop() {
+	for pid in /run/udhcpc.*.pid /run/wpa_supplicant.pid; do
+		[ -f "$pid" ] && kill "$(cat "$pid")" 2>/dev/null
+		rm -f "$pid"
+	done
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 1; start ;;
+	status)
+		ip -brief address 2>/dev/null || ip address
+		ip route
+		;;
+	*) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

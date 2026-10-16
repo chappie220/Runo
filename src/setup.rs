@@ -1192,6 +1192,33 @@ const GROUPS: &[Group] = &[
                         ),
                         kind: Kind::Money,
                     },
+                    Field {
+                        path: &["limits", "setup_usd"],
+                        label: tr("Limit per device set-up (USD)", "每次设备配置上限（美元）"),
+                        help: tr(
+                            "What one /setup may spend over all its turns; it stops there, keeping the steps already verified. 0: no limit.",
+                            "一次 /setup 在所有回合里最多花多少；到了就停下，已验证的步骤保留。0 表示不限。",
+                        ),
+                        kind: Kind::Money,
+                    },
+                    Field {
+                        path: &["limits", "setup_tool_calls"],
+                        label: tr("Tool calls per device set-up", "每次设备配置的工具调用次数"),
+                        help: tr(
+                            "How many tool calls one /setup may make before it stops and says where it got stuck. 0: no limit.",
+                            "一次 /setup 最多调用多少次工具，超过就停下并说明卡在哪里。0 表示不限。",
+                        ),
+                        kind: Kind::Int,
+                    },
+                    Field {
+                        path: &["limits", "setup_attempts"],
+                        label: tr("Attempts per set-up target", "每个配置目标的尝试次数"),
+                        help: tr(
+                            "Failed changes allowed for one target (network, time…) before /setup gives it up.",
+                            "一个配置目标（网络、时间……）允许失败的修改次数，超过后 /setup 放弃这一项。",
+                        ),
+                        kind: Kind::Int,
+                    },
                 ],
             },
         ],
@@ -1769,10 +1796,10 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// Disables terminal echo on stdin until dropped.
-struct EchoOff(Option<libc::termios>);
+pub(crate) struct EchoOff(Option<libc::termios>);
 
 impl EchoOff {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         // SAFETY: termios is plain data; tcgetattr fills it or fails.
         unsafe {
             let mut term: libc::termios = std::mem::zeroed();

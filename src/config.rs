@@ -1126,11 +1126,27 @@ pub fn env_var(name: &str) -> Option<std::ffi::OsString> {
 pub const STATE_DIR_NAME: &str = ".runo";
 pub const LEGACY_STATE_DIR_NAME: &str = ".openclaw-rs";
 
-/// State root: `RUNO_HOME` (or the old `OPENCLAW_RS_HOME`), else `~/.runo`;
-/// `~/.openclaw-rs` while that has not been moved yet (see `rename`).
+/// Present on the Runo system image (`buildroot/`), whose root file system
+/// is read-only: state lives on the data partition, nothing can be
+/// installed and services are the image's own `/etc/init.d` scripts.
+pub const SYSTEM_MARK: &str = "/etc/runo-system";
+/// The state root on the Runo system image.
+pub const SYSTEM_STATE: &str = "/data/runo";
+
+/// Whether this runs as the Runo system (see [`SYSTEM_MARK`]).
+pub fn runo_system() -> bool {
+    Path::new(SYSTEM_MARK).exists()
+}
+
+/// State root: `RUNO_HOME` (or the old `OPENCLAW_RS_HOME`), else
+/// /data/runo on the Runo system, else `~/.runo`; `~/.openclaw-rs` while
+/// that has not been moved yet (see `rename`).
 pub fn state_dir() -> Result<PathBuf> {
     if let Some(dir) = env_var("HOME") {
         return Ok(PathBuf::from(dir));
+    }
+    if runo_system() {
+        return Ok(PathBuf::from(SYSTEM_STATE));
     }
     let home = PathBuf::from(
         std::env::var_os("HOME")

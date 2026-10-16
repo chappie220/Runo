@@ -1,0 +1,18 @@
+config BR2_PACKAGE_RUNO
+	bool "runo"
+	depends on BR2_aarch64
+	help
+	  Runo: the Agent, its terminal UI and runod. The image takes
+	  the static aarch64-unknown-linux-musl binary that CI builds
+	  (cargo zigbuild --release --target aarch64-unknown-linux-musl)
+	  rather than building Rust here.
+
+if BR2_PACKAGE_RUNO
+
+config BR2_PACKAGE_RUNO_BINARY
+	string "runo binary"
+	default "$(BR2_EXTERNAL_RUNO_PATH)/../target/aarch64-unknown-linux-musl/release/runo"
+	help
+	  Path to the static runo binary to install as /usr/bin/runo.
+
+endif

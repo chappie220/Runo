@@ -1,0 +1,115 @@
+#!/bin/sh
+#
+# Mounts the boot partition (the 1st) read-only at /boot and the data
+# partition (the 4th) at /data, on the disk the root file system is on.
+# The root file system is read-only; what changes lives on /data, which
+# /etc, /root and /var/log link into. On the first boot the data
+# partition grows to the end of the disk (once, with a reboot).
+#
+# Recovery (4.5): a file runo-reset.txt on the boot partition, written
+# from any computer, is read once and removed:
+#   pairing   forget the paired clients and the device password
+#   all       erase /data: the device starts as on its first boot
+
+BOOT_PART=1
+DATA_PART=4
+
+log() { echo "data: $*"; }
+
+# The kernel name of partition $2 of disk $1 (mmcblk0p4, nvme0n1p4, sda4).
+partition() {
+	for part in /sys/block/"$1"/"$1"*; do
+		[ "$(cat "$part/partition" 2>/dev/null)" = "$2" ] && {
+			basename "$part"
+			return 0
+		}
+	done
+	return 1
+}
+
+# Grows the last MBR entry, partition 4, to the end of the disk and
+# reboots, so that the kernel reads the new size. A partition already
+# there, or a table that is not what the image wrote, is left alone.
+grow() {
+	disk=$1 part=$2
+	total=$(cat /sys/block/"$disk"/size)
+	start=$(cat /sys/block/"$disk"/"$part"/start)
+	size=$(cat /sys/block/"$disk"/"$part"/size)
+	want=$((total - start))
+	# Less than 16 MiB to gain is not worth a reboot.
+	[ $((want - size)) -gt 32768 ] || return 0
+	[ $want -le 4294967295 ] || want=4294967295
+	# Entry 4 is at 446 + 3*16; its start sector at +8, its size at +12.
+	entry=$(dd if=/dev/"$disk" bs=1 skip=502 count=8 2>/dev/null | hexdump -v -e '1/4 "%u "')
+	# shellcheck disable=SC2086 # two numbers
+	set -- $entry
+	if [ "$1" != "$start" ] || [ "$2" != "$size" ]; then
+		log "partition table not as expected, not growing /data"
+		return 0
+	fi
+	log "growing /data to the end of the disk"
+	bytes=$(printf '\\0%03o\\0%03o\\0%03o\\0%03o' $((want & 255)) $((want >> 8 & 255)) \
+		$((want >> 16 & 255)) $((want >> 24 & 255)))
+	umount /data
+	printf '%b' "$bytes" | dd of=/dev/"$disk" bs=1 seek=506 count=4 conv=notrunc 2>/dev/null
+	sync
+	reboot -f
+}
+
+# Carries out /boot/runo-reset.txt, then removes it.
+reset() {
+	what=$(tr -d '\r' < /boot/runo-reset.txt | sed -n '/^[[:space:]]*[^#[:space:]]/{s/[[:space:]]//g;p;q}')
+	case "$what" in
+	pairing)
+		log "reset: forgetting the paired clients and the device password"
+		rm -f /data/runo/runod/clients.json /data/runo/runod/password
+		;;
+	all)
+		log "reset: erasing /data"
+		find /data -mindepth 1 -maxdepth 1 ! -name .grown ! -name lost+found -exec rm -rf {} +
+		;;
+	*) log "reset: runo-reset.txt says '$what'; expected pairing or all" ;;
+	esac
+	mount -o remount,rw /boot && rm -f /boot/runo-reset.txt
+	mount -o remount,ro /boot
+	sync
+}
+
+start() {
+	root=$(mountpoint -d /)
+	rootpart=$(basename "$(readlink -f /sys/dev/block/"$root")")
+	disk=$(basename "$(dirname "$(readlink -f /sys/dev/block/"$root")")")
+	mkdir -p /boot /data
+	boot=$(partition "$disk" $BOOT_PART) &&
+		mount -o ro,noatime,fmask=0133,dmask=0022 /dev/"$boot" /boot
+	data=$(partition "$disk" $DATA_PART) || data=
+	if [ -n "$data" ]; then
+		e2fsck -p /dev/"$data" >/dev/null 2>&1
+		[ $? -ge 4 ] && log "/dev/$data has errors e2fsck cannot mend"
+	fi
+	if [ -z "$data" ] || ! mount -o noatime /dev/"$data" /data; then
+		log "no usable data partition; /data is in memory until the next boot"
+		mount -t tmpfs -o mode=0755 tmpfs /data
+	elif [ ! -e /data/.grown ]; then
+		grow "$disk" "$data"
+		resize2fs /dev/"$data" >/dev/null 2>&1 && log "/data fills the disk"
+		touch /data/.grown
+	fi
+
+	[ -f /boot/runo-reset.txt ] && reset
+
+	mkdir -p /data/etc /data/log /data/root /data/runo
+	chmod 0700 /data/root /data/runo
+	[ -s /data/etc/hostname ] || echo runo > /data/etc/hostname
+	[ -s /data/etc/timezone ] || echo Etc/UTC > /data/etc/timezone
+	[ -e /data/etc/localtime ] ||
+		ln -sf "/usr/share/zoneinfo/$(cat /data/etc/timezone)" /data/etc/localtime
+	hostname -F /data/etc/hostname
+	echo "$rootpart" > /run/root-partition
+}
+
+case "$1" in
+	start) start ;;
+	stop) ;;
+	*) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac

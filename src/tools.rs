@@ -156,6 +156,10 @@ pub struct BuiltinTools {
     tasks: Option<crate::tasks::TasksConfig>,
     /// config.toml, for the `settings` tool; `None` offers no such tool.
     settings: Option<PathBuf>,
+    /// The configuration history, for `system_change`; `None` offers none.
+    changes: Option<crate::changes::History>,
+    /// Device set-up runs, held to their limits per target.
+    setup: Option<Arc<crate::setup_run::Runs>>,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +174,56 @@ struct SettingsArgs {
 #[derive(Deserialize)]
 struct ShellArgs {
     command: String,
+}
+
+#[derive(Deserialize)]
+struct ServiceArgs {
+    name: String,
+    action: String,
+}
+
+#[derive(Deserialize)]
+struct CheckArgs {
+    kind: String,
+    target: String,
+}
+
+#[derive(Deserialize)]
+struct ChangeFile {
+    path: String,
+    /// `None` deletes the file.
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChangeArgs {
+    summary: String,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    files: Vec<ChangeFile>,
+    #[serde(default)]
+    services: Vec<String>,
+    #[serde(default)]
+    checks: Vec<CheckArgs>,
+    #[serde(default)]
+    settle_secs: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct HistoryArgs {
+    #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct RevertArgs {
+    id: u64,
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Deserialize)]
@@ -338,7 +392,50 @@ impl BuiltinTools {
             stickers: None,
             tasks: None,
             settings: None,
+            changes: None,
+            setup: None,
         })
+    }
+
+    /// Holds `system_change` to the device set-up's attempts per target,
+    /// and offers `system_setup_done` while a set-up runs.
+    pub fn with_setup(mut self, setup: Option<Arc<crate::setup_run::Runs>>) -> Self {
+        self.setup = setup;
+        self
+    }
+
+    /// The set-up runs, when one is going on in this turn's session.
+    fn setup_running(&self) -> Option<(&crate::setup_run::Runs, String)> {
+        let runs = self.setup.as_deref()?;
+        let session = crate::agent::current_session()?;
+        runs.active(&session)?;
+        Some((runs, session))
+    }
+
+    /// Offers `system_change`, `system_history` and `system_revert` on this
+    /// history; files under /etc are then changed only through it.
+    pub fn with_changes(mut self, changes: Option<crate::changes::History>) -> Self {
+        self.changes = changes;
+        self
+    }
+
+    /// Whether `system_change` is offered.
+    fn changes_offered(&self) -> bool {
+        self.changes.is_some() && self.config.write != Permission::Deny
+    }
+
+    /// Files under /etc go through `system_change` while it is offered, so
+    /// every change to the system is recorded and can be put back.
+    fn through_changes(&self, path: &Path) -> Result<(), String> {
+        let shell = access::current().is_some_and(|a| a.can(Capability::Shell));
+        if self.changes_offered() && shell && path.starts_with("/etc") {
+            return Err(format!(
+                "error: {} is system configuration: change it with system_change, which saves \
+                 the old file, checks the result and puts it back if a check fails",
+                path.display()
+            ));
+        }
+        Ok(())
     }
 
     /// Offers `settings` on this config.toml.
@@ -881,12 +978,17 @@ impl BuiltinTools {
     }
 
     /// The skills `actor` is offered: the workspace's, plus the built-in
-    /// drawing skill while they may draw.
+    /// ones for what they may do (draw, speak, set up the device).
     fn skills_for(&self, actor: Option<&Actor>) -> Option<Skills> {
         let skills = self.skills.as_ref()?;
         let draws = self.image.is_some() && actor.is_some_and(|a| a.can(Capability::ImageGenerate));
         let speaks = self.speaker().is_some() && actor.is_some_and(|a| a.can(Capability::Voice));
+        let sets_up = self.config.shell != Permission::Deny
+            && actor.is_some_and(|a| a.can(Capability::Shell));
         let mut builtins = Vec::new();
+        if sets_up {
+            builtins.push(crate::skills::SYSTEM_SETUP);
+        }
         if draws {
             builtins.push(crate::skills::DRAWING);
             if self.stickers().is_some() {
@@ -1378,6 +1480,195 @@ impl BuiltinTools {
         Ok(text)
     }
 
+    async fn system_service(&self, args: ServiceArgs) -> Result<String, String> {
+        use crate::system::{Action, Host, run_commands, service_commands, valid_service};
+        let name = args.name.trim();
+        if !valid_service(name) {
+            return Err(format!("error: {name:?} is not a service name"));
+        }
+        let action = Action::parse(&args.action)
+            .ok_or_else(|| format!("error: action must be one of {}", Action::NAMES.join(", ")))?;
+        if self.config.shell == Permission::Deny {
+            return Err("error: system_service is disabled by configuration".into());
+        }
+        let commands = service_commands(Host::live().init(), name, action)?;
+        let shown = commands
+            .iter()
+            .map(|c| c.join(" "))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        let reviewed = if action.changes() {
+            self.permit_shell(&shown).await?
+        } else {
+            None
+        };
+        let timeout = Duration::from_secs(self.config.shell_timeout_secs);
+        let mut text = reviewed.map(|note| format!("{note}\n")).unwrap_or_default();
+        text.push_str(
+            &run_commands(&commands, timeout, self.config.max_output_bytes)
+                .await
+                .text,
+        );
+        Ok(text)
+    }
+
+    /// Asks once for a change or a revert, as `tools.write` (and
+    /// `tools.shell` when services restart) say.
+    async fn permit_change(&self, restarts: bool, shown: &str) -> Result<(), String> {
+        let shell = if restarts {
+            self.config.shell
+        } else {
+            Permission::Allow
+        };
+        let permission = match (self.config.write, shell) {
+            (Permission::Deny, _) | (_, Permission::Deny) => Permission::Deny,
+            (Permission::Allow, Permission::Allow) => Permission::Allow,
+            _ => Permission::Ask,
+        };
+        self.permit(permission, "system_change", shown).await
+    }
+
+    async fn system_change(&self, actor: &Actor, args: ChangeArgs) -> Result<String, String> {
+        use crate::changes::{DEFAULT_SETTLE, MAX_SETTLE, Request};
+        use crate::system::Check;
+        let history = self
+            .changes
+            .as_ref()
+            .filter(|_| self.changes_offered())
+            .ok_or("error: system_change is disabled by configuration")?;
+        let mut checks = Vec::new();
+        for c in &args.checks {
+            let kind = Check::parse(&c.kind).ok_or_else(|| {
+                format!(
+                    "error: check kind must be one of {}",
+                    Check::NAMES.join(", ")
+                )
+            })?;
+            checks.push((kind, c.target.trim().to_owned()));
+        }
+        if checks.is_empty() {
+            return Err("error: give at least one check that shows the change works".into());
+        }
+        let mut shown = args.summary.trim().to_owned();
+        for file in &args.files {
+            let verb = if file.content.is_some() {
+                "write"
+            } else {
+                "delete"
+            };
+            shown.push_str(&format!("\n  {verb} {}", file.path));
+        }
+        if !args.services.is_empty() {
+            shown.push_str(&format!("\n  restart {}", args.services.join(", ")));
+        }
+        for (kind, target) in &checks {
+            shown.push_str(&format!(
+                "\n  check {} {target}",
+                Check::NAMES[*kind as usize]
+            ));
+        }
+        let target = args
+            .target
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("other")
+            .to_lowercase();
+        let running = self.setup_running();
+        if let Some((runs, session)) = &running {
+            runs.may_try(session, &target)?;
+        }
+        self.permit_change(!args.services.is_empty(), &shown)
+            .await?;
+        let files: Vec<(PathBuf, Option<Vec<u8>>)> = args
+            .files
+            .into_iter()
+            .map(|f| (PathBuf::from(f.path), f.content.map(String::into_bytes)))
+            .collect();
+        // Over a client, a change that may cut it off waits to be confirmed.
+        let paths: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
+        let confirm = (std::env::var_os("RUNO_REMOTE").is_some_and(|v| v == "1")
+            && crate::changes::may_cut_off(&paths, &args.services))
+        .then_some(crate::changes::CONFIRM_WINDOW);
+        let request = Request {
+            summary: args.summary,
+            actor: actor.id.clone(),
+            files,
+            services: args.services,
+            checks,
+            settle: args
+                .settle_secs
+                .map_or(DEFAULT_SETTLE, Duration::from_secs)
+                .min(MAX_SETTLE),
+            reverts: None,
+            confirm,
+        };
+        let record = history
+            .apply(request)
+            .await
+            .map_err(|err| format!("error: {err:#}"))?;
+        if let Some((runs, session)) = &running
+            && !matches!(
+                record.state,
+                crate::changes::State::Applied | crate::changes::State::Unconfirmed
+            )
+        {
+            runs.failed(session, &target);
+        }
+        Ok(record.report())
+    }
+
+    fn system_setup_done(&self) -> Result<String, String> {
+        match self.setup_running() {
+            Some((runs, session)) => {
+                runs.finish(&session);
+                Ok("The device set-up is marked done; now give the report.".into())
+            }
+            None => Err("error: no device set-up is running in this conversation".into()),
+        }
+    }
+
+    fn system_history(&self, args: HistoryArgs) -> Result<String, String> {
+        let history = self
+            .changes
+            .as_ref()
+            .ok_or("error: there is no configuration history")?;
+        match args.id {
+            Some(id) => history
+                .load(id)
+                .map(|record| record.report())
+                .map_err(|err| format!("error: {err:#}")),
+            None => Ok(history.summary(args.limit.unwrap_or(20).clamp(1, 200))),
+        }
+    }
+
+    async fn system_revert(&self, actor: &Actor, args: RevertArgs) -> Result<String, String> {
+        let history = self
+            .changes
+            .as_ref()
+            .filter(|_| self.changes_offered())
+            .ok_or("error: system_revert is disabled by configuration")?;
+        let record = history
+            .load(args.id)
+            .map_err(|err| format!("error: {err:#}"))?;
+        let shown = format!("revert change #{}: {}", record.id, record.summary);
+        self.permit_change(!record.services.is_empty(), &shown)
+            .await?;
+        history
+            .revert(args.id, &actor.id, args.force)
+            .await
+            .map(|record| record.report())
+            .map_err(|err| format!("error: {err:#}"))
+    }
+
+    async fn system_check(&self, args: CheckArgs) -> String {
+        use crate::system::{Check, check};
+        match Check::parse(&args.kind) {
+            Some(kind) => check(kind, &args.target).await,
+            None => format!("error: kind must be one of {}", Check::NAMES.join(", ")),
+        }
+    }
+
     async fn read_file(&self, args: ReadArgs) -> Result<String, String> {
         let path = self.resolve(&args.path);
         let bytes = tokio::fs::read(&path)
@@ -1407,6 +1698,7 @@ impl BuiltinTools {
 
     async fn write_file(&self, args: WriteArgs) -> Result<String, String> {
         let path = self.resolve(&args.path);
+        self.through_changes(&path)?;
         let summary = format!("write {} ({} bytes)", path.display(), args.content.len());
         self.permit(self.config.write, "write_file", &summary)
             .await?;
@@ -1427,6 +1719,7 @@ impl BuiltinTools {
 
     async fn edit_file(&self, args: EditArgs) -> Result<String, String> {
         let path = self.resolve(&args.path);
+        self.through_changes(&path)?;
         let text = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| format!("error: {}: {e}", path.display()))?;
@@ -1579,7 +1872,7 @@ impl Capture {
 }
 
 /// Keeps the head and tail of long output, where errors usually are.
-fn truncate(bytes: &[u8], cap: usize) -> String {
+pub(crate) fn truncate(bytes: &[u8], cap: usize) -> String {
     if bytes.len() <= cap {
         return String::from_utf8_lossy(bytes).into_owned();
     }
@@ -1913,6 +2206,87 @@ impl BuiltinTools {
         }
         if self.config.shell != Permission::Deny {
             specs.push(ToolSpec::function(
+                "system_inspect",
+                "Describe the device Runo runs on, to set it up: board, OS, init system, whether \
+                 Runo runs as root, hostname, timezone, clock, network interfaces, routes, DNS, \
+                 Wi-Fi networks configured (never their keys), commands present, services. Changes nothing.",
+                json!({"type": "object", "properties": {}}),
+            ));
+            specs.push(ToolSpec::function(
+                "system_service",
+                "Run an action on a system service with the device's own init system (systemd, \
+                 OpenRC, or /etc/init.d scripts on BusyBox init). status changes nothing; the other \
+                 actions need the same permission as shell. Returns each command's exit code and output.",
+                json!({"type": "object", "properties": {
+                    "name": {"type": "string", "description": "service name, e.g. wpa_supplicant or S40network"},
+                    "action": {"type": "string", "enum": crate::system::Action::NAMES}
+                }, "required": ["name", "action"]}),
+            ));
+            specs.push(ToolSpec::function(
+                "system_check",
+                "Verify that a set-up step worked; changes nothing. dns: a host name resolves; \
+                 tcp: host:port accepts a connection; http: a URL answers; process: a process of \
+                 that name runs; service: a service runs, as its init system says. The result starts \
+                 with ok: or failed:.",
+                json!({"type": "object", "properties": {
+                    "kind": {"type": "string", "enum": crate::system::Check::NAMES},
+                    "target": {"type": "string", "description": "host name, host:port, URL or process name"}
+                }, "required": ["kind", "target"]}),
+            ));
+            if self.changes_offered() {
+                specs.push(ToolSpec::function(
+                    "system_change",
+                    "Change the system's configuration as one recorded change. The old files \
+                     are saved; the new ones are written whole (owner and mode kept, links \
+                     followed); the services are restarted in order; then the checks run until \
+                     all pass or settle_secs (default 20, at most 120) is over. If a write, a \
+                     restart or a check fails, everything is put back and the result says so. \
+                     Files under /etc change only this way. Every change is kept; undo one with \
+                     system_revert.",
+                    json!({"type": "object", "properties": {
+                        "summary": {"type": "string", "description": "what the change is for, one line"},
+                        "target": {"type": "string", "description": "during a device set-up: the target it is for, e.g. network, time, gateway"},
+                        "files": {"type": "array", "items": {"type": "object", "properties": {
+                            "path": {"type": "string", "description": "absolute path"},
+                            "content": {"type": ["string", "null"], "description": "the whole new file; null deletes it"}
+                        }, "required": ["path"]}},
+                        "services": {"type": "array", "items": {"type": "string"}, "description": "restarted in order after writing"},
+                        "checks": {"type": "array", "items": {"type": "object", "properties": {
+                            "kind": {"type": "string", "enum": crate::system::Check::NAMES},
+                            "target": {"type": "string"}
+                        }, "required": ["kind", "target"]}, "description": "at least one; all must pass"},
+                        "settle_secs": {"type": "integer"}
+                    }, "required": ["summary", "checks"]}),
+                ));
+                specs.push(ToolSpec::function(
+                    "system_revert",
+                    "Undo a change from system_change as a new recorded change: its files go \
+                     back to what they held before it and its services restart. Refused when \
+                     its files were changed again since, unless force.",
+                    json!({"type": "object", "properties": {
+                        "id": {"type": "integer"}, "force": {"type": "boolean"}
+                    }, "required": ["id"]}),
+                ));
+            }
+            if self.setup_running().is_some() {
+                specs.push(ToolSpec::function(
+                    "system_setup_done",
+                    "Mark the device set-up running in this conversation as done, right before \
+                     the final report. Until then its turns count against its limits.",
+                    json!({"type": "object", "properties": {}}),
+                ));
+            }
+            if self.changes.is_some() {
+                specs.push(ToolSpec::function(
+                    "system_history",
+                    "List the recorded configuration changes, newest first (id, time, who, \
+                     state, summary, files), or show one in full with its log by id.",
+                    json!({"type": "object", "properties": {
+                        "id": {"type": "integer"}, "limit": {"type": "integer", "description": "default 20"}
+                    }}),
+                ));
+            }
+            specs.push(ToolSpec::function(
                 "shell",
                 &format!(
                     "Run a command with sh -c in {workspace}. Times out after {}s. Returns exit code, stdout and stderr.",
@@ -1928,6 +2302,25 @@ impl BuiltinTools {
         match call.function.name.as_str() {
             "shell" => match parse(call) {
                 Ok(args) => self.shell(args).await,
+                Err(e) => Err(e),
+            },
+            "system_inspect" => Ok(crate::system::Host::live().inspect()),
+            "system_service" => match parse(call) {
+                Ok(args) => self.system_service(args).await,
+                Err(e) => Err(e),
+            },
+            "system_check" => match parse(call) {
+                Ok(args) => Ok(self.system_check(args).await),
+                Err(e) => Err(e),
+            },
+            "system_change" => match parse(call) {
+                Ok(args) => self.system_change(actor, args).await,
+                Err(e) => Err(e),
+            },
+            "system_history" => parse(call).and_then(|args| self.system_history(args)),
+            "system_setup_done" => self.system_setup_done(),
+            "system_revert" => match parse(call) {
+                Ok(args) => self.system_revert(actor, args).await,
                 Err(e) => Err(e),
             },
             "read_file" => match parse(call) {
@@ -2452,7 +2845,12 @@ mod tests {
             ..Default::default()
         };
         store.identity_set(&persona("小花")).unwrap();
-        let plain = BuiltinTools::new(dir.path().to_owned(), ToolsConfig::default(), store.clone())
+        // No shell, so no device set-up skill either.
+        let no_shell = ToolsConfig {
+            shell: Permission::Deny,
+            ..ToolsConfig::default()
+        };
+        let plain = BuiltinTools::new(dir.path().to_owned(), no_shell, store.clone())
             .unwrap()
             .with_skills(Some(skills.clone()));
         // No image model: no drawing skill, and no skill tool at all.
@@ -2666,6 +3064,269 @@ mod tests {
                 .await
                 .contains("disabled")
         );
+    }
+
+    #[tokio::test]
+    async fn system_tools_look_freely_and_change_only_with_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let declined = tools(dir.path(), ToolsConfig::default(), false);
+        let names: Vec<String> = owner(async { declined.specs() })
+            .await
+            .into_iter()
+            .map(|s| s.function.name)
+            .collect();
+        for name in ["system_inspect", "system_service", "system_check"] {
+            assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
+        }
+        let inspect = declined.call(&call("system_inspect", json!({}))).await;
+        assert!(
+            inspect.contains("device: ") && inspect.contains("init: "),
+            "{inspect}"
+        );
+        let status = declined
+            .call(&call(
+                "system_service",
+                json!({"name": "runo-test-none", "action": "status"}),
+            ))
+            .await;
+        assert!(status.starts_with("$ "), "{status}");
+        let start = declined
+            .call(&call(
+                "system_service",
+                json!({"name": "runo-test-none", "action": "start"}),
+            ))
+            .await;
+        assert!(start.contains("declined"), "{start}");
+        for (args, error) in [
+            (
+                json!({"name": "../../sbin/reboot", "action": "start"}),
+                "not a service name",
+            ),
+            (
+                json!({"name": "ntpd", "action": "mask"}),
+                "action must be one of",
+            ),
+        ] {
+            let out = declined.call(&call("system_service", args)).await;
+            assert!(out.contains(error), "{out}");
+        }
+        let check = declined
+            .call(&call(
+                "system_check",
+                json!({"kind": "dns", "target": "localhost"}),
+            ))
+            .await;
+        assert!(check.starts_with("ok: "), "{check}");
+        let check = declined
+            .call(&call(
+                "system_check",
+                json!({"kind": "ping", "target": "x"}),
+            ))
+            .await;
+        assert!(check.contains("kind must be one of"), "{check}");
+
+        let config = ToolsConfig {
+            shell: Permission::Deny,
+            ..ToolsConfig::default()
+        };
+        let denied = tools(dir.path(), config, true);
+        let names: Vec<String> = owner(async { denied.specs() })
+            .await
+            .into_iter()
+            .map(|s| s.function.name)
+            .collect();
+        assert!(!names.iter().any(|n| n.starts_with("system_")), "{names:?}");
+        let out = denied
+            .call(&call(
+                "system_service",
+                json!({"name": "ntpd", "action": "restart"}),
+            ))
+            .await;
+        assert!(out.contains("disabled"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn system_changes_are_approved_recorded_and_reverted() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = dir.path().join("ntp.conf");
+        std::fs::write(&conf, "server old\n").unwrap();
+        let history = || {
+            Some(crate::changes::History::without_restarts(
+                dir.path().join("history"),
+            ))
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let up = listener.local_addr().unwrap().to_string();
+        let change = |checks: serde_json::Value| {
+            call(
+                "system_change",
+                json!({
+                    "summary": "use the pool",
+                    "files": [{"path": conf.display().to_string(), "content": "server pool\n"}],
+                    "checks": checks,
+                    "settle_secs": 0
+                }),
+            )
+        };
+
+        let declined = Scoped(
+            BuiltinTools::new(
+                dir.path().to_owned(),
+                ToolsConfig::default(),
+                Store::open_in_memory().unwrap(),
+            )
+            .unwrap()
+            .with_changes(history()),
+            Arc::new(Answer(false)),
+        );
+        let out = declined
+            .call(&change(json!([{"kind": "tcp", "target": up}])))
+            .await;
+        assert!(out.contains("declined"), "{out}");
+        let out = declined.call(&change(json!([]))).await;
+        assert!(out.contains("at least one check"), "{out}");
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "server old\n");
+        // /etc goes through system_change while it is offered.
+        let out = declined
+            .call(&call(
+                "write_file",
+                json!({"path": "/etc/runo-test.conf", "content": "x"}),
+            ))
+            .await;
+        assert!(out.contains("change it with system_change"), "{out}");
+
+        let allowed = Scoped(
+            BuiltinTools::new(
+                dir.path().to_owned(),
+                ToolsConfig::default(),
+                Store::open_in_memory().unwrap(),
+            )
+            .unwrap()
+            .with_changes(history()),
+            Arc::new(Answer(true)),
+        );
+        let out = allowed
+            .call(&change(json!([{"kind": "tcp", "target": up}])))
+            .await;
+        assert!(out.starts_with("change #1 applied: use the pool"), "{out}");
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "server pool\n");
+        let out = allowed.call(&call("system_history", json!({}))).await;
+        assert!(
+            out.contains("#1 ") && out.contains("[applied] use the pool"),
+            "{out}"
+        );
+        let out = allowed
+            .call(&call("system_history", json!({"id": 1})))
+            .await;
+        assert!(out.contains("check tcp"), "{out}");
+        let out = allowed.call(&call("system_revert", json!({"id": 1}))).await;
+        assert!(out.starts_with("change #2 applied: revert #1"), "{out}");
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "server old\n");
+
+        // Without writes there is nothing to change with.
+        let config = ToolsConfig {
+            write: Permission::Deny,
+            ..ToolsConfig::default()
+        };
+        let denied = Scoped(
+            BuiltinTools::new(
+                dir.path().to_owned(),
+                config,
+                Store::open_in_memory().unwrap(),
+            )
+            .unwrap()
+            .with_changes(history()),
+            Arc::new(Answer(true)),
+        );
+        let names: Vec<String> = owner(async { denied.specs() })
+            .await
+            .into_iter()
+            .map(|s| s.function.name)
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n == "system_change" || n == "system_revert")
+        );
+        assert!(names.iter().any(|n| n == "system_history"), "{names:?}");
+        let out = denied
+            .call(&change(json!([{"kind": "tcp", "target": up}])))
+            .await;
+        assert!(out.contains("disabled"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_device_set_up_gives_a_target_up_after_its_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = dir.path().join("wpa.conf");
+        std::fs::write(&conf, "old\n").unwrap();
+        let runs = Arc::new(crate::setup_run::Runs::new(
+            dir.path(),
+            crate::config::Config::default().limits,
+        ));
+        let tools = Scoped(
+            BuiltinTools::new(
+                dir.path().to_owned(),
+                ToolsConfig::default(),
+                Store::open_in_memory().unwrap(),
+            )
+            .unwrap()
+            .with_changes(Some(crate::changes::History::without_restarts(
+                dir.path().join("history"),
+            )))
+            .with_setup(Some(runs.clone())),
+            Arc::new(Answer(true)),
+        );
+        // Nothing listens there; a port freed by a dropped listener could
+        // be taken by another test meanwhile.
+        let closed = "127.0.0.1:1";
+        let wifi = call(
+            "system_change",
+            json!({
+                "summary": "join Home",
+                "target": "Network",
+                "files": [{"path": conf.display().to_string(), "content": "new\n"}],
+                "checks": [{"kind": "tcp", "target": closed}],
+                "settle_secs": 0
+            }),
+        );
+        let in_main = |call: ToolCall| {
+            let tools = &tools;
+            crate::agent::with_session("main".into(), async move { tools.call(&call).await })
+        };
+        let offered = || {
+            let tools = &tools;
+            async move {
+                crate::agent::with_session("main".into(), owner(async { tools.specs() }))
+                    .await
+                    .iter()
+                    .any(|s| s.function.name == "system_setup_done")
+            }
+        };
+        // Outside a set-up nothing is counted, and there is nothing to finish.
+        assert!(!offered().await);
+        for _ in 0..4 {
+            assert!(in_main(wifi.clone()).await.contains("rolled back"));
+        }
+
+        runs.start("main");
+        assert!(offered().await);
+        for _ in 0..3 {
+            let out = in_main(wifi.clone()).await;
+            assert!(out.contains("rolled back"), "{out}");
+        }
+        let out = in_main(wifi.clone()).await;
+        assert!(out.contains("failed 3 times"), "{out}");
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), "old\n");
+        // Another session's turns are not part of it.
+        let elsewhere = crate::agent::with_session("other".into(), tools.call(&wifi)).await;
+        assert!(elsewhere.contains("rolled back"), "{elsewhere}");
+
+        let done = in_main(call("system_setup_done", json!({}))).await;
+        assert!(done.contains("marked done"), "{done}");
+        assert!(!offered().await);
+        let again = in_main(call("system_setup_done", json!({}))).await;
+        assert!(again.contains("no device set-up"), "{again}");
     }
 
     #[tokio::test]

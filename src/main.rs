@@ -5,13 +5,16 @@ mod agent;
 mod attachments;
 mod backup;
 mod browser;
+mod changes;
 mod chat;
 mod chatgpt;
 mod cli_text;
 mod completions;
 mod config;
+mod console;
 mod context;
 mod cron;
+mod daemon;
 mod discord;
 mod doctor;
 mod elevate;
@@ -34,17 +37,22 @@ mod mcp;
 mod memory;
 mod net;
 mod onboard;
+mod pinyin;
 mod qq;
 mod reasoning;
+mod remote;
 mod rename;
 mod review;
 mod search;
 mod service;
 mod setup;
+mod setup_run;
 mod skills;
 mod status;
 mod stickers;
 mod store;
+mod system;
+mod sysupdate;
 mod tasks;
 mod telegram;
 mod tools;
@@ -103,6 +111,12 @@ enum Command {
     Tui {
         #[arg(short, long, default_value = "main")]
         session: String,
+    },
+    /// The Agent's window drawn on the screen (framebuffer), with Chinese.
+    Console {
+        /// Arguments for `runo tui`, after `--`.
+        #[arg(last = true)]
+        args: Vec<std::ffi::OsString>,
     },
     /// Run the Gateway: Web UI and WebSocket API.
     Serve {
@@ -171,10 +185,20 @@ enum Command {
         device: bool,
     },
     /// Install the latest release from GitHub.
+    ///
+    /// On the Runo system this updates the whole system: the other slot,
+    /// tried once before it is kept.
     Update {
         /// Only say whether a newer version exists.
         #[arg(long)]
         check: bool,
+        /// Runo system only: a signed update bundle, as a file or https URL,
+        /// instead of the latest release.
+        #[arg(conflicts_with = "check")]
+        source: Option<String>,
+        /// Runo system only: install even when it is not newer.
+        #[arg(long, conflicts_with = "check")]
+        force: bool,
     },
     /// Finish moving an install from its old name (openclaw-rs): binary, service, state.
     Migrate,
@@ -224,6 +248,122 @@ enum Command {
     Sessions {
         #[command(subcommand)]
         action: Option<SessionsAction>,
+    },
+    /// Recorded changes to the system's configuration: list, show, revert.
+    Changes {
+        #[command(subcommand)]
+        action: Option<ChangesAction>,
+    },
+    /// The management daemon (runod): LAN pairing and remote management of this device.
+    Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
+    },
+    /// Use paired Runo devices from this computer: discover, pair, connect.
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Run the daemon in the foreground (what the service runs).
+    Run {
+        /// Address and port to listen on (default: every address, port 7340).
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
+    },
+    /// Set the device password that clients give when they pair.
+    Password,
+    /// Open the pairing window and show the code of each client pairing.
+    Pair,
+    /// List the trusted clients.
+    Clients,
+    /// Take a client's trust away; its connections close at once.
+    Revoke { client: String },
+    /// Show the device ID, port, pairing window and clients.
+    Status,
+    /// Install the daemon as a system service started at boot (root).
+    Install,
+    /// Stop and remove the service; identity and clients are kept.
+    Uninstall,
+    /// Dynamic DNS: keep the device's domain on its public IPv6 address.
+    Ddns {
+        #[command(subcommand)]
+        action: Option<DdnsAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DdnsAction {
+    /// Show the domain, the address it points at and the last update.
+    Show,
+    /// Set the provider and domain; asks for the provider's credentials.
+    Set {
+        provider: String,
+        domain: String,
+        #[arg(long)]
+        zone: Option<String>,
+    },
+    /// Point the domain at the current address now.
+    Update,
+    /// Stop updating the domain and forget the credentials.
+    Off,
+}
+
+#[derive(Subcommand)]
+enum RemoteAction {
+    /// List the Runo devices on this network.
+    Discover,
+    /// Pair with a device whose pairing window is open.
+    Pair { device: Option<String> },
+    /// List the paired devices.
+    Devices,
+    /// Forget a paired device here (it still trusts this computer until revoked there).
+    Forget { device: String },
+    /// Open the device's Agent (the running one, or a new one).
+    Connect { device: String },
+    /// Open a shell on the device.
+    Shell { device: String },
+    /// List the device's terminal sessions.
+    Sessions { device: String },
+    /// Show a running session again.
+    Attach { device: String, session: u64 },
+    /// End a session.
+    Kill { device: String, session: u64 },
+    /// Show the device's status.
+    Status { device: String },
+    /// Show the end of the device's logs.
+    Logs {
+        device: String,
+        #[arg(short = 'n', long)]
+        lines: Option<usize>,
+    },
+    /// Fetch a file from the device.
+    Get {
+        device: String,
+        remote: String,
+        local: Option<PathBuf>,
+    },
+    /// Send a file to the device.
+    Put {
+        device: String,
+        local: PathBuf,
+        remote: String,
+    },
+    /// List the clients the device trusts.
+    Clients { device: String },
+    /// Take a client's trust away on the device.
+    Revoke { device: String, client: String },
+    /// Open the device's pairing window, for another client.
+    OpenPairing { device: String },
+    /// Keep (or put back) a change on the device waiting for confirmation.
+    Confirm {
+        device: String,
+        id: Option<u64>,
+        #[arg(long)]
+        reject: bool,
     },
 }
 
@@ -370,6 +510,25 @@ enum SessionsAction {
     Delete { name: String },
 }
 
+#[derive(Subcommand)]
+enum ChangesAction {
+    List,
+    Show {
+        id: u64,
+    },
+    Revert {
+        id: u64,
+        #[arg(long)]
+        force: bool,
+    },
+    Confirm {
+        id: Option<u64>,
+    },
+    Reject {
+        id: Option<u64>,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -427,6 +586,26 @@ async fn run(cli: Cli) -> Result<()> {
     if let Command::Completions { shell, action } = cli.command {
         return completions_command(shell, action);
     }
+    // Needs no config: `runo tui` inside it loads it.
+    if let Command::Console { args } = cli.command {
+        let options = console::Options {
+            config: cli.config,
+            lang: cli.lang,
+            args,
+        };
+        // Chinese input; the words the user picks are kept with the state.
+        let user = config::state_dir()
+            .ok()
+            .map(|dir| dir.join("pinyin-words.tsv"));
+        let ime = match console::ime::pinyin(user) {
+            Ok(ime) => Some(ime),
+            Err(err) => {
+                eprintln!("pinyin: {err:#}");
+                None
+            }
+        };
+        std::process::exit(console::run(options, ime).await?);
+    }
     if let Command::Service { action } = &cli.command {
         return match action {
             ServiceAction::Install { user } => {
@@ -446,7 +625,116 @@ async fn run(cli: Cli) -> Result<()> {
         };
     }
     let state = config::state_dir()?;
-    let config_path = cli.config.unwrap_or_else(|| state.join("config.toml"));
+    let config_path = cli
+        .config
+        .clone()
+        .unwrap_or_else(|| state.join("config.toml"));
+    // Neither needs a config or a model: the daemon is how a device with a
+    // broken one is reached and repaired.
+    if let Command::Daemon { action } = &cli.command {
+        let config = cli.config.clone();
+        return match action
+            .as_ref()
+            .unwrap_or(&DaemonAction::Run { listen: None })
+        {
+            DaemonAction::Run { listen } => {
+                daemon::run(daemon::Options {
+                    state: state.clone(),
+                    config,
+                    listen: *listen,
+                    announce: true,
+                })
+                .await
+            }
+            DaemonAction::Password => daemon::cli::set_password(&state),
+            DaemonAction::Pair => daemon::cli::pair(&state).await,
+            DaemonAction::Clients => daemon::cli::clients(&state).await,
+            DaemonAction::Revoke { client } => daemon::cli::revoke(&state, client).await,
+            DaemonAction::Status => daemon::cli::status(&state).await,
+            DaemonAction::Install => daemon::service::install(&state, config.as_deref()),
+            DaemonAction::Uninstall => daemon::service::uninstall(&state),
+            DaemonAction::Ddns { action } => match action.as_ref().unwrap_or(&DdnsAction::Show) {
+                DdnsAction::Show => daemon::cli::ddns_show(&state),
+                DdnsAction::Set {
+                    provider,
+                    domain,
+                    zone,
+                } => daemon::cli::ddns_set(&state, provider, domain, zone.as_deref()).await,
+                DdnsAction::Update => daemon::cli::ddns_update(&state).await,
+                DdnsAction::Off => daemon::cli::ddns_off(&state),
+            },
+        };
+    }
+    if let Command::Remote { action } = &cli.command {
+        return match action {
+            RemoteAction::Discover => remote::discover(&state).await,
+            RemoteAction::Pair { device } => remote::pair(&state, device.as_deref()).await,
+            RemoteAction::Devices => remote::devices(&state),
+            RemoteAction::Forget { device } => remote::forget(&state, device),
+            RemoteAction::Connect { device } => remote::agent(&state, device).await,
+            RemoteAction::Shell { device } => remote::shell(&state, device).await,
+            RemoteAction::Sessions { device } => remote::sessions(&state, device).await,
+            RemoteAction::Attach { device, session } => {
+                remote::attach(&state, device, *session).await
+            }
+            RemoteAction::Kill { device, session } => remote::kill(&state, device, *session).await,
+            RemoteAction::Status { device } => remote::status(&state, device).await,
+            RemoteAction::Logs { device, lines } => remote::logs(&state, device, *lines).await,
+            RemoteAction::Get {
+                device,
+                remote: path,
+                local,
+            } => remote::get(&state, device, path, local.clone()).await,
+            RemoteAction::Put {
+                device,
+                local,
+                remote: path,
+            } => remote::put(&state, device, local, path).await,
+            RemoteAction::Clients { device } => remote::clients(&state, device).await,
+            RemoteAction::Revoke { device, client } => remote::revoke(&state, device, client).await,
+            RemoteAction::OpenPairing { device } => remote::pairing(&state, device, true).await,
+            RemoteAction::Confirm { device, id, reject } => {
+                remote::confirm(&state, device, *id, !reject).await
+            }
+        };
+    }
+    // Needs no config or model: the way back when a change broke them.
+    if let Command::Changes { action } = &cli.command {
+        let history = changes::History::in_state(&state);
+        for record in history.recover().await {
+            eprintln!("{}", record.report());
+        }
+        return match action.as_ref().unwrap_or(&ChangesAction::List) {
+            ChangesAction::List => {
+                println!("{}", history.summary(usize::MAX));
+                Ok(())
+            }
+            ChangesAction::Show { id } => {
+                print!("{}", history.load(*id)?.report());
+                Ok(())
+            }
+            ChangesAction::Revert { id, force } => {
+                let record = history.revert(*id, access::CLI, *force).await?;
+                print!("{}", record.report());
+                if record.state != changes::State::Applied {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+            ChangesAction::Confirm { id } | ChangesAction::Reject { id } => {
+                let keep = matches!(action, Some(ChangesAction::Confirm { .. }));
+                let id = match id {
+                    Some(id) => *id,
+                    None => match history.unconfirmed().first() {
+                        Some(record) => record.id,
+                        None => bail!("no change is waiting for confirmation"),
+                    },
+                };
+                print!("{}", history.confirm(id, keep, access::CLI).await?.report());
+                Ok(())
+            }
+        };
+    }
     // Before loading, so a file that does not load can still be repaired.
     if let Command::Config = cli.command {
         return setup::run(&config_path, i18n::current()).map(|_| ());
@@ -478,9 +766,20 @@ async fn run(cli: Cli) -> Result<()> {
     if let Command::Migrate = cli.command {
         return rename::finish(false).map(|_| ());
     }
-    if let Command::Update { check } = cli.command {
+    if let Command::Update {
+        check,
+        source,
+        force,
+    } = &cli.command
+    {
         let config = Config::load(&config_path).unwrap_or_default();
-        return update::run(&config.update, check, &config.gateway.bind).await;
+        if config::runo_system() && !check {
+            return sysupdate::update(&state, source.as_deref(), *force, &config.update).await;
+        }
+        if source.is_some() || *force {
+            anyhow::bail!("{}", sysupdate::NOT_SYSTEM.now());
+        }
+        return update::run(&config.update, *check, &config.gateway.bind).await;
     }
     // Before loading: signing in is how a config gets its model.
     if let Command::Login {
@@ -575,6 +874,9 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Config
         | Command::Init
         | Command::Doctor { .. }
+        | Command::Changes { .. }
+        | Command::Daemon { .. }
+        | Command::Remote { .. }
         | Command::Backup { .. }
         | Command::Restore { .. }
         | Command::Login { .. }
@@ -582,7 +884,7 @@ async fn run(cli: Cli) -> Result<()> {
         | Command::Update { .. } => {
             unreachable!("handled before the config is loaded")
         }
-        Command::Completions { .. } | Command::Skills { .. } => {
+        Command::Completions { .. } | Command::Skills { .. } | Command::Console { .. } => {
             unreachable!("handled before state is opened")
         }
         Command::Serve { bind, web } => {
@@ -725,20 +1027,29 @@ async fn run(cli: Cli) -> Result<()> {
             if !onboard::interactive() {
                 bail!(text::TUI_NEEDS_TERMINAL.now());
             }
-            let agent = build_agent(&config, &config_path, &state, store).await?;
-            let skills = config
-                .skills
-                .enabled
-                .then(|| skills::Skills::new(&agent.config.workspace, &config.skills));
-            tui::run(
-                &agent,
-                session,
-                config.model.model.clone(),
-                &state,
-                &config_path,
-                skills,
-            )
-            .await
+            daemon::first_password(&state)?;
+            let mut config = config;
+            loop {
+                let agent = build_agent(&config, &config_path, &state, store.clone()).await?;
+                let skills = config
+                    .skills
+                    .enabled
+                    .then(|| skills::Skills::new(&agent.config.workspace, &config.skills));
+                let exit = tui::run(
+                    &agent,
+                    session.clone(),
+                    config.model.model.clone(),
+                    &state,
+                    &config_path,
+                    skills,
+                )
+                .await?;
+                if exit == tui::Exit::Quit {
+                    return Ok(());
+                }
+                // The model's settings changed: start again with them.
+                config = Config::load(&config_path)?;
+            }
         }
         Command::Chat { session } => {
             let name = store.identity()?.map(|i| i.name);
@@ -866,6 +1177,11 @@ async fn build_agent(
 ) -> Result<CliAgent> {
     // What the `settings` tool changes takes effect from here, live.
     live::init(config_path, config);
+    // A change to the system cut off by a crash or a power cut goes back first.
+    let history = changes::History::in_state(state);
+    for record in history.recover().await {
+        eprintln!("{}", record.report());
+    }
     let workspace = config
         .tools
         .workspace
@@ -950,7 +1266,12 @@ async fn build_agent(
             .with_speaker(speaker, config.speech.enabled)
             .with_stickers(Some(config.stickers.clone()))
             .with_tasks(Some(config.tasks.clone()))
-            .with_settings(Some(config_path.to_owned())),
+            .with_settings(Some(config_path.to_owned()))
+            .with_changes(Some(history))
+            .with_setup(Some(Arc::new(setup_run::Runs::new(
+                state,
+                config.limits.clone(),
+            )))),
         store,
         config: config::AgentConfig {
             workspace,

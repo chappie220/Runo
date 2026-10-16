@@ -107,6 +107,11 @@ impl Release {
         self.asset(&asset_name()).is_some()
     }
 
+    /// The download URL of asset `name`.
+    pub fn url(&self, name: &str) -> Option<&str> {
+        self.asset(name)
+    }
+
     fn asset(&self, name: &str) -> Option<&str> {
         self.assets
             .iter()

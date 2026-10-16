@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# The firewall (/etc/nftables.conf, plus /data/etc/nftables.d/*.nft).
+# Loaded before the network comes up; a rule file of one's own that does
+# not load leaves the built-in rules in place.
+
+CONF=/etc/nftables.conf
+
+start() {
+	mkdir -p /data/etc/nftables.d
+	if nft -f "$CONF"; then
+		echo "firewall: on"
+		return 0
+	fi
+	echo "firewall: the rules in /data/etc/nftables.d do not load; using the built-in ones" >&2
+	sed '/^include /d' "$CONF" | nft -f -
+}
+
+case "$1" in
+start | restart | reload)
+	start
+	;;
+stop)
+	nft flush ruleset
+	echo "firewall: off"
+	;;
+status)
+	nft list ruleset
+	;;
+*)
+	echo "usage: $0 start|stop|restart|status"
+	exit 1
+	;;
+esac

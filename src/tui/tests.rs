@@ -310,7 +310,7 @@ fn slash_lists_commands_and_enter_runs_one() {
     assert_eq!(c.kind, Kind::Command);
     let names: Vec<&str> = c.items.iter().map(|(n, _)| n.as_str()).collect();
     // Exact starts first, then letters in order.
-    assert_eq!(names, ["session", "sessions", "sidebar"]);
+    assert_eq!(names, ["session", "sessions", "setup", "sidebar"]);
     // A command that takes an argument waits for it.
     assert_eq!(
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE),
@@ -468,4 +468,161 @@ fn the_at_list_says_why_it_is_empty() {
 #[test]
 fn every_text_has_both_languages() {
     crate::i18n::assert_complete(ALL);
+    crate::i18n::assert_complete(manage::ALL);
+}
+
+#[test]
+fn a_model_outage_opens_the_management_view_and_its_menu_works() {
+    let mut app = app();
+    app.model_down("model request failed: connection refused".into());
+    assert!(app.manage.is_some());
+    assert_eq!(app.focus, Focus::Manage);
+    let (rows, _) = screen(&app, 100, 30);
+    let text = rows.join("\n");
+    assert!(text.contains("✗ x/y"), "{text}");
+    assert!(
+        text.contains("Model x/y: unavailable: model request failed"),
+        "{text}"
+    );
+    assert!(text.contains("1 Check the model again"), "{text}");
+    assert!(text.contains("Esc back to the chat"), "{text}");
+
+    // ↓ and Enter pick an item; digits too.
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let (title, rows) = app.manage.as_ref().unwrap().detail.clone().unwrap();
+    assert_eq!(title, "System status");
+    assert!(rows.iter().any(|r| r.starts_with("Memory: ")), "{rows:?}");
+    press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+    assert!(app.check_model);
+    assert_eq!(app.health, Health::Checking);
+    press(&mut app, KeyCode::Char('5'), KeyModifiers::NONE);
+    let (title, rows) = app.manage.as_ref().unwrap().detail.clone().unwrap();
+    assert_eq!(title, "Configuration changes");
+    assert!(
+        rows.iter().any(|r| r.contains("runo changes revert")),
+        "{rows:?}"
+    );
+    press(&mut app, KeyCode::Char('6'), KeyModifiers::NONE);
+    assert!(app.open_pairing && app.pairing_shown);
+    app.show_pairing(vec!["window".into()]);
+    let (title, rows) = app.manage.as_ref().unwrap().detail.clone().unwrap();
+    assert_eq!(
+        (title.as_str(), rows),
+        ("Pairing and clients", vec!["window".to_owned()])
+    );
+    press(&mut app, KeyCode::Char('8'), KeyModifiers::NONE);
+    assert!(app.open_shell);
+    // Another item stops following the daemon.
+    assert!(!app.pairing_shown);
+    press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+    assert!(app.change_model);
+
+    // Typing goes to the input, so !shell works from here; Tab comes back.
+    typed(&mut app, "!shell");
+    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(app.input.string(), "!shell");
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.focus, Focus::Manage);
+
+    // Esc goes back to the chat.
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.manage.is_none());
+    assert_eq!(app.focus, Focus::Input);
+}
+
+#[test]
+fn the_model_is_not_changed_during_a_reply() {
+    let mut app = app();
+    app.open_manage();
+    app.running = true;
+    press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+    assert!(!app.change_model);
+}
+
+#[test]
+fn only_a_bare_bang_shell_opens_the_shell() {
+    assert!(is_shell_command("!shell"));
+    assert!(is_shell_command("  !shell \n"));
+    assert!(!is_shell_command("!shell ls"));
+    assert!(!is_shell_command("!Shell"));
+    assert!(!is_shell_command("please run !shell"));
+    assert!(!is_shell_command("/shell"));
+}
+
+#[test]
+fn bang_shell_runs_a_shell_with_the_signals_given_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("sh");
+    let out = dir.path().join("out");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$RUNO_SHELL\" > {}\ngrep -E '^SigIgn' /proc/self/status >> {}\nexit 3\n",
+            out.display(),
+            out.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let status = run_shell(script.to_str().unwrap(), None).unwrap();
+    assert_eq!(status.code(), Some(3));
+    let written = std::fs::read_to_string(&out).unwrap();
+    let mut lines = written.lines();
+    assert_eq!(lines.next(), Some("1"));
+    // SIGINT (bit 1) and SIGQUIT (bit 2) are not ignored in the shell.
+    let mask =
+        u64::from_str_radix(lines.next().unwrap().split_whitespace().nth(1).unwrap(), 16).unwrap();
+    assert_eq!(mask & 0b110, 0);
+}
+
+#[test]
+fn setup_sends_the_skill_and_starts_by_itself_only_once() {
+    let mut app = app();
+    // Without skills it says what is missing and sends nothing.
+    assert!(app.setup().is_none());
+    assert!(matches!(app.entries.last(), Some(Entry::Note(n)) if n.contains("skills.enabled")));
+
+    let dir = tempfile::tempdir().unwrap();
+    app.skills = Some(Skills::new(
+        dir.path(),
+        &crate::config::SkillsConfig::default(),
+    ));
+    app.state = dir.path().to_owned();
+    let runs = Arc::new(crate::setup_run::Runs::new(
+        dir.path(),
+        crate::limits::LimitsConfig::default(),
+    ));
+    app.runs = Some(runs.clone());
+    let sent = app.setup().unwrap();
+    // It runs as one set-up, held to its limits over its turns.
+    assert!(runs.active("main").is_some());
+    assert!(sent.text.starts_with("Check and set up this device."));
+    assert!(sent.text.contains("Skills to use: system-setup"));
+    assert!(
+        matches!(app.entries.last(), Some(Entry::User(t)) if t == "Check and set up this device.")
+    );
+
+    // The first start waits while the model is down, then goes once.
+    app.setup_due = true;
+    app.model_down("no network".into());
+    assert!(app.first_setup().is_none());
+    assert!(app.setup_due);
+    app.health = Health::Up("ok".into());
+    let sent = app.first_setup().unwrap();
+    assert!(sent.text.contains("system-setup"));
+    assert!(app.manage.is_none());
+    assert_eq!(app.focus, Focus::Input);
+    assert!(dir.path().join(SETUP_MARK).exists());
+    assert!(app.first_setup().is_none());
+
+    // A disabled skill is not started.
+    let config = crate::config::SkillsConfig {
+        disabled: vec!["system-setup".into()],
+        ..Default::default()
+    };
+    app.skills = Some(Skills::new(dir.path(), &config));
+    assert!(app.setup().is_none());
 }

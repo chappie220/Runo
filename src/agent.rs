@@ -25,6 +25,31 @@ pub async fn with_step_limit<F: std::future::Future>(steps: usize, fut: F) -> F:
     STEP_LIMIT.scope(steps.max(1), fut).await
 }
 
+/// What a turn is held to besides `[limits]`, over more turns than one:
+/// a device set-up's tool calls and cost.
+pub trait Budget: Send + Sync {
+    /// Called after each model call and the tools it asked for; `Some`
+    /// stops the turn with that text.
+    fn charge(&self, cost: f64, tool_calls: usize) -> Option<String>;
+}
+
+tokio::task_local! {
+    static BUDGET: Arc<dyn Budget>;
+}
+
+/// Runs `fut` with its turns charged to `budget`.
+pub async fn with_budget<F: std::future::Future>(budget: Arc<dyn Budget>, fut: F) -> F::Output {
+    BUDGET.scope(budget, fut).await
+}
+
+/// Charges the running turn's budget, if it has one.
+fn charge(cost: f64, tool_calls: usize) -> Option<String> {
+    BUDGET
+        .try_with(|b| b.charge(cost, tool_calls))
+        .ok()
+        .flatten()
+}
+
 tokio::task_local! {
     static CURRENT_SESSION: String;
 }
@@ -359,7 +384,8 @@ impl<M: Model, T: Tools> Agent<M, T> {
                 other => other?,
             };
             self.record(session, "turn", &completion);
-            spent += completion.usage.map_or(0.0, |u| u.cost);
+            let cost = completion.usage.map_or(0.0, |u| u.cost);
+            spent += cost;
             if let Some(usage) = completion.usage
                 && let Err(err) =
                     self.store
@@ -368,6 +394,8 @@ impl<M: Model, T: Tools> Agent<M, T> {
                 eprintln!("usage: cannot update the token estimate: {err:#}");
             }
             if completion.tool_calls.is_empty() {
+                // Counted; an answer is never cut off for it.
+                let _ = charge(cost, 0);
                 self.store
                     .append(session_id, &ChatMessage::assistant(&completion.text))?;
                 answers.push(completion.text);
@@ -423,6 +451,13 @@ impl<M: Model, T: Tools> Agent<M, T> {
                 if !ready.is_empty() {
                     self.insert(session_id, ready, on_event)?;
                 }
+            }
+            if let Some(stop) = charge(cost, results.len()) {
+                self.store
+                    .append(session_id, &ChatMessage::assistant(&stop))?;
+                answers.push(stop);
+                answers.retain(|a| !a.trim().is_empty());
+                return Ok(answers.join("\n\n"));
             }
             if let Some((hit, owner)) = self.over_limit(spent) {
                 self.store
@@ -1221,6 +1256,68 @@ mod tests {
                 .starts_with("[Stopped: this turn's spending limit")
         );
         assert!((agent.store.spent_since(0, Some("cli")).unwrap() - 0.06).abs() < 1e-9);
+    }
+
+    /// Stops once it was charged `max` tool calls; remembers the cost.
+    struct Counter {
+        max: usize,
+        seen: Mutex<(f64, usize)>,
+    }
+
+    impl Budget for Counter {
+        fn charge(&self, cost: f64, tool_calls: usize) -> Option<String> {
+            let mut seen = self.seen.lock().unwrap();
+            seen.0 += cost;
+            seen.1 += tool_calls;
+            (seen.1 >= self.max).then(|| format!("budget used: {} calls", seen.1))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_budget_stops_a_turn_between_steps_and_counts_the_answer() {
+        let agent = Agent {
+            model: Scripted(Mutex::new(vec![
+                costly_call(0.01),
+                costly_call(0.01),
+                costly_call(0.01),
+            ])),
+            summarizer: None,
+            vision: None,
+            voice: None,
+            tools: Echo,
+            store: Store::open_in_memory().unwrap(),
+            config: AgentConfig::default(),
+        };
+        let budget = Arc::new(Counter {
+            max: 2,
+            seen: Mutex::new((0.0, 0)),
+        });
+        let reply = with_budget(
+            budget.clone(),
+            agent.run_turn(Actor::owner(access::CLI), "s", "loop", &mut |_| {}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "budget used: 2 calls");
+        assert_eq!(agent.model.0.lock().unwrap().len(), 1);
+        let id = agent.store.session_id("s").unwrap();
+        let last = agent.store.history(id, 100).unwrap().pop().unwrap();
+        assert_eq!(last.content.as_deref(), Some("budget used: 2 calls"));
+        assert!((budget.seen.lock().unwrap().0 - 0.02).abs() < 1e-9);
+
+        // A final answer is counted, never cut off.
+        let agent = playback(vec![answer("done")], 3);
+        let budget = Arc::new(Counter {
+            max: 0,
+            seen: Mutex::new((0.0, 0)),
+        });
+        let reply = with_budget(
+            budget,
+            agent.run_turn(Actor::owner(access::CLI), "s", "hi", &mut |_| {}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "done");
     }
 
     #[tokio::test]

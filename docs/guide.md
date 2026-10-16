@@ -33,6 +33,7 @@ Runo (formerly openclaw-rs) is a single-binary Rust rewrite of OpenClaw. No plug
 | Skills (`SKILL.md`, compatible with OpenClaw and Agent Skills) | ✅ |
 | Spending limits (daily, monthly, per guest, per turn) | ✅ |
 | Updates from GitHub Releases (`update`, optional auto-update) | ✅ |
+| Remote management: LAN discovery, trusted pairing, remote Agent and shells (`daemon`, `remote`, client app) | ✅ |
 
 ## Install
 
@@ -239,13 +240,65 @@ one running with `gateway.web = "off"`.
   with its state.
 - Commands: `/attach <path>`, `/session <name>`, `/sessions`, `/new`,
   `/skills`, `/compact`, `/clear`, `/identity …`, `/sidebar`, `/expand`,
-  `/config`, `/help`.
+  `/config`, `/manage`, `/setup`, `/help`.
 - `/config` opens the settings editor (below) in the window and comes back
   to the chat when you leave it.
+- `!shell` opens your shell (`$SHELL`, else `/bin/sh`) in the terminal;
+  `exit` comes back to the window. It needs no model. Ctrl+C in the shell
+  reaches only the shell, and the shell sees `RUNO_SHELL=1`.
+- When the model cannot be used, the management view takes the
+  conversation's place by itself. That covers no network, a refused key or
+  sign-in, no credit, the provider down, and missing settings. A free
+  check at start (the key at `/key`, or the ChatGPT sign-in) finds most of
+  these; a message that fails the same way opens it too. `/manage` opens it
+  any time. Nothing in it needs the model:
+  1. check the model again (asks it for one word, a few tokens),
+  2. change the model connection (the `init` steps; on saving, the window
+     opens again with the new settings and a running Gateway restarts),
+  3. system status: device, host name, addresses, uptime, load, memory,
+     disk, temperature, the Gateway,
+  4. logs: the end of `tui.log` and of the Gateway's log,
+  5. configuration changes: the recorded changes to the system, newest
+     first (see [System changes](#system-changes)),
+  6. the shell,
+  7. back to the chat (Esc).
+
+  ↑/↓ and Enter or the digits pick; typing goes to the input, so `!shell`
+  works from here, and Tab moves between the menu and the input. Messages
+  are still sent, and bring the view back if the model is still down.
+- `/setup` has the agent check and set up the device it runs on, with the
+  built-in `system-setup` skill: it inspects the device, shows a short plan
+  with any questions (a Wi‑Fi password, the timezone), changes one thing at
+  a time, verifies each, and reports. It covers the network and Wi‑Fi, the
+  time and timezone, and the Gateway. Each change is a recorded
+  transaction (see [System changes](#system-changes)) that is put back
+  by itself when its checks fail. A set-up is one run over all its turns,
+  held to `limits.setup_tool_calls` (50), `limits.setup_usd` ($1) and
+  `limits.setup_attempts` (3 failed changes per target, then that target
+  is left); a limit stops what is left and keeps what was verified. The
+  run ends when the agent says it is done (`system_setup_done`), at a
+  limit, at the next `/setup`, or after six hours without a turn. On a Raspberry Pi it starts
+  by itself the first time the window opens with a working model
+  (`<state dir>/system-setup-started` marks that it did). Changing the
+  device needs Runo to run as root, skills on, and `tools.shell` not
+  `deny`; each change is approved as `tools.shell` and `tools.write` say.
 
 It opens with the session's last 200 messages. Anything printed on stderr
 meanwhile (MCP servers, tools) goes to `<state dir>/tui.log` instead of over
 the screen.
+
+### On a screen without a desktop
+
+The Linux console cannot draw Chinese. `runo console [-- TUI ARGS]` is a
+small terminal of Runo's own for a screen with no desktop (the Runo system
+image runs it on tty1): it draws on the framebuffer (`/dev/fb0`) with
+WenQuanYi Zen Hei, reads the keyboards itself (US layout), and runs
+`runo tui` inside. The bottom row shows the input mode; with the pinyin
+input method, Ctrl+Space or Shift on its own switches to Chinese, and the
+letters typed and the candidates show there. Set
+`RUNO_CONSOLE_FONT` to another font file and `RUNO_CONSOLE_FONT_SIZE` to a
+size in pixels per em (the default gives about 110 columns). Without a
+framebuffer it runs `runo tui` on the console as it is.
 
 ## Configuration
 
@@ -1062,6 +1115,74 @@ without OpenRC stops on its own `gateway stop` and does not come back after a
 reboot; `start` reports at once when it exits right away (a bad config, a busy
 port) with the end of its log.
 
+## Remote management
+
+`runo daemon` (runod) lets paired clients reach the device over the
+network: its Agent and shells, status, logs, files and trusted clients.
+It needs no model, so it works when the Agent cannot.
+
+```sh
+runo daemon password     # the device password clients give when they pair (at least 8 characters)
+runo daemon install      # run it as a service (root): systemd, OpenRC or an /etc/init.d script
+runo daemon              # or run it in the foreground (`runo daemon run --listen ADDR:PORT`)
+runo daemon status       # device ID, port, pairing window, clients
+```
+
+It listens on TCP port 7340 and announces itself on the LAN by mDNS
+(`_runo._tcp`, host `runo-<id>.local`). Its state is in
+`<state dir>/runod/`: the device key (`identity.pem`, which makes the
+device ID), the trusted clients and the password hash. The service logs to
+`/var/log/runod.log`.
+
+### Pairing
+
+Clients pair only from the local network (private, link-local, ULA or
+loopback addresses), and only while the pairing window is open: for 5
+minutes after `runo daemon pair` or "Pairing and clients" in the
+management view, or for as long as the device has a password and no
+client yet. Both sides then show the same six digits: check that they
+match, then give the device password on the client. The window closes
+after one client pairs, or after 5 wrong passwords.
+
+```sh
+runo daemon pair         # open the window and show codes as clients ask; Ctrl+C closes it
+runo daemon clients
+runo daemon revoke 7k2m  # an ID or its first characters; its connections drop at once
+```
+
+### From another computer: `runo remote`
+
+```sh
+runo remote discover                 # the devices answering on this network
+runo remote pair 192.168.1.20        # or an ID from discover
+runo remote devices                  # the paired ones
+runo remote connect pi               # the Agent (the running one, or a new one)
+runo remote shell pi                 # a new shell
+runo remote sessions pi              # Agent and shells running there
+runo remote attach pi 3              # show session 3 again
+runo remote status pi
+runo remote logs pi --lines 200
+runo remote get pi /etc/hostname ./hostname
+runo remote put pi ./wpa.conf /etc/wpa_supplicant/wpa_supplicant.conf
+runo remote clients pi
+runo remote revoke pi 7k2m
+runo remote open-pairing pi          # let another client pair
+```
+
+A device is named by its ID, the start of it, or its name. Ctrl+]
+leaves a terminal; what runs there goes on, and showing it again replays
+its recent output. The client keeps its key and paired devices in
+`<state dir>/remote/`.
+
+### The client app
+
+`client/` is the app for Windows, Linux and Android, on the same protocol
+library. It lists the paired devices and the ones on the network, pairs
+(by tapping a device or by address), and then shows the Agent and shells
+in a terminal, the sessions, status, logs, files and clients. Its key is in
+the system's secure store. Builds come from the Client workflow; see
+`client/README.md` to build it yourself.
+
 ## Updates
 
 ```sh
@@ -1491,7 +1612,7 @@ reaches the bot first gets every tool. "Revoke a chat owner" in the same
 section (also offered by `init`) removes the owner you pick; with
 `first_chat_owner` on, the next private chat on that app claims it again.
 
-Capabilities: `shell`, `files_read` (`read_file`, `list_dir`), `files_write`,
+Capabilities: `shell` (also `system_inspect`, `system_service`, `system_check`), `files_read` (`read_file`, `list_dir`), `files_write`,
 `memory`, `cron` (also background tasks), `identity`, `web_search`, `web_fetch`, `browser`, `mcp`, `skills`,
 `mail` (`send_mail`), `settings` (see [Settings in chat](#settings-in-chat)),
 `image_generate` (see [Image generation](#image-generation); also `sticker_save`),
@@ -1742,10 +1863,58 @@ replacement) and `shell` (`sh -c` in the workspace; the whole process group is
 killed on timeout or when the turn is cancelled). Shell stdout and stderr are
 drained while the command runs and only their first and last
 `max_output_bytes / 2` bytes are kept, so endless output cannot exhaust memory;
-the result says how many bytes were omitted. `ask` prompts on the controlling terminal; with no terminal
+the result says how many bytes were omitted. For setting up the device
+(see `/setup` under [Terminal UI](#terminal-ui)) there are also
+`system_inspect` (the board, OS, init system, network, Wi‑Fi networks
+without their keys, commands present, services), `system_service`
+(status, start, stop, restart, enable, disable through systemd, OpenRC or
+`/etc/init.d` scripts) and `system_check` (a name resolves, a port
+accepts, a URL answers, a process runs, a service runs). Looking and
+checking need no approval; any other service action is approved like
+`shell`, and none of them is offered when `shell = "deny"`.
+`system_change`, `system_history` and `system_revert` change the system's
+configuration as recorded transactions; see
+[System changes](#system-changes). `ask` prompts on the controlling terminal; with no terminal
 the action is declined and the model is told so. Tools set to `deny` are not
 offered to the model at all. `browser` is offered when the host has a
 browser installed; see [Browser](#browser).
+
+## System changes
+
+The agent changes the system's configuration (files under `/etc`, the
+services that read them) only with `system_change`; `write_file` and
+`edit_file` refuse paths under `/etc` while it is offered. One change:
+
+1. saves what each file held, with its owner and mode, in
+   `<state dir>/config-history/<number>/`, and marks the change pending;
+2. writes the new files whole, through a temporary file and a rename (a
+   symlink such as `/etc/resolv.conf` is followed, and its target written);
+3. restarts the services named, in order;
+4. runs its checks (a name resolves, a port accepts, a URL answers, a
+   process or service runs) until all pass, waiting up to `settle_secs`
+   (20 by default, at most 120) for a network to come back.
+
+If a write, a restart or a check fails, the files go back as they were,
+the services restart again, and the change is recorded as rolled back. A
+change cut off half way, by a crash or a power cut, is put back the next
+time Runo starts. Only one change runs at a time. A change is approved
+once, as `tools.write` says (and `tools.shell` when it restarts
+services); `tools.write = "deny"` removes it.
+
+Every change stays recorded: who asked, when, the files, services and
+checks, and what happened. They need neither the model nor a config, so
+they work when a change broke either:
+
+```sh
+runo changes                  # newest first
+runo changes show 3           # files, services, checks and the log
+runo changes revert 3         # put change 3's files back, as a new change
+runo changes revert 3 --force # even files changed again since
+```
+
+A revert is refused while a later change has touched the same files;
+revert that one first. In `runo tui`, `/manage` lists the changes too, and
+the agent has `system_history` and `system_revert`.
 
 ## Thinking level
 
@@ -1797,6 +1966,9 @@ daily_usd = 2             # the whole agent per day (local time), owners include
 monthly_usd = 20          # the whole agent per calendar month
 guest_daily_usd = 0.5     # each sender who is not an owner, per day (default 0.5)
 turn_usd = 0.3            # one reply that keeps calling tools
+setup_usd = 1             # one /setup over all its turns (default 1)
+setup_tool_calls = 50     # tool calls one /setup may make (default 50)
+setup_attempts = 3        # failed changes per /setup target before it is given up (default 3)
 [limits.senders]          # per day for named senders, instead of guest_daily_usd
 "qq:<friend openid>" = 2
 ```

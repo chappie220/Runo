@@ -1,0 +1,23 @@
+[package]
+name = "runo_client"
+version = "0.1.0"
+edition = "2021"
+description = "The Flutter client's Rust side: runo-link behind flutter_rust_bridge"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+anyhow = "1.0.104"
+flutter_rust_bridge = "=2.13.0"
+runo-link = { path = "../../link" }
+serde = "1.0.229"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "fs", "time"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+# Its own workspace: Flutter (cargokit) builds it with its own lock file.
+[workspace]

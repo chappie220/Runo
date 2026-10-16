@@ -32,6 +32,12 @@ pub struct LimitsConfig {
     pub senders: BTreeMap<String, f64>,
     /// What one turn may spend before it is stopped.
     pub turn_usd: Option<f64>,
+    /// What one device set-up (`/setup`) may spend, over all its turns.
+    pub setup_usd: Option<f64>,
+    /// Tool calls one device set-up may make; 0 means no limit.
+    pub setup_tool_calls: usize,
+    /// Failed changes allowed per set-up target before it is given up.
+    pub setup_attempts: u32,
 }
 
 impl Default for LimitsConfig {
@@ -42,11 +48,17 @@ impl Default for LimitsConfig {
             guest_daily_usd: Some(DEFAULT_GUEST_DAILY_USD),
             senders: BTreeMap::new(),
             turn_usd: None,
+            setup_usd: Some(DEFAULT_SETUP_USD),
+            setup_tool_calls: DEFAULT_SETUP_TOOL_CALLS,
+            setup_attempts: DEFAULT_SETUP_ATTEMPTS,
         }
     }
 }
 
 pub const DEFAULT_GUEST_DAILY_USD: f64 = 0.5;
+pub const DEFAULT_SETUP_USD: f64 = 1.0;
+pub const DEFAULT_SETUP_TOOL_CALLS: usize = 50;
+pub const DEFAULT_SETUP_ATTEMPTS: u32 = 3;
 
 fn set(limit: Option<f64>) -> Option<f64> {
     limit.filter(|l| *l > 0.0)
@@ -195,6 +207,10 @@ impl LimitsConfig {
 
     pub fn turn_limit(&self) -> Option<f64> {
         set(self.turn_usd)
+    }
+
+    pub fn setup_limit(&self) -> Option<f64> {
+        set(self.setup_usd)
     }
 
     /// The first limit `actor` has reached, if any.
