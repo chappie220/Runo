@@ -22,10 +22,13 @@ fetch() {
 	file=$DL/$1
 	if [ ! -f "$file" ] || ! echo "$3  $file" | sha256sum -c - >/dev/null 2>&1; then
 		echo "post-fakeroot: downloading $2/$1"
-		# fakeroot's library is preloaded here; curl, if wget fails in it,
-		# gets a second try.
-		wget -nv --tries=3 -O "$file.part" "$2/$1" ||
-			curl -fsSL --retry 3 -o "$file.part" "$2/$1" || {
+		# Buildroot's fakeroot puts output/host/lib first in the library
+		# path, and the OpenSSL there knows no certificates: download with
+		# the host's own libraries, outside fakeroot.
+		env -u LD_LIBRARY_PATH -u LD_PRELOAD \
+			wget -nv --tries=3 -O "$file.part" "$2/$1" ||
+			env -u LD_LIBRARY_PATH -u LD_PRELOAD \
+				curl -fsSL --retry 3 -o "$file.part" "$2/$1" || {
 			echo "post-fakeroot: cannot download $2/$1" >&2
 			exit 1
 		}
