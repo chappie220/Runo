@@ -1273,12 +1273,13 @@ everything:
 curl -fsSL https://raw.githubusercontent.com/chappie220/Runo/main/scripts/update.sh | sh
 ```
 
-An openclaw-rs 0.4 updating itself (`openclaw-rs update`, or `auto = true`)
-installs 0.5 under the old name and keeps the old service running it, so
-releases carry the binaries under both names. The program is still called
-`openclaw-rs` then and `runo` does not exist yet: finish the move with
-`openclaw-rs migrate` (or the update script). Until then the Gateway logs a
-reminder at start.
+Releases up to 1.0.0-1 also carry the binaries as `openclaw-rs-<target>`, so
+an openclaw-rs 0.4 updating itself (`openclaw-rs update`, or `auto = true`)
+installs 1.0.0-1 at most, under the old name, and keeps the old service
+running it; later releases are only under `runo-<target>`. The program is
+still called `openclaw-rs` then and `runo` does not exist yet: finish the
+move with `openclaw-rs migrate` (or the update script). Until then the
+Gateway logs a reminder at start.
 
 A service that set its own state directory (`OPENCLAW_RS_HOME` other than
 `~/.openclaw-rs`) keeps it; only the default directory moves. The conf.d

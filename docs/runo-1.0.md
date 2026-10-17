@@ -581,7 +581,7 @@ pub struct Status {
   - 已知不足：phrase-pinyin-data 主要收多音词，不少常用词（如 西安、公司）开箱不在词库，要输入一次后才排在前面；
     帧缓冲、键盘和速度还没有在真机上测过。
 
-### 系统换成 Alpine（3.2）
+### 系统换成 Alpine（3.2，1.0.0-2）
 
 - [x] Buildroot 只出内核、模块、固件和 `runo`；`post-fakeroot.sh` 用 Alpine v3.24 最小系统加 `alpine/packages` 组成根文件系统，apk 接官方仓库。
 - [x] `/sbin/init`：挂载、扩展 `data`，执行 `runo-reset.txt`，叠上 `/data/system` 可写层后交给 BusyBox init + OpenRC。
