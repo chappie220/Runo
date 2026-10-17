@@ -2,14 +2,16 @@
 
 A Buildroot external tree (`BR2_EXTERNAL`) that builds the Runo system
 for the Raspberry Pi 5 and Pi 4: boot goes straight into the Agent on
-tty1, the root file system is read-only and everything that changes lives
-on the `data` partition. The design is in `docs/runo-1.0.md` (§3, §4.5).
+tty1. Buildroot builds the kernel and firmware; the rest is Alpine Linux
+(BusyBox init, OpenRC, apk), with the system read-only under a writable
+layer kept on the `data` partition. The design is in `docs/runo-1.0.md` (§3, §4.5).
 
 ## Building
 
 Buildroot 2025.02.x (the long-term branch; CI uses 2025.02.18) on a Linux
-host with the usual Buildroot prerequisites (`build-essential`, `bc`,
-`cpio`, `file`, `rsync`, `unzip`, `wget`).
+x86_64 host with the usual Buildroot prerequisites (`build-essential`,
+`bc`, `cpio`, `file`, `rsync`, `unzip`, `wget`). The build downloads
+Alpine's minimal root file system and packages (`board/runo/alpine/`).
 
 1. Build the static `runo` binary from the repository root; the image
    takes it from `target/aarch64-unknown-linux-musl/release/runo`
@@ -75,34 +77,49 @@ request) and run it; it asks for root or administrator rights itself.
 | Partition | Size | Contents |
 |---|---|---|
 | 1 boot | 256 MiB FAT32 | firmware, `config.txt`; slot A's kernel, device trees and `cmdline.txt` under `a/` (`os_prefix=a/`) |
-| 2 rootfs-A | 768 MiB ext4 | the system, mounted read-only |
+| 2 rootfs-A | 768 MiB ext4 | the system, mounted read-only (at `/rom`) |
 | 3 rootfs-B | 768 MiB | empty, for A/B updates |
-| 4 data | rest of the disk | `/data`: Runo's state (`/data/runo`), `/data/etc`, `/data/root`, `/data/log` |
+| 4 data | rest of the disk | `/data`: Runo's state (`/data/runo`), the writable layer (`/data/system`), `/data/etc`, `/data/root`, `/data/log` |
 
 The disk signature is `52554e4f`, so `cmdline.txt` names the root by
 `PARTUUID=52554e4f-02` wherever the disk is attached.
 
-### Changing the system by hand
+### Alpine, apk and OpenRC
 
-The running system can be made writable for a while, as root:
+`board/runo/post-fakeroot.sh` builds the root file system from Alpine's
+minimal one (`alpine/alpine.conf` pins the release and checksums) plus
+the packages in `alpine/packages`, installed with Alpine's static apk,
+then puts on the kernel's modules, the firmware, `runo` and
+`overlay/`. `/etc/apk/repositories` points at the Alpine repositories, so
+on the device:
 
 ```sh
-mount -o remount,rw /
-# ... change files ...
-sync
-mount -o remount,ro /
+apk add tmux                      # a package from the repositories
+rc-update add <service> default   # a service started at boot
+rc-service <service> start
 ```
 
-It goes back to read-only on the next boot anyway. Such changes are not
-kept by an update: it writes a whole new system to the other slot, so
-they are gone once it is the running one. There is no package manager
-either; programs are added by copying them in. What should outlive an
-update goes on `/data` instead (a program in `/data/<name>`, run from
-there), or into the image (`configs/*_defconfig`).
+### The writable layer
 
-Services (`/etc/init.d`): `S00data` mounts and grows `data`, `S05zram`
-sets up compressed swap in RAM (as big as the RAM below 8 GB, half of
-it from 8 GB up, or the MiB in `/data/etc/zram`, `0` for none), `S40network` brings up Ethernet and
-Wi-Fi, `S48time` sets the time zone and clock, `S50runod` runs the
-management daemon, `S60gateway` runs the gateway once enabled
-(`runo service install`).
+`/sbin/init` (`overlay/sbin/init`) runs first, as process 1: it checks
+and mounts `data` (growing it to the end of the disk on the first boot),
+then lays an overlay over the read-only system with its upper half in
+`/data/system`, and hands over to BusyBox init and OpenRC in it. The
+read-only system stays visible at `/rom`. So everything can be changed as
+on any Alpine system, packages installed with apk and services added
+under `/etc/init.d` included, and it all outlives updates, which only
+replace the system underneath. Programs that are not packages can still
+go on `/data`. Without a usable `data` partition the layer is in memory
+until the next boot.
+
+`runo-reset.txt` on the boot partition with the word `system` drops the
+layer at the next boot: what was installed and changed is gone,
+`/data/runo` and the rest of `data` stay.
+
+Services (`/etc/init.d`, OpenRC): `runo-data` mounts `/boot` and the
+parts of `data` the system links to, `runo-zram` sets up compressed swap
+in RAM (as big as the RAM below 8 GB, half of it from 8 GB up, or the MiB
+in `/data/etc/zram`, `0` for none), `runo-firewall` loads the firewall,
+`runo-network` brings up Ethernet and Wi-Fi, `runo-time` sets the time
+zone and clock and runs ntpd, `runod` runs the management daemon,
+`runo-gateway` runs the gateway once enabled (`runo service install`).

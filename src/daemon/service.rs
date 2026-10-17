@@ -30,8 +30,8 @@ const UNINSTALLED: Tr = tr(
 const NOT_INSTALLED: Tr = tr("The daemon is not installed.", "守护进程没有安装。");
 
 const BUILT_IN: Tr = tr(
-    "On the Runo system the daemon is part of the system and starts at boot (/etc/init.d/S50runod).",
-    "Runo 系统自带守护进程，开机即启动（/etc/init.d/S50runod）。",
+    "On the Runo system the daemon is part of the system and starts at boot (/etc/init.d/runod).",
+    "Runo 系统自带守护进程，开机即启动（/etc/init.d/runod）。",
 );
 
 #[cfg(test)]

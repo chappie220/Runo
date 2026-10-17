@@ -1,0 +1,7 @@
+#!/bin/sh
+# Saves the time, for a Pi without an RTC to start from at the next boot.
+# ntpd runs it on every step and periodic sync (with an argument), and
+# runo-time when it stops.
+date +%s > /data/etc/clock
+[ -e /dev/rtc0 ] && hwclock -w -u 2>/dev/null
+exit 0

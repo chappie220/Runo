@@ -1,0 +1,39 @@
+#!/sbin/openrc-run
+#
+# The clock: from the board's RTC (Pi 5) or, without one (Pi 4), from
+# the time saved at the last shutdown, so that it is not years behind
+# before NTP answers; then BusyBox ntpd keeps it, and saves the time on
+# every sync (/usr/libexec/runo-clock). The timezone is the zone named in
+# /etc/timezone (on /data); restarting applies a new one.
+
+description="The clock and NTP"
+
+SAVED=/data/etc/clock
+
+supervisor=supervise-daemon
+command=/usr/sbin/ntpd
+command_args="-n -S /usr/libexec/runo-clock -p 0.pool.ntp.org -p 1.pool.ntp.org -p ntp.aliyun.com"
+
+depend() {
+	need runo-data
+	use net
+}
+
+start_pre() {
+	zone=$(cat /data/etc/timezone 2>/dev/null)
+	if [ -f "/usr/share/zoneinfo/$zone" ]; then
+		ln -sf "/usr/share/zoneinfo/$zone" /data/etc/localtime
+	else
+		ewarn "unknown timezone \"$zone\", keeping the last one"
+	fi
+	if [ -e /dev/rtc0 ]; then
+		hwclock -s -u 2>/dev/null
+	elif [ -s $SAVED ] && [ "$(cat $SAVED)" -gt "$(date +%s)" ]; then
+		date -s "@$(cat $SAVED)" >/dev/null
+	fi
+	return 0
+}
+
+stop_post() {
+	/usr/libexec/runo-clock
+}

@@ -1,0 +1,36 @@
+#!/sbin/openrc-run
+#
+# The Runo Gateway (chats on other apps, scheduled jobs, the Web UI), when
+# `runo gateway install` turned it on: `enable` leaves
+# /data/runo/gateway.enabled, and at boot runo-data puts the Gateway in
+# the default runlevel while it is there.
+
+description="The Runo Gateway"
+extra_commands="enable disable"
+
+ENABLED=/data/runo/gateway.enabled
+
+supervisor=supervise-daemon
+command=/usr/bin/runo
+command_args="serve"
+output_log=/var/log/runo.log
+error_log=/var/log/runo.log
+respawn_delay=5
+respawn_max=0
+supervise_daemon_args="--env HOME=/data/root --env RUNO_HOME=/data/runo --env LANG=C.UTF-8"
+
+depend() {
+	need runo-data
+	use net
+	after runod
+}
+
+enable() {
+	touch $ENABLED && rc-update -q add "$RC_SVCNAME" default
+}
+
+disable() {
+	rm -f $ENABLED
+	rc-update -q del "$RC_SVCNAME" default 2>/dev/null
+	return 0
+}

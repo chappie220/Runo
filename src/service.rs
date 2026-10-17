@@ -31,7 +31,7 @@ const CONF_FILE: &str = "/etc/conf.d/runo";
 const LOG_FILE: &str = "/var/log/runo.log";
 /// The Gateway's script on the Runo system image; `enable` and `disable`
 /// say whether it starts at boot.
-const IMAGE_SCRIPT: &str = "/etc/init.d/S60gateway";
+const IMAGE_SCRIPT: &str = "/etc/init.d/runo-gateway";
 const IMAGE_ENABLED: &str = "/data/runo/gateway.enabled";
 /// What `service install` made before 0.5, under the old name.
 const LEGACY_NAME: &str = crate::rename::LEGACY_NAME;

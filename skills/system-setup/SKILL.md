@@ -17,7 +17,9 @@ Call `system_inspect` first, every time: never plan from memory.
 - `device:` is not a Raspberry Pi → say so and ask whether to go on.
 - `no package manager` → nothing can be installed. Use only what is listed
   under `commands present`; a feature whose program is missing is reported,
-  not worked around.
+  not worked around. Runo's own image has apk: a missing program can be
+  installed from the Alpine repositories (`apk add`), with the person's
+  approval.
 
 ## 2. Plan
 
@@ -42,14 +44,14 @@ configuration asks for it.
      what is missing. Configure it in the way this system already uses:
      the program named under `network configured by`. On Runo's own image
      (`runo system:` in the inspection) that is /etc/wpa_supplicant.conf,
-     applied by restarting `S40network`.
+     applied by restarting `runo-network`.
    - Never change the interface that carries the current default route
      unless the person asked: you may cut off your own connection.
 2. **Time.** Done when the clock is right (not `looks unset`), a timezone is
    set and a time service runs (`system_check process` on ntpd, chronyd or
    systemd-timesyncd). The timezone is the person's to say; you may propose
    one from their language, and ask. On Runo's own image it is the zone name
-   in /etc/timezone, applied by restarting `S48time`.
+   in /etc/timezone, applied by restarting `runo-time`.
 3. **Runo Gateway.** Under `runo gateway`. Not installed or not running:
    offer it (it keeps chats and scheduled jobs going without this window)
    and, if they want it, run `runo service install` with `shell`, then check

@@ -5,7 +5,10 @@ CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_VFAT_FS=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
-# Stable IPv6 addresses (S40network) and the firewall (nftables).
+# The writable layer over the system, put on by /sbin/init before any
+# module can load.
+CONFIG_OVERLAY_FS=y
+# Stable IPv6 addresses (runo-network) and the firewall (nftables).
 CONFIG_IPV6=y
 CONFIG_NF_TABLES=m
 CONFIG_NF_TABLES_INET=y

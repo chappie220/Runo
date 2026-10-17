@@ -1,8 +1,7 @@
 //! Updates from GitHub Releases: `runo update` by hand, or the
 //! Gateway on its own with `update.auto`.
 //!
-//! A release carries one binary per target (`runo-<target>`, and for
-//! binaries from before the rename the same as `openclaw-rs-<target>`) and a
+//! A release carries one binary per target (`runo-<target>`) and a
 //! `SHA256SUMS` file. The download must match its checksum and run
 //! `--version` before it replaces the current binary. No copy of the old
 //! binary is kept: going back means installing the older release

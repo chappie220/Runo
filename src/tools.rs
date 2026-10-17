@@ -2218,7 +2218,7 @@ impl BuiltinTools {
                  OpenRC, or /etc/init.d scripts on BusyBox init). status changes nothing; the other \
                  actions need the same permission as shell. Returns each command's exit code and output.",
                 json!({"type": "object", "properties": {
-                    "name": {"type": "string", "description": "service name, e.g. wpa_supplicant or S40network"},
+                    "name": {"type": "string", "description": "service name, e.g. wpa_supplicant or runo-network"},
                     "action": {"type": "string", "enum": crate::system::Action::NAMES}
                 }, "required": ["name", "action"]}),
             ));

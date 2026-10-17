@@ -11,7 +11,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 | 项目 | 设计 |
 |---|---|
 | 硬件平台 | 仅支持树莓派，不做 x86。**支持树莓派 5 和树莓派 4**，各出一个镜像（见第 2 节） |
-| 系统底座 | **Buildroot 构建，BusyBox 提供 init、Shell 和基础命令**；只保留必要的驱动、存储、TTY/PTY、基础网络和运行依赖（见第 3 节） |
+| 系统底座 | **Buildroot 构建内核与固件，用户空间是 Alpine Linux**（BusyBox init、OpenRC、apk 接 Alpine 仓库）；只读系统上叠一层放在 `data` 分区的可写层（见第 3 节） |
 | 开机界面 | 直接进入 Agent；首次使用时在这里填写模型连接信息 |
 | 自动配置 | 模型检查环境、配置功能、启动服务并验证；缺少必要信息时才询问 |
 | 命令行入口 | 用户手动输入 `!shell` 才进入 Shell，退出后回到 Agent |
@@ -48,7 +48,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
 - **启动**：依赖 Pi 5 的 EEPROM 引导程序；`tryboot` 用于更新回退（见 4.5）。
 - **电源**：官方 5V 5A 电源；供电不足时 USB 限流，需在状态页提示（读取 `vcgencmd get_throttled` 或等价接口）。
 
-## 3. 系统构建：Buildroot + BusyBox
+## 3. 系统构建：Buildroot + Alpine
 
 ### 3.1 构建方式
 
@@ -60,7 +60,7 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
   - `configs/runo_rpi5_defconfig`、`configs/runo_rpi4_defconfig`：分别以 `raspberrypi5_defconfig`、`raspberrypi4_64_defconfig` 为起点。
   - `package/runo`：把 CI 已经在出的 `aarch64-unknown-linux-musl` 静态二进制放进镜像。
     以后也可以改为 Buildroot 的 `cargo-package` 从源码构建。
-  - `board/runo/`：根文件系统覆盖层、`post-build.sh`，以及 `post-image.sh` 和 `genimage.cfg`（A/B 分区）。
+  - `board/runo/`：根文件系统覆盖层、`post-build.sh`、`post-fakeroot.sh`（换成 Alpine 用户空间，见 3.2），以及 `post-image.sh` 和 `genimage.cfg`（A/B 分区）。
 - **工具链（已定）：musl**。2025.02 的树莓派配置用 Buildroot 自己编译的 glibc 工具链；改用 Bootlin 预编译的 aarch64 musl 稳定版
   （`BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_AARCH64_MUSL_STABLE`），省去编译工具链的时间，整个镜像与 Runo 用同一种 C 库，体积更小。
   - 工具链的内核头文件版本不能高于镜像内核（2025.02 的 Pi 配置是 6.6）。
@@ -68,44 +68,42 @@ Runo 1.0 是一个专为树莓派打造、以 Agent 为主要操作界面的精�
   - 域名解析走 musl 的实现，它和 glibc 不同（例如不读 `nsswitch.conf`），网络相关的验收要在镜像上做。
 - **CI**：在发布流程里加一个镜像构建任务，产出 `sdcard.img.xz` 和更新包；Buildroot 的下载缓存和 `ccache` 需要缓存，否则单次构建要一小时以上。
 
-### 3.2 BusyBox init 与服务
+### 3.2 Alpine 用户空间、OpenRC 与可写层
 
-- 用 BusyBox init（`BR2_INIT_BUSYBOX`），不用 OpenRC 或 systemd。服务是 `/etc/init.d/S??*` 脚本，由 `rcS` 按序号启动。
-- 开机直达 Agent 靠 `/etc/inittab`：
-  - 阶段 3：`tty1::respawn:/usr/libexec/runo-console`。这个脚本在 tty1 上运行 `runo console`（Runo 自绘的终端，见 4.7，里面运行 `runo tui`；没有 `/dev/fb0` 时直接运行 `runo tui`），退出或崩溃后由 init 重新拉起。
-  - 有了 `runod` 之后：改由 `runod` 管理 tty1，就不再提供 `getty` 登录。
-  - 串口控制台（调试用）保留 `ttyAMA10` 上的 `getty`，只在开发镜像里启用。
-- 网络：有线用 BusyBox `udhcpc`；Wi‑Fi 用 `wpa_supplicant` 加 `udhcpc`（已定，不用 iwd，因此镜像里不需要 D‑Bus）。
-  `runod` 通过 `wpa_supplicant` 的控制接口配置 Wi‑Fi。对时用 BusyBox `ntpd`，加上 Pi 5 板载 RTC（`hwclock`）。
-- 日志：BusyBox `syslogd`/`klogd` 写入 `data` 分区上的轮转日志，管理界面的“日志”一并显示。
+- Buildroot 只构建内核、模块、固件并装入 `runo`（`BR2_INIT_NONE`，不选 BusyBox）。`post-fakeroot.sh` 在生成文件系统前把根目录换成 Alpine：
+  - Alpine 最小根文件系统加 `alpine/packages` 里的包，用 Alpine 的静态 `apk` 安装；版本和校验和固定在 `alpine/alpine.conf`（v3.24）。
+  - 再放上 Buildroot 构建的模块、固件、`runo`，以及 `overlay/` 里 Runo 自己的文件和服务。
+  - `/etc/apk/repositories` 指向 Alpine 官方仓库，设备上可直接 `apk add`。
+- **可写层（已定）**：`/sbin/init` 以 1 号进程先运行：
+  - 检查并挂载 `data`，首次开机扩展到整盘；执行 boot 分区上的 `runo-reset.txt`（`pairing`、`system`、`all`）。
+  - 用 overlayfs 把 `/data/system` 叠在只读系统上，切换根目录（只读系统留在 `/rom`），再交给 BusyBox init 和 OpenRC。
+  - 因此 apk 装的包、`/etc/init.d` 里加的服务、对 `/etc` 的修改都可写，并且在系统更新后保留（更新只换下层）。
+  - 没有可用的 `data` 分区时，可写层放在内存里，重启即丢。`runo-reset.txt` 写 `system` 可丢弃可写层，恢复干净系统。
+- 服务是 OpenRC 脚本：`runo-data`（`/boot`、`data` 上的链接、Gateway 是否进 default 运行级别）、`runo-zram`、`runo-firewall`、
+  `runo-network`（提供 `net`）、`runo-time`（`ntpd`，由 supervise-daemon 看守）、`runod`、`runo-gateway`，加上 Alpine 常用的 `devfs`、`mdev`、`hostname`、`syslog`、`seedrng` 等。
+- 开机直达 Agent 靠 `/etc/inittab`：OpenRC 跑完 `sysinit`、`boot`、`default` 后，`tty1::respawn:/usr/libexec/runo-console`
+  在 tty1 上运行 `runo console`（见 4.7；没有 `/dev/fb0` 时直接运行 `runo tui`），退出或崩溃后由 init 重新拉起。不提供 `getty` 登录。
+- 网络：有线用 BusyBox `udhcpc`；Wi‑Fi 用 `wpa_supplicant` 加 `udhcpc`（不用 iwd，不需要 D‑Bus）。对时用 BusyBox `ntpd`，加上 Pi 5 板载 RTC（`hwclock`）。
+- 日志：BusyBox `syslogd` 写入 `data` 分区上的轮转日志；`runod`、Gateway 的输出在 `/var/log/runod.log`、`/var/log/runo.log`。
 
 ### 3.3 镜像里有什么
 
 | 类别 | 内容 |
 |---|---|
-| 基础 | BusyBox（`ash`、coreutils 子集、`udhcpc`、`ntpd`、`syslogd`、`hwclock`、`mount`）、`kmod`（带 xz，内核模块是 `.ko.xz`）、`e2fsprogs`（首次开机扩展 `data` 分区） |
-| 排查用 | `htop`、`bash`（`!shell`、客户端打开的 Shell 和 root 登录默认用它；`/bin/sh` 和开机脚本仍是 BusyBox ash）、`lsblk`（util-linux） |
-| 固件与驱动 | `rpi-firmware`、`linux-firmware` 中的 Broadcom Wi‑Fi 固件（CYW43455） |
-| 网络 | `wpa_supplicant`、`nftables`（IPv6 公网入站防火墙，见 4.9）、`ca-certificates`（Runo 用系统根证书验证 TLS）；局域网发现由 Runo 自带（见 4.8），不装 avahi、mdnsd |
-| 时间与语言 | `tzdata`；中文字体 `wqy-zenhei`（Buildroot 已有；Noto CJK 没有现成包） |
-| Runo | `runo` 静态二进制；以后加 `runod` |
-| 本地中文显示 | Runo 自己绘制（`runo console`，见 4.7）；阶段 3 第一版镜像曾用 `fbterm` 验证，已去掉 |
-| 不放 | 包管理器、`sudo`、D‑Bus、Chromium（Buildroot 没有 Chromium 包）、`getty` 登录（发布镜像） |
+| 基础 | Alpine 最小系统（BusyBox、musl、`apk-tools`、`ca-certificates`）、`openrc`、`kmod`、`e2fsprogs`（首次开机扩展 `data` 分区） |
+| 排查用 | `htop`、`bash`（`!shell`、客户端打开的 Shell 和 root 登录默认用它；`/bin/sh` 和服务脚本仍是 BusyBox ash）、`lsblk` |
+| 固件与驱动 | 树莓派内核与 `rpi-firmware`、`linux-firmware` 中的 Broadcom Wi‑Fi 固件（CYW43455） |
+| 网络 | `wpa_supplicant`、`nftables`（IPv6 公网入站防火墙，见 4.9）；局域网发现由 Runo 自带（见 4.8），不装 avahi、mdnsd |
+| 时间与语言 | `tzdata`；中文字体 `font-wqy-zenhei` |
+| Runo | `runo` 静态二进制（含 `runod`） |
+| 其余 | 需要什么用 `apk add` 从 Alpine 仓库装，装在可写层里 |
 
 ### 3.4 对 Agent 和现有代码的影响
 
-- **镜像里没有包管理器**：Agent 不能安装软件，能用的功能都要事先编进镜像。
-  - 自配置能做的只有：写配置文件、启停 `/etc/init.d` 服务、验证。
-  - 系统提示要告诉 Agent 这一点，并告诉它系统是 BusyBox：可用的命令和参数比 GNU 少。
-  - `elevate.rs` 的装包路径、首次引导里的“安装浏览器”一步，在 Runo 系统上要关掉。
-- **浏览器工具**：没有 Chromium，`browser` 工具默认关闭，网页靠 `web_fetch`。
-- **服务管理**：`service.rs` 目前只支持 OpenRC（`rc-service`、`/sbin/openrc-run`）。Runo 系统上 Gateway 改为一个 BusyBox init 脚本；
-  `runo service` 要能识别这种情况，否则会报“没有安装 OpenRC”。
-- **更新**：`update.rs` 现在只替换单个二进制。Runo 系统上改为整个镜像的 A/B 更新（见 4.5），`install.sh` 不适用。
-- **Shell**：`!shell` 打开的是 BusyBox `ash`（`/bin/sh`），已经可用。
-- **管理界面的系统状态**：只读 `/proc`、`/sys`，不依赖外部命令，BusyBox 下可用。
-- **只读根文件系统**：根分区只读挂载。需要可写的 `/etc` 内容（网络、Wi‑Fi、主机名、时区）放在 `data` 分区，用符号链接或覆盖挂载接入，
-  使系统更新不影响用户配置。
+- **包管理**：有 apk。系统提示告诉 Agent 系统是 Alpine + OpenRC，可以 `apk add`，服务用 `rc-update`、`rc-service`；装进可写层的东西更新后保留。
+- **服务管理**：Gateway 是 `/etc/init.d/runo-gateway`；`runo service install` 调它的 `enable`（在 `data` 上留标记，开机由 `runo-data` 放进 default 运行级别）。
+- **更新**：Runo 系统上是整个系统的 A/B 更新（见 4.5），只换可写层下面的系统；重启前用 `openrc single` 停掉服务。
+- **管理界面的系统状态**：只读 `/proc`、`/sys`，不依赖外部命令。
 
 ## 4. 可靠性设计（尚未全部定案，附建议方案）
 
@@ -572,7 +570,8 @@ pub struct Status {
     通过才把 `config.txt` 的 `os_prefix` 改成新槽；不通过就重启回旧槽。结果记在状态目录，管理界面“状态”的“系统”一行显示。
   - `runod` 打开 `/dev/watchdog`，由单独线程每 5 秒喂一次，正常停止时“魔术关闭”；系统卡死会自动重启，试启动中的新系统卡死即回到旧槽。
   - 恢复：在任何电脑上往 `boot` 分区放一个 `runo-reset.txt`，内容 `pairing` 忘掉已配对客户端和设备密码，
-    `all` 清空 `/data` 回到首次启动的状态；启动时执行一次后删除该文件。
+    `system` 丢弃系统的可写层（apk 装的包和对系统的改动，见 3.2），`all` 清空 `/data` 回到首次启动的状态；
+    启动时由 `/sbin/init` 执行一次后删除该文件。
   - 固件（Pi 4 的 `start4.elf` 等）不随更新包更换；Pi 5 的引导程序在 EEPROM 里，用官方工具更新。
 - [x] Runo 自绘终端与拼音输入（4.7）。
   - `runo console`：直接画到 `/dev/fb0`（32/16 位），文泉驿正黑等宽字体（按需读取字形，约 18 MB），evdev 读键盘（美式布局、
@@ -581,6 +580,14 @@ pub struct Status {
     全拼、简拼（`zg` → 中国）、整句切分；选过的词和接在后面的词记在 `<状态目录>/pinyin-words.tsv`，再次输入时排前并有联想。
   - 已知不足：phrase-pinyin-data 主要收多音词，不少常用词（如 西安、公司）开箱不在词库，要输入一次后才排在前面；
     帧缓冲、键盘和速度还没有在真机上测过。
+
+### 系统换成 Alpine（3.2，1.0.0-2）
+
+- [x] Buildroot 只出内核、模块、固件和 `runo`；`post-fakeroot.sh` 用 Alpine v3.24 最小系统加 `alpine/packages` 组成根文件系统，apk 接官方仓库。
+- [x] `/sbin/init`：挂载、扩展 `data`，执行 `runo-reset.txt`，叠上 `/data/system` 可写层后交给 BusyBox init + OpenRC。
+- [x] `S??*` 脚本改写为 OpenRC 服务（`runo-data`、`runo-zram`、`runo-firewall`、`runo-network`、`runo-time`、`runod`、`runo-gateway`），`runod` 与 Gateway 由 supervise-daemon 看守。
+- [x] `runo update` 在可写层下找系统分区（`/rom`），重启前 `openrc single`；发布不再附带改名前的 `openclaw-rs-*` 文件。
+- [ ] 真机验收：从 1.0.0-1 用 `runo update` 升上来、首次烧录、`apk add` 后更新再确认包还在、`runo-reset.txt` 写 `system`。
 
 ### 阶段 5 当前进度
 

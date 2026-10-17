@@ -1,12 +1,20 @@
-#!/bin/sh
+#!/sbin/openrc-run
 #
 # Wired network by DHCP; Wi-Fi with wpa_supplicant when it is set up in
 # /data/etc/wpa_supplicant.conf, or in runo-wifi.txt on the boot
 # partition (read once, then deleted). IPv6 addresses come from router
 # advertisements, as stable addresses that do not change between boots.
 
+description="Wired network and Wi-Fi"
+
 WPA_CONF=/data/etc/wpa_supplicant.conf
 WIFI_TXT=/boot/runo-wifi.txt
+
+depend() {
+	need runo-data
+	after runo-firewall
+	provide net
+}
 
 # runo-wifi.txt: lines of ssid=, password= and country= (two letters).
 wifi_from_boot() {
@@ -26,7 +34,7 @@ wifi_from_boot() {
 				printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n}\n' "$ssid"
 			fi
 		} > "$WPA_CONF.new" && mv "$WPA_CONF.new" "$WPA_CONF"
-		echo "network: Wi-Fi \"$ssid\" set up from the boot partition"
+		einfo "Wi-Fi \"$ssid\" set up from the boot partition"
 	fi
 	mount -o remount,rw /boot && rm -f "$WIFI_TXT"
 	mount -o remount,ro /boot
@@ -47,6 +55,7 @@ dhcp() {
 }
 
 start() {
+	ebegin "Starting the network"
 	stable_ipv6
 	ip link set lo up
 	if [ -e /sys/class/net/eth0 ]; then
@@ -66,25 +75,17 @@ start() {
 			wpa_supplicant -B -s -i wlan0 -c "$WPA_CONF" -P /run/wpa_supplicant.pid
 			dhcp wlan0
 		else
-			echo "network: Wi-Fi is set up but there is no Wi-Fi device"
+			ewarn "Wi-Fi is set up but there is no Wi-Fi device"
 		fi
 	fi
+	eend 0
 }
 
 stop() {
+	ebegin "Stopping the network"
 	for pid in /run/udhcpc.*.pid /run/wpa_supplicant.pid; do
 		[ -f "$pid" ] && kill "$(cat "$pid")" 2>/dev/null
 		rm -f "$pid"
 	done
+	eend 0
 }
-
-case "$1" in
-	start) start ;;
-	stop) stop ;;
-	restart) stop; sleep 1; start ;;
-	status)
-		ip -brief address 2>/dev/null || ip address
-		ip route
-		;;
-	*) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
-esac

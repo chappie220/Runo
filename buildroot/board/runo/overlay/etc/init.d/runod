@@ -1,0 +1,41 @@
+#!/sbin/openrc-run
+#
+# runod: pairing and remote management for clients on the network. It
+# needs no model, so it runs whatever state the Agent is in; started
+# again if it stops.
+
+description="Runo's pairing and remote management"
+
+PASSWORD_TXT=/boot/runo-password.txt
+
+supervisor=supervise-daemon
+command=/usr/bin/runo
+command_args="daemon run"
+output_log=/var/log/runod.log
+error_log=/var/log/runod.log
+respawn_delay=2
+respawn_max=0
+# The shell clients open: bash, as for root's logins.
+supervise_daemon_args="--env HOME=/data/root --env RUNO_HOME=/data/runo --env SHELL=/bin/bash --env LANG=C.UTF-8"
+
+depend() {
+	need runo-data
+	use net
+	after runo-firewall
+}
+
+# runo-password.txt on the boot partition: the device password, for a Pi
+# with no screen. Read once, kept only as a hash, then deleted. With a
+# password and no client yet, the pairing window opens by itself.
+start_pre() {
+	[ -f "$PASSWORD_TXT" ] || return 0
+	password=$(tr -d '\r' < "$PASSWORD_TXT" | sed -n '/^[[:space:]]*#/d;/[^[:space:]]/{p;q}')
+	if [ -n "$password" ]; then
+		printf '%s\n' "$password" |
+			HOME=/data/root RUNO_HOME=/data/runo /usr/bin/runo daemon password >/dev/null 2>>/var/log/runod.log &&
+			einfo "device password set from the boot partition"
+	fi
+	mount -o remount,rw /boot && rm -f "$PASSWORD_TXT"
+	mount -o remount,ro /boot
+	return 0
+}

@@ -1,39 +1,12 @@
 #!/bin/sh
 #
-# Makes the root file system a Runo system: read-only, with what changes
-# linked to /data (see overlay/etc/init.d/S00data). $2 is the board.
+# Buildroot's part of the Runo system: the firmware's links, the version
+# and the update key. post-fakeroot.sh then puts it on Alpine. $2 is the
+# board.
 set -eu
 
 TARGET=$1
 BOARD=${2:-rpi5}
-
-# The mount points S00data mounts on: the root file system is read-only.
-mkdir -p "$TARGET/boot" "$TARGET/data"
-
-# What the system and the Agent change lives on /data.
-link() {
-	rm -rf "${TARGET:?}/$1"
-	ln -s "$2" "$TARGET/$1"
-}
-link etc/hostname /data/etc/hostname
-link etc/timezone /data/etc/timezone
-link etc/localtime /data/etc/localtime
-link etc/wpa_supplicant.conf /data/etc/wpa_supplicant.conf
-# /root stays a directory (Buildroot's device table sets its mode); root's
-# home is on /data instead.
-if [ -L "$TARGET/root" ]; then
-	rm "$TARGET/root"
-	mkdir -m 0700 "$TARGET/root"
-fi
-sed -i 's|^\(root:[^:]*:[^:]*:[^:]*:[^:]*:\)/root:|\1/data/root:|' "$TARGET/etc/passwd"
-# bash for people; scripts keep /bin/sh (BusyBox ash).
-if [ -x "$TARGET/bin/bash" ]; then
-	sed -i 's|^\(root:.*:\)/bin/sh$|\1/bin/bash|' "$TARGET/etc/passwd"
-fi
-link var/log /data/log
-
-# No remote logins besides runod.
-rm -f "$TARGET/etc/init.d/S50telnet" "$TARGET/etc/init.d/S90httpd"
 
 # brcmfmac asks for the board's own NVRAM file first; the Pi 5 has the
 # same Wi-Fi module (CYW43455) as the Pi 4.
@@ -61,8 +34,7 @@ if [ -n "${RUNO_UPDATE_KEY:-}" ]; then
 	echo >> "$TARGET/etc/runo/update-keys"
 fi
 
-# Runo reads this to know it runs as the system (state in /data/runo,
-# no package manager, no browser).
+# Runo reads this to know it runs as the system (state in /data/runo).
 cat > "$TARGET/etc/runo-system" <<EOT
 board=$BOARD
 version=$version
