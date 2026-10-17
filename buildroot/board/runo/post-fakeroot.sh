@@ -25,9 +25,9 @@ fetch() {
 		# Buildroot's fakeroot puts output/host/lib first in the library
 		# path, and the OpenSSL there knows no certificates: download with
 		# the host's own libraries, outside fakeroot.
-		env -u LD_LIBRARY_PATH -u LD_PRELOAD \
+		env -u LD_PRELOAD -u LD_LIBRARY_PATH \
 			wget -nv --tries=3 -O "$file.part" "$2/$1" ||
-			env -u LD_LIBRARY_PATH -u LD_PRELOAD \
+			env -u LD_PRELOAD -u LD_LIBRARY_PATH \
 				curl -fsSL --retry 3 -o "$file.part" "$2/$1" || {
 			echo "post-fakeroot: cannot download $2/$1" >&2
 			exit 1
@@ -49,16 +49,23 @@ x86_64) ;;
 esac
 fetch "$MINIROOTFS" "$ALPINE_MIRROR/$ALPINE_BRANCH/releases/aarch64" "$MINIROOTFS_SHA256"
 fetch "$APK_STATIC" "$ALPINE_MIRROR/$ALPINE_BRANCH/main/x86_64" "$APK_STATIC_SHA256"
+# Outside fakeroot: what it is told about files apk.static (a static
+# program it cannot follow) later replaces would outlive them, and a new
+# file given the same inode number would take on the old one's type. The
+# owners are set once apk is done.
+outside() {
+	env -u LD_PRELOAD -u LD_LIBRARY_PATH "$@"
+}
 tools=$(mktemp -d)
 # apk files carry their signature in extended headers tar does not know.
-tar --warning=no-unknown-keyword -xzf "$DL/$APK_STATIC" -C "$tools" sbin/apk.static
+outside tar --warning=no-unknown-keyword -xzf "$DL/$APK_STATIC" -C "$tools" sbin/apk.static
 echo "post-fakeroot: installing Alpine $ALPINE_BRANCH"
 
 # The Alpine root, built next to Buildroot's.
 NEW=$ROOTFS.alpine
 rm -rf "$NEW"
 mkdir -p "$NEW"
-tar -xzpf "$DL/$MINIROOTFS" -C "$NEW"
+outside tar -xzpf "$DL/$MINIROOTFS" -C "$NEW"
 printf '%s/%s/main\n%s/%s/community\n' "$ALPINE_MIRROR" "$ALPINE_BRANCH" \
 	"$ALPINE_MIRROR" "$ALPINE_BRANCH" > "$NEW/etc/apk/repositories"
 # Package scripts would run Alpine's programs, which this machine
@@ -75,13 +82,18 @@ grep -qx /bin/bash "$NEW/etc/shells" || echo /bin/bash >> "$NEW/etc/shells"
 
 # What Buildroot built: the kernel's modules, the firmware, runo and the
 # files post-build.sh wrote.
-for path in lib/modules lib/firmware usr/bin/runo etc/runo etc/runo-system etc/os-release; do
+for path in lib/modules lib/firmware usr/bin/runo etc/runo etc/runo-system; do
 	[ -e "$ROOTFS/$path" ] || continue
 	rm -rf "${NEW:?}/$path"
 	mkdir -p "$(dirname "$NEW/$path")"
 	cp -a "$ROOTFS/$path" "$NEW/$path"
 done
-echo "ID_LIKE=alpine" >> "$NEW/etc/os-release"
+# Buildroot's os-release is a link to usr/lib/os-release: its text,
+# not the link, replaces Alpine's.
+rm -f "$NEW/etc/os-release" "$NEW/usr/lib/os-release"
+cat "$ROOTFS/etc/os-release" > "$NEW/usr/lib/os-release"
+echo "ID_LIKE=alpine" >> "$NEW/usr/lib/os-release"
+ln -s ../usr/lib/os-release "$NEW/etc/os-release"
 
 # Runo's own files, over Alpine's; what they replace goes first, as some
 # of Alpine's are links (/sbin/init is one to BusyBox) cp would follow.
