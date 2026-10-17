@@ -21,7 +21,14 @@ mkdir -p "$DL"
 fetch() {
 	file=$DL/$1
 	if [ ! -f "$file" ] || ! echo "$3  $file" | sha256sum -c - >/dev/null 2>&1; then
-		wget -q -O "$file.part" "$2/$1"
+		echo "post-fakeroot: downloading $2/$1"
+		# fakeroot's library is preloaded here; curl, if wget fails in it,
+		# gets a second try.
+		wget -nv --tries=3 -O "$file.part" "$2/$1" ||
+			curl -fsSL --retry 3 -o "$file.part" "$2/$1" || {
+			echo "post-fakeroot: cannot download $2/$1" >&2
+			exit 1
+		}
 		mv "$file.part" "$file"
 	fi
 	echo "$3  $file" | sha256sum -c - >/dev/null || {
@@ -40,7 +47,9 @@ esac
 fetch "$MINIROOTFS" "$ALPINE_MIRROR/$ALPINE_BRANCH/releases/aarch64" "$MINIROOTFS_SHA256"
 fetch "$APK_STATIC" "$ALPINE_MIRROR/$ALPINE_BRANCH/main/x86_64" "$APK_STATIC_SHA256"
 tools=$(mktemp -d)
-tar -xzf "$DL/$APK_STATIC" -C "$tools" sbin/apk.static 2>/dev/null
+# apk files carry their signature in extended headers tar does not know.
+tar --warning=no-unknown-keyword -xzf "$DL/$APK_STATIC" -C "$tools" sbin/apk.static
+echo "post-fakeroot: installing Alpine $ALPINE_BRANCH"
 
 # The Alpine root, built next to Buildroot's.
 NEW=$ROOTFS.alpine
