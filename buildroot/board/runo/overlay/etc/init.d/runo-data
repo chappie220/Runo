@@ -1,0 +1,63 @@
+#!/sbin/openrc-run
+#
+# /boot and /data. /sbin/init has mounted the data partition and put the
+# writable layer on it; when it could not (the first boot, or no usable
+# partition) the data partition is mounted here, or memory stands in
+# until the next boot. The read-only system is at /rom under the layer.
+# Then the parts of /data the system links into, and the Gateway's place
+# in the default runlevel, which `runo gateway install` decides.
+
+description="Mounts /boot and /data"
+
+BOOT_PART=1
+DATA_PART=4
+
+depend() {
+	before hostname localmount bootmisc syslog seedrng
+	keyword -prefix -vserver -lxc
+}
+
+# The kernel name of partition $2 of disk $1 (mmcblk0p4, nvme0n1p4, sda4).
+partition() {
+	for part in /sys/block/"$1"/"$1"*; do
+		[ "$(cat "$part/partition" 2>/dev/null)" = "$2" ] && {
+			basename "$part"
+			return 0
+		}
+	done
+	return 1
+}
+
+start() {
+	ebegin "Mounting /boot and /data"
+	if mountpoint -q /rom; then system=/rom; else system=/; fi
+	root=$(mountpoint -d $system)
+	rootpart=$(basename "$(readlink -f /sys/dev/block/"$root")")
+	disk=$(basename "$(dirname "$(readlink -f /sys/dev/block/"$root")")")
+	mkdir -p /boot /data
+	if ! mountpoint -q /boot; then
+		boot=$(partition "$disk" $BOOT_PART) &&
+			mount -o ro,noatime,fmask=0133,dmask=0022 /dev/"$boot" /boot
+	fi
+	if ! mountpoint -q /data; then
+		data=$(partition "$disk" $DATA_PART) || data=
+		if [ -z "$data" ] || ! mount -o noatime /dev/"$data" /data; then
+			ewarn "no usable data partition; /data is in memory until the next boot"
+			mount -t tmpfs -o mode=0755 tmpfs /data
+		fi
+	fi
+	mkdir -p /data/etc /data/log /data/root /data/runo
+	chmod 0700 /data/root /data/runo
+	[ -s /data/etc/hostname ] || echo runo > /data/etc/hostname
+	[ -s /data/etc/timezone ] || echo Etc/UTC > /data/etc/timezone
+	[ -e /data/etc/localtime ] ||
+		ln -sf "/usr/share/zoneinfo/$(cat /data/etc/timezone)" /data/etc/localtime
+	echo "$rootpart" > /run/root-partition
+	gateway=/etc/runlevels/default/runo-gateway
+	if [ -e /data/runo/gateway.enabled ]; then
+		[ -e $gateway ] || ln -s /etc/init.d/runo-gateway $gateway 2>/dev/null
+	else
+		rm -f $gateway 2>/dev/null
+	fi
+	eend 0
+}

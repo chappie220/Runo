@@ -668,11 +668,8 @@ pub async fn run(path: &Path, lang: Lang, offer_gateway: bool) -> Result<Option<
     let (signed_in, sign_in) = setup::chatgpt_sign_in();
     let host = Host {
         browser: crate::browser::find_installed().filter(|_| config.browser.enabled),
-        // The Runo system has no package manager to install one with.
-        install_browser: (config.browser.enabled
-            && crate::elevate::can_ask()
-            && !crate::config::runo_system())
-        .then_some(&mut install as &mut dyn FnMut() -> Result<Option<PathBuf>>),
+        install_browser: (config.browser.enabled && crate::elevate::can_ask())
+            .then_some(&mut install as &mut dyn FnMut() -> Result<Option<PathBuf>>),
         gateway: offer_gateway.then_some(&mut start as &mut dyn FnMut() -> Result<()>),
         sign_in: Some(sign_in),
         signed_in,

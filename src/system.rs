@@ -46,12 +46,15 @@ const WPA_CONFS: &[&str] = &[
 ];
 
 /// What the agent needs to know about the Runo system image.
-const RUNO_SYSTEM: &str = "runo system: this is Runo's own image. The root file system is read-only; \
-what may change lives on /data and is linked from /etc: /etc/wpa_supplicant.conf (Wi-Fi, applied \
-by restarting S40network), /etc/timezone (a zone name such as Asia/Shanghai, applied by restarting \
-S48time) and /etc/hostname. Wired network is DHCP (S40network); runod (S50runod) serves paired \
-clients; the Gateway is S60gateway, turned on with `runo gateway install`. Nothing else under /etc \
-can be changed, and nothing can be installed.";
+const RUNO_SYSTEM: &str = "runo system: this is Runo's own image, on Alpine Linux with OpenRC. The \
+system itself is read-only (at /rom); a writable layer kept on /data lies over it, so apk installs \
+packages from the Alpine repositories (`apk add <name>`) and OpenRC services can be added \
+(/etc/init.d, `rc-update add <name> default`) as on any Alpine system; both outlive system updates. \
+Put programs that are not packages under /data. /etc/wpa_supplicant.conf (Wi-Fi, applied by \
+restarting runo-network), /etc/timezone (a zone name such as Asia/Shanghai, applied by restarting \
+runo-time) and /etc/hostname are links to /data/etc. Wired network is DHCP (runo-network); runod \
+serves paired clients; the Gateway is runo-gateway, turned on with `runo gateway install`. \
+runo-reset.txt with `system` on the boot partition drops the layer.";
 
 /// Services listed at most; the rest are counted.
 const MAX_SERVICES: usize = 80;

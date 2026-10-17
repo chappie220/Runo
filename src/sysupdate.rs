@@ -490,10 +490,15 @@ fn tryboot() -> bool {
 /// The block device of partition `number` on the disk holding `/`.
 fn partition_device(number: u32) -> Result<PathBuf> {
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
-    let root = mountinfo
-        .lines()
-        .find(|l| l.split_whitespace().nth(4) == Some("/"))
-        .and_then(|l| l.split_whitespace().nth(2))
+    // Under the writable layer the system partition is at /rom.
+    let mounted_at = |point: &str| {
+        mountinfo
+            .lines()
+            .find(|l| l.split_whitespace().nth(4) == Some(point))
+            .and_then(|l| l.split_whitespace().nth(2))
+    };
+    let root = mounted_at("/rom")
+        .or_else(|| mounted_at("/"))
         .context("finding the root file system's device")?;
     let sys = std::fs::canonicalize(format!("/sys/dev/block/{root}"))?;
     let disk = sys.parent().context("the root device has no disk")?;
@@ -527,7 +532,12 @@ fn reboot(tryboot: bool) -> Result<()> {
     // or the Pi is left with nothing running and no restart.
     // SAFETY: plain signal(2) with SIG_IGN.
     unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
-    if Path::new("/etc/init.d/rcK").exists() {
+    if Path::new("/sbin/openrc").exists() {
+        // The single runlevel keeps only sysinit's services: the rest stop.
+        let _ = std::process::Command::new("/sbin/openrc")
+            .arg("single")
+            .status();
+    } else if Path::new("/etc/init.d/rcK").exists() {
         let _ = std::process::Command::new("/etc/init.d/rcK").status();
     }
     let _ = std::process::Command::new("mount")

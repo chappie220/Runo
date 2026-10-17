@@ -1,34 +1,38 @@
-#!/bin/sh
+#!/sbin/openrc-run
 #
 # The firewall (/etc/nftables.conf, plus /data/etc/nftables.d/*.nft).
 # Loaded before the network comes up; a rule file of one's own that does
 # not load leaves the built-in rules in place.
 
+description="Runo's firewall"
+extra_started_commands="reload"
+
 CONF=/etc/nftables.conf
 
-start() {
-	mkdir -p /data/etc/nftables.d
-	if nft -f "$CONF"; then
-		echo "firewall: on"
-		return 0
-	fi
-	echo "firewall: the rules in /data/etc/nftables.d do not load; using the built-in ones" >&2
-	sed '/^include /d' "$CONF" | nft -f -
+depend() {
+	need runo-data
+	before net
+	provide firewall
 }
 
-case "$1" in
-start | restart | reload)
+start() {
+	ebegin "Loading the firewall"
+	mkdir -p /data/etc/nftables.d
+	if nft -f "$CONF"; then
+		eend 0
+		return 0
+	fi
+	ewarn "the rules in /data/etc/nftables.d do not load; using the built-in ones"
+	sed '/^include /d' "$CONF" | nft -f -
+	eend $?
+}
+
+reload() {
 	start
-	;;
-stop)
+}
+
+stop() {
+	ebegin "Turning off the firewall"
 	nft flush ruleset
-	echo "firewall: off"
-	;;
-status)
-	nft list ruleset
-	;;
-*)
-	echo "usage: $0 start|stop|restart|status"
-	exit 1
-	;;
-esac
+	eend $?
+}

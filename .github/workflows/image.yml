@@ -52,7 +52,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/br/dl
-          key: buildroot-dl-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot/configs/*') }}
+          key: buildroot-dl-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot/configs/*', 'buildroot/board/runo/alpine/*') }}
           restore-keys: buildroot-dl-${{ env.BUILDROOT_VERSION }}-
       # The compiler cache from the last run on this board: a kernel that did
       # not change comes out of it instead of an hour of compiling.

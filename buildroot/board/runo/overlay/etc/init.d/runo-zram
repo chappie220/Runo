@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/sbin/openrc-run
 #
 # Compressed swap in memory (zram): pages the system has not used for a
 # while are kept compressed in RAM instead of being dropped, so a Pi with
@@ -7,9 +7,15 @@
 # half of it from 8 GB up, or the MiB in /data/etc/zram (0 turns it
 # off); restarting applies a new size.
 
+description="Compressed swap in memory"
+
 CONF=/data/etc/zram
 DEV=/dev/zram0
 SYS=/sys/block/zram0
+
+depend() {
+	need runo-data
+}
 
 size_mib() {
 	if [ -s $CONF ]; then
@@ -27,30 +33,23 @@ start() {
 	[ "${mib:-0}" -gt 0 ] || return 0
 	modprobe zram 2>/dev/null
 	if [ ! -e $SYS ]; then
-		echo "zram: the kernel has no zram"
+		ewarn "the kernel has no zram"
 		return 0
 	fi
+	ebegin "Setting up ${mib} MiB of compressed swap"
 	# lz4 is faster than the default lzo-rle at a little less squeeze.
 	modprobe lz4 2>/dev/null
 	grep -qw lz4 $SYS/comp_algorithm && echo lz4 > $SYS/comp_algorithm
 	echo "${mib}M" > $SYS/disksize &&
 		mkswap $DEV >/dev/null &&
-		swapon $DEV &&
-		echo "zram: ${mib} MiB of compressed swap ($(sed 's/.*\[\(.*\)\].*/\1/' $SYS/comp_algorithm))"
+		swapon $DEV
+	eend $?
 }
 
 stop() {
 	[ -e $SYS ] || return 0
+	ebegin "Turning off compressed swap"
 	grep -q "^$DEV " /proc/swaps && swapoff $DEV
 	echo 1 > $SYS/reset
+	eend 0
 }
-
-case "$1" in
-	start) start ;;
-	stop) stop ;;
-	restart) stop; start ;;
-	status)
-		if grep -q "^$DEV " /proc/swaps; then grep "^$DEV " /proc/swaps; else echo stopped; exit 3; fi
-		;;
-	*) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
-esac

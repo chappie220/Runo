@@ -1126,9 +1126,9 @@ pub fn env_var(name: &str) -> Option<std::ffi::OsString> {
 pub const STATE_DIR_NAME: &str = ".runo";
 pub const LEGACY_STATE_DIR_NAME: &str = ".openclaw-rs";
 
-/// Present on the Runo system image (`buildroot/`), whose root file system
-/// is read-only: state lives on the data partition, nothing can be
-/// installed and services are the image's own `/etc/init.d` scripts.
+/// Present on the Runo system image (`buildroot/`): Alpine with OpenRC, a
+/// read-only system under a writable layer, and state on the data
+/// partition.
 pub const SYSTEM_MARK: &str = "/etc/runo-system";
 /// The state root on the Runo system image.
 pub const SYSTEM_STATE: &str = "/data/runo";

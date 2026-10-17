@@ -1,0 +1,3 @@
+# BusyBox syslogd: /var/log/messages (on /data), kept to four files of
+# 1 MiB.
+SYSLOGD_OPTS="-t -s 1024 -b 4"

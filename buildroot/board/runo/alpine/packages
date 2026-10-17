@@ -1,0 +1,15 @@
+# Installed into the image on top of the Alpine minimal root file system
+# (which brings busybox, apk-tools, musl and alpine-baselayout).
+openrc
+busybox-openrc
+busybox-mdev-openrc
+kmod
+e2fsprogs
+e2fsprogs-extra
+nftables
+wpa_supplicant
+tzdata
+font-wqy-zenhei
+htop
+bash
+lsblk

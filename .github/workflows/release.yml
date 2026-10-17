@@ -89,12 +89,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      # Binaries from before the rename (openclaw-rs 0.4 and older) update
-      # by looking for openclaw-rs-<target>: the same files under that name.
       - run: |
           cd dist
-          for f in runo-*-linux-musl; do cp "$f" "openclaw-rs-${f#runo-}"; done
-          sha256sum runo-* openclaw-rs-* > SHA256SUMS && cat SHA256SUMS
+          sha256sum runo-* > SHA256SUMS && cat SHA256SUMS
       # A release made by hand for this tag (e.g. on the website) gets the
       # files; otherwise one is created. Re-runs replace the files.
       - name: Publish

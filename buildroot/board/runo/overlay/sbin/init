@@ -1,0 +1,148 @@
+#!/bin/busybox sh
+#
+# Runo's first step at boot, as process 1, before BusyBox init and
+# OpenRC. The system partition stays read-only; on top of it goes a
+# writable layer kept on the data partition (/data/system), so apk can
+# install packages and OpenRC services can be added like on any Alpine
+# system, and both outlive system updates, which replace only the layer
+# underneath. The read-only system stays visible at /rom.
+#
+# Here, before anything uses /data:
+# - the data partition is checked, mounted, and on the first boot grown
+#   to the end of the disk (once, with a reboot);
+# - runo-reset.txt on the boot partition, written from any computer, is
+#   carried out once and removed:
+#     pairing   forget the paired clients and the device password
+#     system    drop the writable layer: installed packages and changes
+#               to the system are gone, /data/runo and the rest stay
+#     all       erase /data: the device starts as on its first boot
+# Without a usable data partition the layer is in memory until the next
+# boot.
+
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+BOOT_PART=1
+DATA_PART=4
+LAYER=/data/system
+
+log() { echo "runo-init: $*" > /dev/console; }
+
+# Only process 1 sets things up; `init` run any other way is BusyBox's.
+[ "$$" = 1 ] || exec /bin/busybox init "$@"
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+
+# The kernel name of partition $2 of disk $1 (mmcblk0p4, nvme0n1p4, sda4).
+partition() {
+	for part in /sys/block/"$1"/"$1"*; do
+		[ "$(cat "$part/partition" 2>/dev/null)" = "$2" ] && {
+			basename "$part"
+			return 0
+		}
+	done
+	return 1
+}
+
+# Grows the last MBR entry, partition 4, to the end of the disk and
+# reboots, so that the kernel reads the new size. A partition already
+# there, or a table that is not what the image wrote, is left alone.
+grow() {
+	disk=$1 part=$2
+	total=$(cat /sys/block/"$disk"/size)
+	start=$(cat /sys/block/"$disk"/"$part"/start)
+	size=$(cat /sys/block/"$disk"/"$part"/size)
+	want=$((total - start))
+	# Less than 16 MiB to gain is not worth a reboot.
+	[ $((want - size)) -gt 32768 ] || return 0
+	[ $want -le 4294967295 ] || want=4294967295
+	# Entry 4 is at 446 + 3*16; its start sector at +8, its size at +12.
+	entry=$(dd if=/dev/"$disk" bs=1 skip=502 count=8 2>/dev/null | hexdump -v -e '1/4 "%u "')
+	# shellcheck disable=SC2086 # two numbers
+	set -- $entry
+	if [ "$1" != "$start" ] || [ "$2" != "$size" ]; then
+		log "partition table not as expected, not growing /data"
+		return 0
+	fi
+	log "growing /data to the end of the disk"
+	bytes=$(printf '\\0%03o\\0%03o\\0%03o\\0%03o' $((want & 255)) $((want >> 8 & 255)) \
+		$((want >> 16 & 255)) $((want >> 24 & 255)))
+	umount /data
+	printf '%b' "$bytes" | dd of=/dev/"$disk" bs=1 seek=506 count=4 conv=notrunc 2>/dev/null
+	sync
+	reboot -f
+}
+
+# Carries out runo-reset.txt on the boot partition, then removes it.
+reset() {
+	boot=$1
+	mount -o ro /dev/"$boot" /boot 2>/dev/null || return 0
+	if [ -f /boot/runo-reset.txt ]; then
+		what=$(tr -d '\r' < /boot/runo-reset.txt | sed -n '/^[[:space:]]*[^#[:space:]]/{s/[[:space:]]//g;p;q}')
+		case "$what" in
+		pairing)
+			log "reset: forgetting the paired clients and the device password"
+			rm -f /data/runo/runod/clients.json /data/runo/runod/password
+			;;
+		system)
+			log "reset: dropping the writable layer of the system"
+			rm -rf "$LAYER"
+			;;
+		all)
+			log "reset: erasing /data"
+			find /data -mindepth 1 -maxdepth 1 ! -name .grown ! -name lost+found -exec rm -rf {} +
+			;;
+		*) log "reset: runo-reset.txt says '$what'; expected pairing, system or all" ;;
+		esac
+		mount -o remount,rw /boot && rm -f /boot/runo-reset.txt
+		sync
+	fi
+	umount /boot
+}
+
+# The data partition, checked and mounted at /data; 1 without one.
+data() {
+	root=$(mountpoint -d /)
+	disk=$(basename "$(dirname "$(readlink -f /sys/dev/block/"$root")")")
+	part=$(partition "$disk" $DATA_PART) || return 1
+	e2fsck -p /dev/"$part" >/dev/null 2>&1
+	[ $? -ge 4 ] && log "/dev/$part has errors e2fsck cannot mend"
+	mount -o noatime /dev/"$part" /data || return 1
+	if [ ! -e /data/.grown ]; then
+		grow "$disk" "$part"
+		resize2fs /dev/"$part" >/dev/null 2>&1 && log "/data fills the disk"
+		touch /data/.grown
+	fi
+	boot=$(partition "$disk" $BOOT_PART) && reset "$boot"
+	return 0
+}
+
+# The writable layer over the system, as the new root at /mnt.
+layer() {
+	mkdir -p "$LAYER/upper" "$LAYER/work"
+	mount -t overlay overlay -o "noatime,lowerdir=/,upperdir=$LAYER/upper,workdir=$LAYER/work" /mnt ||
+		return 1
+	# The layer must not hide where the system and /data are reached.
+	for dir in rom data boot proc sys dev run tmp; do
+		[ -d /mnt/$dir ] && [ ! -L /mnt/$dir ] && continue
+		rm -rf "/mnt/${dir:?}" 2>/dev/null
+		mkdir -p /mnt/$dir
+	done
+	return 0
+}
+
+if ! data; then
+	log "no usable data partition; changes are kept in memory until the next boot"
+	mount -t tmpfs -o mode=0755 tmpfs /data
+fi
+if layer; then
+	for fs in /data /dev /proc /sys; do
+		mount --move $fs /mnt$fs
+	done
+	cd /mnt || exec /bin/busybox init "$@"
+	pivot_root . rom
+	exec chroot . /bin/busybox init "$@" < dev/console > dev/console 2>&1
+fi
+log "the kernel cannot put a writable layer over the system; running read-only"
+exec /bin/busybox init "$@"
