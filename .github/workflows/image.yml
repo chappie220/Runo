@@ -32,6 +32,11 @@ jobs:
       matrix:
         board: [rpi5, rpi4]
     steps:
+      # Space for the build, freed while the rest gets going.
+      - name: Free disk space
+        run: |
+          nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -41,15 +46,31 @@ jobs:
           key: aarch64-unknown-linux-musl
       - run: pip install ziglang cargo-zigbuild
       - run: cargo zigbuild --locked --release --target aarch64-unknown-linux-musl
-      - name: Free disk space
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - run: sudo apt-get update && sudo apt-get install -y build-essential bc cpio file rsync unzip wget
       - name: Fetch Buildroot
         run: |
           wget -q https://buildroot.org/downloads/buildroot-$BUILDROOT_VERSION.tar.xz
           mkdir -p ~/br
           tar xf buildroot-$BUILDROOT_VERSION.tar.xz -C ~/br
+      # The output's key: what Buildroot builds from. The scripts in
+      # board/runo run on every build and are left out.
+      - name: Output key
+        run: echo "OUT_KEY=buildroot-out-${{ matrix.board }}-$BUILDROOT_VERSION-${{ hashFiles('buildroot/configs/*', 'buildroot/Config.in', 'buildroot/external.*', 'buildroot/package/**', 'buildroot/board/runo/linux.fragment') }}" >> "$GITHUB_ENV"
+      # Buildroot's output from the last build of the same configuration:
+      # the toolchain, host tools, kernel and firmware are then done, and
+      # only runo, the root file system and the image are made again.
+      - uses: actions/cache/restore@v4
+        id: out
+        with:
+          path: ~/br/out
+          key: ${{ env.OUT_KEY }}
+      # Checked-out files are all newer than that output, which make would
+      # take for changes; what Buildroot builds from is in the key instead.
+      - name: Date the checkout back
+        if: steps.out.outputs.cache-hit == 'true'
+        run: git ls-files -z buildroot | xargs -0 touch -h -d @946684800
       - uses: actions/cache@v4
+        if: steps.out.outputs.cache-hit != 'true'
         with:
           path: ~/br/dl
           key: buildroot-dl-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot/configs/*', 'buildroot/board/runo/alpine/*') }}
@@ -57,11 +78,13 @@ jobs:
       # The compiler cache from the last run on this board: a kernel that did
       # not change comes out of it instead of an hour of compiling.
       - uses: actions/cache/restore@v4
+        if: steps.out.outputs.cache-hit != 'true'
         with:
           path: ~/br/ccache
           key: buildroot-ccache-${{ matrix.board }}-${{ github.run_id }}
           restore-keys: buildroot-ccache-${{ matrix.board }}-
       - name: Configure
+        if: steps.out.outputs.cache-hit != 'true'
         run: |
           make -C ~/br/buildroot-$BUILDROOT_VERSION O=$HOME/br/out \
             BR2_EXTERNAL=$PWD/buildroot runo_${{ matrix.board }}_defconfig
@@ -72,11 +95,13 @@ jobs:
           RUNO_UPDATE_KEY: ${{ secrets.RUNO_UPDATE_SIGNING_KEY }}
         run: |
           export BR2_DL_DIR=$HOME/br/dl BR2_CCACHE_DIR=$HOME/br/ccache
+          # The runo binary is new on every run.
+          make -C ~/br/out runo-dirclean
           make -C ~/br/out
           ~/br/out/host/bin/ccache -d ~/br/ccache --show-stats || true
       # Saved even when the build fails, so the next run starts warm.
       - uses: actions/cache/save@v4
-        if: always()
+        if: always() && steps.out.outputs.cache-hit != 'true'
         continue-on-error: true
         with:
           path: ~/br/ccache
@@ -88,6 +113,23 @@ jobs:
             cp ~/br/out/images/runo-${{ matrix.board }}.update image/
           fi
           (cd image && sha256sum * > SHA256SUMS-${{ matrix.board }})
+      # Kept for the next build: what is installed (host, target, images)
+      # and each package's stamps, not its build tree or this run's image.
+      - name: Trim the output
+        if: steps.out.outputs.cache-hit != 'true'
+        run: |
+          cd ~/br/out
+          rm -rf images/sdcard.img* images/rootfs.ext* images/data.ext4 images/update \
+            images/bootfs images/runo-*.update build/buildroot-fs build/genimage.tmp
+          find build -mindepth 2 -maxdepth 2 ! -path 'build/buildroot-config/*' ! -name '.*' \
+            -exec rm -rf {} +
+          du -sh ~/br/out
+      - uses: actions/cache/save@v4
+        if: steps.out.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: ~/br/out
+          key: ${{ env.OUT_KEY }}
       - uses: actions/upload-artifact@v4
         with:
           name: runo-image-${{ matrix.board }}
